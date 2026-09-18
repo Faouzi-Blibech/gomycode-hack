@@ -2977,29 +2977,7 @@ jobs:
 
 - [ ] **Step 2: README**
 
-```markdown
-# Sketch-to-CAD
-
-Point your phone at a broken part or a sketch of one. Get a parametric STEP + STL back.
-
-## Run it
-    cp .env.example .env   # add a vision model key
-    uv sync && uv run uvicorn s2c.api:app --host 0.0.0.0 --port 8000
-    cd web && npm install && npm run dev -- --host
-
-Lab view: `uv run python app_gradio.py`
-
-## How it works
-Classical CV measures. The model only understands topology. Our own deterministic builder makes the geometry. A round-trip silhouette check scores every result. Full design in `docs/superpowers/specs/`.
-
-## Numbers (updated as tests land)
-| Metric | Value |
-| --- | --- |
-| Golden sketches passing | pending |
-| Coin scale error | pending |
-| OCR value accuracy | pending |
-| Median sketch-to-STL latency | pending |
-```
+`README.md` already exists. Do not replace it. Fill in the "Accuracy numbers" table with the current golden pass count and the median sketch-to-STL latency from `logs/vlm.jsonl`, and change the "Status" section to describe what runs today.
 
 - [ ] **Step 3: Disclosure skeleton**
 

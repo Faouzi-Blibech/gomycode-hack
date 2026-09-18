@@ -37,7 +37,7 @@ image ─┬─ metrology.py  (numbers owner)   coin -> mm/px, contours in mm
             views.py    (geometry owner)  6 silhouettes, IoU vs input
 ```
 
-Surfaces: `api.py` (FastAPI), `app_gradio.py` (lab UI), `web/` (React + Three.js mobile web app).
+All Python lives in the `s2c` package. Surfaces: `s2c/api.py` (FastAPI), `app_gradio.py` (lab UI), `web/` (React + Three.js mobile web app). `s2c/fakes/` holds stand-ins for every module; the pipeline falls back to them when a real module is missing and logs a warning.
 
 ## Model provider
 
@@ -46,7 +46,7 @@ One OpenAI-compatible client. Configure with `VLM_BASE_URL`, `VLM_MODEL`, `VLM_A
 ## Stack and commands
 
 - Python 3.11, `uv` for environments, `pytest`, `ruff`.
-- `uv sync` to install, `uv run pytest` to test, `uv run uvicorn api:app --reload` for the API, `uv run python app_gradio.py` for the lab UI.
+- `uv sync` to install, `uv run pytest` to test, `uv run uvicorn s2c.api:app --reload` for the API, `uv run python app_gradio.py` for the lab UI.
 - `web/`: Vite + React + TypeScript + three. `npm install`, `npm run dev`.
 
 ## Testing
