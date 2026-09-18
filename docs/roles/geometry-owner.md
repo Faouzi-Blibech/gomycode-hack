@@ -9,7 +9,7 @@ Phone photo of a sketch or a real part becomes an editable parametric CAD model.
 ## You own
 
 - `builder.py`: `build(partspec) -> cadquery.Workplane` and `export(solid, out_dir) -> (step_path, stl_path)`.
-- `views.py`: `silhouettes(solid, px=512) -> dict[str, ndarray]` for front, back, left, right, top, bottom, and `iou(mask_a, mask_b) -> float`.
+- `views.py`: `silhouettes(solid, px=512) -> dict[str, ndarray]` for front, back, left, right, top, bottom. Each mask is normalised with `s2c.silhouette.normalize_mask`, and `s2c.silhouette.iou` (integrator) compares masks.
 - `tests/golden/`: the ground-truth parts. You model at least 10 parts by hand (plates, brackets, flanges, spacers, one profile extrusion), record their exact dimensions in `expected.json`, then draw a sketch of each by hand with the dimensions written on it and photograph it. For 5 of them, produce or find a physical version and photograph it top-down next to a coin.
 - The Three.js STL viewer inside `web/` and the slider-to-geometry feel.
 - The demo parts and, if a printer is found, the printed part for the video.
@@ -28,7 +28,7 @@ Coordinate convention: front view is the XY plane, extrusion along +Z. Origin at
 2. `export()` to STEP and STL. Open both in FreeCAD or your CAD tool to confirm.
 3. `flange`, `l_bracket`, `profile_extrusion`.
 4. Features: `hole` (through and blind), `slot`, `fillet`, `chamfer` with the edge selectors from the grammar.
-5. `views.py`: render each face to a binary mask. Simplest approach: project the solid's tessellation vertices along each axis and rasterise faces with OpenCV `fillPoly`. Test: IoU of a built plate against its own front silhouette above 0.98.
+5. `views.py`: render each face to a binary mask. Simplest approach: tessellate the solid, project every triangle along the view axis, and rasterise with OpenCV `fillPoly`. Test: `s2c.silhouette.iou` of a built plate against its own front silhouette above 0.98.
 6. The golden set. This is the most valuable thing you can deliver in the first three days because the other two cannot test without it.
 7. Three.js viewer: load an STL blob, orbit controls, auto-fit camera, re-load on every slider change.
 

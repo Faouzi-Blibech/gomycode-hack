@@ -107,6 +107,8 @@ image ──┬─ metrology.py   OpenCV: coin -> mm/px, contours in mm       (p
 
 ### 4.1 Modules and owners
 
+All Python modules live in the `s2c` package (`s2c/partspec/`, `s2c/vision/`, `s2c/merge.py` and so on). `s2c/fakes/` holds stand-ins for every module so the pipeline runs before the real modules land.
+
 | Module | Responsibility | Owner |
 | --- | --- | --- |
 | `partspec/` | Pydantic models for PartSpec, Topology, Annotations, Measurements, Abstain. JSON schema export. | Integrator |
@@ -116,7 +118,8 @@ image ──┬─ metrology.py   OpenCV: coin -> mm/px, contours in mm       (p
 | `app_gradio.py` | Lab UI: upload, run pipeline, show PartSpec JSON, silhouettes, IoU, download. | Integrator |
 | `web/` | React + Three.js mobile web app: camera capture, sliders, STL viewer, download. | Integrator, with geometry owner on the viewer |
 | `builder.py` | PartSpec to CadQuery solid. STEP + STL export. | Geometry owner |
-| `views.py` | Solid to 6 silhouettes as binary images. IoU against the input silhouette. | Geometry owner |
+| `views.py` | Solid to 6 silhouettes as binary images. | Geometry owner |
+| `silhouette.py` | Input image to a normalised binary silhouette. `normalize_mask` and `iou`, shared by views and the API. | Integrator |
 | `tests/golden/` ground-truth parts | Hand-modelled reference parts with known dimensions, sketches and photos of them. | Geometry owner |
 | `ocr.py` | Find dimension annotations on a sketch or drawing, read the value, link it to an edge or a hole. | Numbers owner |
 | `metrology.py` | Coin detection, eccentricity gate, mm-per-pixel, outer contour and hole circles in mm. | Numbers owner |
@@ -153,7 +156,7 @@ Annotation
   value_mm: float
   kind: linear | diameter | radius
   bbox_px: [x, y, w, h]
-  linked_to: width | height | thickness | depth | hole_diameter | hole_x | hole_y | slot_length | slot_width | outer_diameter | inner_diameter | unknown
+  linked_to: width | height | thickness | depth | length | leg_a | leg_b | corner_radius | hole_diameter | hole_x | hole_y | slot_length | slot_width | outer_diameter | inner_diameter | bolt_circle_diameter | bolt_hole_diameter | unknown
   hole_index: int | null
   confidence: 0..1
 ```
@@ -177,6 +180,7 @@ Abstain
   stage: metrology | ocr | vision | merge | build | verify
   reason: str          # machine-readable slug, e.g. coin_tilted, unsupported_geometry, missing_thickness
   remedy: str          # one sentence for the user
+  partial: dict | null # values already recovered, so the UI can show inputs for the missing ones
 ```
 
 PartSpec, produced by `merge.py`, edited by the UI, consumed by `builder.py`.
@@ -201,7 +205,8 @@ Sketch and drawing path:
 1. Topology gives part_type and feature count and rough positions.
 2. Annotations give values. Each is matched to a PartSpec field through `linked_to`. Unlinked annotations are matched by heuristics: the largest linear value goes to the largest bounding-box side, a diameter annotation nearest a hole goes to that hole.
 3. Hole positions: if hole_x and hole_y annotations exist, use them. Otherwise, use the normalised topology position times the measured or written width and height, and mark provenance `default` with a warning, since the user will confirm it on the sliders.
-4. Any required field with no source triggers a missing-dimension abstention with a remedy that names the field.
+4. Any required field with no source triggers a missing-dimension abstention with a remedy that names the field and a `partial` dict of what was recovered. The UI collects the value and calls `/merge` again with `user_values`, which are recorded as `user_edited`.
+5. `profile_extrusion` is not supported from a sketch in version 1. Its outline needs a measured contour, so a sketch of one abstains with reason `profile_needs_photo`.
 
 Photo path:
 1. Metrology gives scale, the outer bounding box, and circles.
@@ -226,6 +231,7 @@ Model names are chosen from each provider's catalogue at the time and recorded i
 | Endpoint | Input | Output |
 | --- | --- | --- |
 | `POST /analyze` | image file, `input_kind` (sketch, photo, drawing) | `{ partspec, topology, annotations?, measurements?, silhouette_id }` or `{ abstain }` |
+| `POST /merge` | topology, annotations, measurements, `source_input`, `user_values` | `{ partspec }` or `{ abstain }`. Re-fuses without a new model call. |
 | `POST /build` | PartSpec JSON, `silhouette_id` | `{ stl_url, step_url, iou, views: [6 image urls], warnings }` or `{ abstain }` |
 | `GET /files/{id}` | file id | the file, deleted after 1 hour |
 
@@ -242,7 +248,7 @@ Mobile web app: three screens.
 
 ### 4.7 Verification
 
-- Round-trip: `views.py` renders the built solid to the same view as the input, computes IoU against the input silhouette. Threshold 0.85 for green.
+- Round-trip: `views.py` renders the built solid to the same view as the input, `silhouette.iou` compares it with the input silhouette after both are cropped to their bounding box and resized, so the check is scale-invariant. Threshold 0.85 for green.
 - Golden set: at least 10 sketches and 5 photos with known dimensions. A test asserts every PartSpec numeric field is within 5 percent or 1 mm of ground truth, whichever is larger.
 - Builder: known-volume tests for every part type, STEP and STL files open in FreeCAD.
 - Views: self round-trip IoU of a built solid against its own silhouette is above 0.98.
