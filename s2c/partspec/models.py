@@ -152,3 +152,90 @@ def numeric_field_paths(spec: PartSpec) -> list[str]:
     for i, finish in enumerate(spec.finishes):
         paths += [f"finishes[{i}].{n}" for n in _numeric_names(finish)]
     return paths
+
+
+# ---- stage outputs --------------------------------------------------------
+
+Unit = Annotated[float, Field(ge=0, le=1)]
+
+
+class TopoHole(_Strict):
+    u: Unit
+    v: Unit
+    kind: Literal["through", "blind", "unknown"] = "unknown"
+
+
+class TopoSlot(_Strict):
+    u: Unit
+    v: Unit
+    orientation: Literal["horizontal", "vertical", "diagonal"] = "horizontal"
+
+
+class Topology(_Strict):
+    """What the vision model may say. No absolute numbers, ever."""
+    part_type: Literal["plate", "l_bracket", "flange", "spacer", "profile_extrusion", "unsupported"]
+    unsupported_reason: str | None = None
+    view: Literal["front", "top", "side", "isometric", "unknown"] = "unknown"
+    holes: list[TopoHole] = []
+    slots: list[TopoSlot] = []
+    rounded_corners: bool = False
+    symmetric: bool = False
+    bolt_count: int | None = None
+    annotation_count: int | None = None
+    confidence: Unit
+    notes: str = ""
+
+
+LinkedTo = Literal[
+    "width", "height", "thickness", "depth", "length", "leg_a", "leg_b", "corner_radius",
+    "hole_diameter", "hole_x", "hole_y", "slot_length", "slot_width",
+    "outer_diameter", "inner_diameter", "bolt_circle_diameter", "bolt_hole_diameter", "unknown",
+]
+
+
+class Annotation(_Strict):
+    value_mm: Mm
+    kind: Literal["linear", "diameter", "radius"]
+    bbox_px: tuple[float, float, float, float]
+    linked_to: LinkedTo = "unknown"
+    hole_index: int | None = None
+    confidence: Unit
+
+
+class Annotations(_Strict):
+    items: list[Annotation] = []
+    confidence: Unit
+
+
+class Coin(_Strict):
+    name: str
+    pixel_diameter: float
+    eccentricity: float
+    confidence: Unit
+
+
+class Bbox(_Strict):
+    width: Mm
+    height: Mm
+
+
+class Circle(_Strict):
+    x: float
+    y: float
+    diameter: Mm
+
+
+class Measurements(_Strict):
+    mm_per_px: float = Field(gt=0)
+    coin: Coin
+    outer_contour_mm: list[tuple[float, float]]
+    bbox_mm: Bbox
+    circles_mm: list[Circle] = []
+    confidence: Unit
+
+
+class Abstain(_Strict):
+    stage: Literal["metrology", "ocr", "vision", "merge", "build", "verify"]
+    reason: str
+    remedy: str
+    partial: dict | None = None
