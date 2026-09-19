@@ -3,7 +3,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from s2c.partspec.models import Abstain, Annotations, Measurements, Topology
+from s2c.partspec.models import Abstain, Annotation, Annotations, Measurements, Topology
 from s2c.partspec.schema import topology_json_schema
 
 
@@ -44,9 +44,34 @@ def test_abstain_carries_reason_and_remedy():
     assert a.partial is None
 
 
+def test_annotation_hole_index_rejects_negative_value():
+    """A negative hole_index never raises on its own in Python (negative
+    indexing), so a later stage would silently select the wrong hole, or
+    silently drop a user-written measurement. Reject it here, loudly."""
+    with pytest.raises(ValidationError) as exc_info:
+        Annotation.model_validate({
+            "value_mm": 60, "kind": "linear", "bbox_px": [1, 2, 30, 12],
+            "hole_index": -1, "confidence": 0.9,
+        })
+    assert "hole_index" in str(exc_info.value)
+
+
+def test_topology_bolt_count_rejects_negative_value():
+    with pytest.raises(ValidationError) as exc_info:
+        Topology.model_validate({"part_type": "plate", "bolt_count": -1, "confidence": 0.8})
+    assert "bolt_count" in str(exc_info.value)
+
+
+def test_topology_annotation_count_rejects_negative_value():
+    with pytest.raises(ValidationError) as exc_info:
+        Topology.model_validate({"part_type": "plate", "annotation_count": -1, "confidence": 0.8})
+    assert "annotation_count" in str(exc_info.value)
+
+
 _MEASUREMENT_WORDS = {
     "width", "height", "thickness", "diameter", "radius", "depth",
     "length", "distance", "size", "dimension", "spacing", "offset",
+    "pitch", "angle",
 }
 
 

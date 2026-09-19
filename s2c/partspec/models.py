@@ -180,8 +180,8 @@ class Topology(_Strict):
     slots: list[TopoSlot] = []
     rounded_corners: bool = False
     symmetric: bool = False
-    bolt_count: int | None = None
-    annotation_count: int | None = None
+    bolt_count: int | None = Field(default=None, ge=0)
+    annotation_count: int | None = Field(default=None, ge=0)
     confidence: Unit
     notes: str = ""
 
@@ -198,7 +198,7 @@ class Annotation(_Strict):
     kind: Literal["linear", "diameter", "radius"]
     bbox_px: tuple[float, float, float, float]
     linked_to: LinkedTo = "unknown"
-    hole_index: int | None = None
+    hole_index: int | None = Field(default=None, ge=0)
     confidence: Unit
 
 
