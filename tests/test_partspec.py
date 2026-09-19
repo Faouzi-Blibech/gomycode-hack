@@ -78,3 +78,86 @@ def test_flange_bore_must_fit_inside_bolt_circle():
     })
     with pytest.raises(ValidationError, match="bore"):
         PartSpec.model_validate(data)
+
+
+def test_model_invented_extra_field_is_rejected():
+    # extra="forbid" is the mechanism that enforces "the model never supplies a dimension".
+    # Prove it rejects an unexpected field on the part itself...
+    data = plate_spec()
+    data["part"]["estimated_thickness_mm"] = 5.0
+    with pytest.raises(ValidationError):
+        PartSpec.model_validate(data)
+
+    # ...and on a nested feature, not just the top-level part.
+    data = plate_spec()
+    data["features"][0]["width"] = 3.0
+    with pytest.raises(ValidationError):
+        PartSpec.model_validate(data)
+
+
+def test_spacer_inner_diameter_must_be_smaller_than_outer():
+    spacer_provenance = {
+        "part.outer_diameter_mm": "measured",
+        "part.inner_diameter_mm": "measured",
+        "part.length_mm": "measured",
+    }
+
+    equal_data = plate_spec(
+        part={"type": "spacer", "outer_diameter_mm": 20, "inner_diameter_mm": 20, "length_mm": 10},
+        features=[],
+        provenance=spacer_provenance,
+    )
+    with pytest.raises(ValidationError, match="inner diameter must be smaller than outer diameter"):
+        PartSpec.model_validate(equal_data)
+
+    larger_data = plate_spec(
+        part={"type": "spacer", "outer_diameter_mm": 20, "inner_diameter_mm": 25, "length_mm": 10},
+        features=[],
+        provenance=spacer_provenance,
+    )
+    with pytest.raises(ValidationError, match="inner diameter must be smaller than outer diameter"):
+        PartSpec.model_validate(larger_data)
+
+
+def test_numeric_field_paths_covers_slot_and_finishes():
+    data = plate_spec(
+        features=[{
+            "type": "slot", "x_mm": 15, "y_mm": 5, "width_mm": 4, "length_mm": 12,
+            "angle_deg": 45.0, "depth_mm": 2.0,
+        }],
+        finishes=[
+            {"type": "fillet", "radius_mm": 2.0},
+            {"type": "chamfer", "radius_mm": 1.5},
+        ],
+        provenance={
+            "part.width_mm": "user_written",
+            "part.height_mm": "user_written",
+            "part.thickness_mm": "user_written",
+            "part.corner_radius_mm": "default",
+            "features[0].x_mm": "default",
+            "features[0].y_mm": "default",
+            "features[0].width_mm": "user_written",
+            "features[0].length_mm": "user_written",
+            "features[0].angle_deg": "default",
+            "features[0].depth_mm": "default",
+            "finishes[0].radius_mm": "user_written",
+            "finishes[1].radius_mm": "user_written",
+        },
+    )
+    spec = PartSpec.model_validate(data)
+    assert numeric_field_paths(spec) == [
+        "part.width_mm", "part.height_mm", "part.thickness_mm", "part.corner_radius_mm",
+        "features[0].x_mm", "features[0].y_mm", "features[0].width_mm", "features[0].length_mm",
+        "features[0].angle_deg", "features[0].depth_mm",
+        "finishes[0].radius_mm", "finishes[1].radius_mm",
+    ]
+
+
+def test_profile_extrusion_requires_at_least_three_points():
+    data = plate_spec(
+        part={"type": "profile_extrusion", "points_mm": [[0, 0], [10, 0]], "depth_mm": 5},
+        features=[],
+        provenance={"part.points_mm": "measured", "part.depth_mm": "user_written"},
+    )
+    with pytest.raises(ValidationError, match="points_mm"):
+        PartSpec.model_validate(data)
