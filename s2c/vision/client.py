@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -26,15 +27,36 @@ class VLMClient:
         self.base_url = base_url or os.environ.get("VLM_BASE_URL", "unset")
         self.log_path = Path(log_path)
         self.temperature = temperature
-        # Instance attribute, not a class attribute: a dict on the class would be
-        # shared by every VLMClient instance, so two clients would overwrite each
-        # other's token counts.
-        self._last_usage: dict = {}
+        # Per-call usage lives in thread-local storage, not a plain instance
+        # attribute. The transport records usage after the model responds and
+        # complete_json reads it back afterwards, with nothing in between
+        # guaranteeing the write and the read belong to the same call. A
+        # client is held in application state and can serve concurrent
+        # requests on a thread pool, so a plain instance attribute would let
+        # one request's log line report another request's token counts.
+        self._usage_local = threading.local()
         self._chat = chat or self._openai_chat(api_key or os.environ.get("VLM_API_KEY", ""))
 
     @classmethod
     def from_env(cls) -> VLMClient:
         return cls()
+
+    def record_usage(self, usage: dict) -> None:
+        """Record this thread's usage for the call currently in flight.
+
+        A transport calls this to report token usage. It is deliberately kept
+        outside the `Chat` callable signature (messages -> str) so transports
+        that only return text keep working unmodified.
+        """
+        self._usage_local.value = usage
+
+    def _take_usage(self) -> dict:
+        usage = getattr(self._usage_local, "value", None)
+        try:
+            del self._usage_local.value
+        except AttributeError:
+            pass
+        return usage or {}
 
     def _openai_chat(self, api_key: str) -> Chat:
         from openai import OpenAI
@@ -46,10 +68,10 @@ class VLMClient:
                 model=self.model, messages=messages, temperature=self.temperature, max_tokens=800,
             )
             usage = getattr(resp, "usage", None)
-            self._last_usage = {
+            self.record_usage({
                 "prompt_tokens": getattr(usage, "prompt_tokens", None),
                 "completion_tokens": getattr(usage, "completion_tokens", None),
-            }
+            })
             return resp.choices[0].message.content or ""
 
         return chat
@@ -64,11 +86,20 @@ class VLMClient:
             ]},
         ]
         t0 = time.perf_counter()
-        text = self._chat(messages)
+        try:
+            text = self._chat(messages)
+        except Exception as exc:
+            self._log({
+                "ts": time.time(), "provider": self.base_url, "model": self.model,
+                "latency_ms": round((time.perf_counter() - t0) * 1000),
+                "status": "error", "error_type": type(exc).__name__,
+            })
+            raise
+        usage = self._take_usage()
         self._log({
             "ts": time.time(), "provider": self.base_url, "model": self.model,
             "latency_ms": round((time.perf_counter() - t0) * 1000),
-            "chars_out": len(text), **self._last_usage,
+            "status": "ok", "chars_out": len(text), **usage,
         })
         return text
 
