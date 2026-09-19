@@ -219,3 +219,6 @@ __marimo__/
 
 # SDD scratch workspace (git-ignored)
 .superpowers/
+
+logs/
+tmp/
