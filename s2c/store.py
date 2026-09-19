@@ -22,7 +22,19 @@ from pathlib import Path
 # Exactly what uuid4().hex + a short lowercase suffix looks like. No path
 # separators, no "..", no uppercase -- anything outside this shape is
 # rejected before it ever touches the filesystem.
-_SAFE = re.compile(r"^[a-f0-9]{32}\.[a-z0-9]{1,5}$")
+#
+# `_EXTENSION` is the single source of truth for what a suffix may look
+# like. `_SAFE` (the full identifier, checked by `path()`) and `_SAFE_SUFFIX`
+# (the extension alone, checked by `put()`) are both built from it, so the
+# two checks cannot drift apart: anything `put()` accepts is, by
+# construction, something `path()` will later accept back. The end anchor
+# is `\Z` (true end of string), not `$` (end of string, or just before a
+# trailing newline) -- this is a public-facing allowlist and should have no
+# latent exceptions to its strictness.
+_HEX_ID = r"[a-f0-9]{32}"
+_EXTENSION = r"[a-z0-9]{1,5}"
+_SAFE = re.compile(rf"^{_HEX_ID}\.{_EXTENSION}\Z")
+_SAFE_SUFFIX = re.compile(rf"^\.{_EXTENSION}\Z")
 
 
 class FileStore:
@@ -34,6 +46,15 @@ class FileStore:
         self.ttl_s = ttl_s
 
     def put(self, data: bytes, suffix: str) -> str:
+        # Validate the extension at the point of generation rather than
+        # trusting the caller. Without this, a caller-supplied suffix that
+        # doesn't match what path() will later accept either orphans the
+        # file silently, or -- if it contains a separator or is itself an
+        # anchored absolute path -- can escape the store root entirely on
+        # write. Raise rather than normalise: silently rewriting a caller's
+        # extension would hide the caller's bug instead of surfacing it.
+        if not _SAFE_SUFFIX.match(suffix):
+            raise ValueError(f"invalid file suffix: {suffix!r}")
         file_id = uuid.uuid4().hex + suffix
         (self.root / file_id).write_bytes(data)
         return file_id

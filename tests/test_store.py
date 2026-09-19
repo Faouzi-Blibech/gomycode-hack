@@ -2,7 +2,9 @@ import os
 import time
 from pathlib import Path
 
-from s2c.store import FileStore
+import pytest
+
+from s2c.store import _SAFE, FileStore
 
 
 def test_put_and_get(tmp_path):
@@ -112,3 +114,60 @@ def test_store_root_creation_is_idempotent(tmp_path):
     s2 = FileStore(root)
     fid = s1.put(b"y", ".stl")
     assert s2.path(fid).read_bytes() == b"y"
+
+
+@pytest.mark.parametrize(
+    "hostile_suffix",
+    [
+        "stl",  # missing leading dot
+        ".STL",  # uppercase
+        ".abcdef",  # over-long: 6 chars after the dot, limit is 5
+        ".tar.gz",  # embedded second dot
+        "/evil.txt",  # forward slash
+        "\\evil.txt",  # backslash
+        "../../evil.txt",  # relative traversal, forward slash
+        "..\\..\\evil.txt",  # relative traversal, backslash
+        "C:\\Windows\\evil.dll",  # anchored absolute path, backslash
+        "/etc/passwd",  # anchored absolute path, posix-style
+    ],
+)
+def test_put_rejects_hostile_extensions(tmp_path, hostile_suffix):
+    """put() must validate the extension it is handed as strictly as path()
+    validates the extension half of an identifier. Without this, a hostile
+    or merely malformed suffix either orphans a file (written successfully
+    but never retrievable via path()) or, worse, escapes the store root
+    entirely on write, since joining a string containing separators or ".."
+    onto root is not the same as writing a flat file into root."""
+    s = FileStore(tmp_path, ttl_s=3600)
+    with pytest.raises(ValueError):
+        s.put(b"x", hostile_suffix)
+
+
+def test_put_traversal_suffix_does_not_write_outside_root(tmp_path):
+    """Concretely proves the write-side escape: a suffix containing '../..'
+    must not be able to plant a file above the store root, whatever put()
+    does with it."""
+    s = FileStore(tmp_path, ttl_s=3600)
+    escaped = tmp_path.parent / "evil.txt"
+    with pytest.raises(ValueError):
+        s.put(b"ESCAPED", "../../evil.txt")
+    assert not escaped.exists()
+
+
+def test_put_returned_id_is_always_accepted_by_path(tmp_path):
+    """The positive invariant that put()'s own extension validation exists
+    to guarantee: whatever identifier put() hands back, path() must accept
+    it back. Nothing put() produces should ever be orphaned."""
+    s = FileStore(tmp_path, ttl_s=3600)
+    for suffix in (".stl", ".step", ".png", ".a1", ".12345"):
+        fid = s.put(b"data", suffix)
+        assert s.path(fid) is not None
+
+
+def test_identifier_pattern_rejects_trailing_newline():
+    """Python's `$` anchor matches end-of-string OR just before a trailing
+    newline, which is a latent exception in what is meant to be a maximally
+    strict allowlist. The pattern must use the strict end-of-string anchor
+    instead."""
+    candidate = ("a" * 32) + ".stl\n"
+    assert _SAFE.match(candidate) is None
