@@ -991,8 +991,10 @@ def build(spec: MultiViewSpec) -> cq.Workplane:
     env = spec.envelope
     try:
         solid = _prism("front", spec.views.front, env)
-        solid = solid.intersect(_prism("top", spec.views.top, env))
-        solid = solid.intersect(_prism("right", spec.views.right, env))
+        for face in ("top", "right"):
+            solid = solid.intersect(_prism(face, getattr(spec.views, face), env))
+            if not solid.solids().vals():  # an empty result would make CadQuery fall back to an earlier solid
+                raise BuildError(*EMPTY)
     except BuildError:
         raise
     except Exception as e:
