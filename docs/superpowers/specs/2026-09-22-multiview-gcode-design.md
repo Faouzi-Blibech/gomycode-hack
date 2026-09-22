@@ -61,7 +61,7 @@ The envelope `x_mm`, `y_mm`, `z_mm` must each have a trusted source before anyth
 - `measured`: a length measured on a photo of the real part with a reference object in the frame
 - `user_edited`: a value the user typed in the app
 
-If any axis has no trusted source, the path stops with `MvAbstain(stage="dimensions", reason="missing_x" | "missing_y" | "missing_z", remedy="Enter the width | height | depth in mm.", partial=<values recovered so far>)`. The app shows an input for exactly that axis and calls merge again. A model estimate never satisfies the gate.
+If any axis has no trusted source, the path stops with `MvAbstain(stage="dimensions", reason="missing_x" | "missing_y" | "missing_z", remedy="Enter the width | height | depth in mm.", partial=<values recovered so far>)`. The app shows an input for exactly that axis and calls merge again. When another view shows the missing axis next to a known one, `partial.suggested` carries a value scaled from the pixel proportions, so the input can be pre-filled; the user still has to confirm it, and it is then `user_edited`. A model estimate never satisfies the gate.
 
 Axis names shown to the user: X is "width", Y is "height", Z is "depth".
 
@@ -69,7 +69,7 @@ Axis names shown to the user: X is "width", Y is "height", Z is "depth".
 
 Every sketch or drawing image goes through OCR.
 
-- Backend order: the numbers owner's `s2c.ocr.read_annotations` if it is importable, otherwise the fallback reader below.
+- Backend: a reader function `crop -> (text, confidence)`. The numbers owner's reader plugs into this hook when `ocr.py` lands; until then the fallback reader below is used.
 - Fallback reader: text regions are the connected components left after removing the largest outline; each region is read by `microsoft/trocr-base-handwritten` (Hugging Face, runs on the RTX 3050 or on CPU). The result is parsed with the pattern `^(⌀|D|R)?\s*\d+(\.\d+)?$`; anything else is dropped with a log line. `⌀` or `D` means diameter, `R` means radius, no prefix means linear.
 - Linking, per image, relative to the outline bounding box: a linear value whose text sits below or above the outline links to that face's `a` axis; left or right links to its `b` axis; a diameter or radius value links to the nearest circular opening. On each axis, the largest linear value is the envelope length on that axis.
 - The face table in section 3 turns `a` and `b` into X, Y or Z. When two images give different values for the same axis, and they differ by more than 5 percent, the value with the higher OCR confidence wins and a warning names both.
@@ -115,6 +115,7 @@ Each snapped field path is listed in `snapped`, so the UI can show "snapped from
 
 - If a view's pixel aspect ratio differs from the ratio of its two trusted envelope lengths by more than 5 percent, the view gets the warning "photo is not square-on, retake it facing the part".
 - If a face and its opposite face are both given, their outlines after the mirror rule must reach IoU 0.9. Below that, a warning is added and the outline with the higher confidence is kept.
+- If a written value and a reference-object measurement of the same axis differ by more than 5 percent, the written value wins and a warning names both.
 
 ## 5. Contract
 
@@ -231,7 +232,7 @@ For each canonical face (front, top, right):
 2. `mirrored`: only the opposite face exists; apply the mirror rule.
 3. `inferred`: neither exists.
    - Take the observed image with the highest label confidence, remove its background with `rembg`, and run TripoSR (`stabilityai/TripoSR`, MIT licence) at marching-cubes resolution 256.
-   - Local first: fp16 on CUDA. On a CUDA out-of-memory error, no CUDA device, or 60 seconds without a result, call the Hugging Face Space named by `TRIPOSR_SPACE` (default `stabilityai/TripoSR`) through `gradio_client`, with a 90 second timeout.
+   - Local first: on CUDA, with the renderer chunk size reduced to fit 6 GB. On a CUDA out-of-memory error, no CUDA device, or 60 seconds without a result, call the Hugging Face Space named by `TRIPOSR_SPACE` (default `stabilityai/TripoSR`) through `gradio_client`, with a 90 second timeout.
    - Orientation: try the 24 axis-aligned rotations of the mesh. For each, render the silhouette along the axis of the observed face, and score its IoU against the observed outline. Keep the best. A best IoU below 0.6 means the mesh is unreliable; fall through to step 4 with the warning "predicted view unreliable".
    - Scale the rotated mesh on each axis so its bounding box equals the envelope, then translate it to the origin.
    - Render the missing face, take its largest contour, simplify it with Douglas-Peucker at 0.5 mm, and drop openings smaller than 3 mm across. The outline gets `source = inferred` and its provenance is `inferred`.
@@ -265,7 +266,7 @@ Exports: `part.step` and `part.stl` (tolerance 0.01, angular tolerance 0.1) in t
 
 - Slicer: PrusaSlicer CLI, found through `SLICER_PATH`, or `prusa-slicer-console` on the path.
 - Profile: `profiles/fdm_default.ini` in the repo, overridable with `SLICER_PROFILE`. Generic Marlin printer, 220 x 220 x 250 mm bed, 0.4 mm nozzle, PLA, 0.2 mm layers, 3 perimeters, 20 percent infill, supports on build plate only, 45 degree support threshold.
-- Orientation, chosen by us, not by the slicer: for each of the six axis-aligned "down" directions, sum the area of the planar faces whose outward normal points down and that lie on the minimum plane in that direction. Keep the direction with the largest area; on a tie, keep the lowest resulting height. The STL is rotated with trimesh and written as `part_print.stl`.
+- Orientation, chosen by us, not by the slicer: for each of the six axis-aligned "down" directions, sum the area of the planar faces whose outward normal points down and that lie on the minimum plane in that direction. Keep the direction with the largest area; on a tie, keep the lowest resulting height. The solid is rotated with CadQuery and written as `part_print.stl`.
 - Bed check: the oriented bounding box must fit the bed in the profile. Otherwise `MvAbstain(stage="slice", reason="too_big_for_bed", remedy="The part is larger than the printer bed. Scale it down or split it.")`.
 - Command: `prusa-slicer-console --export-gcode --load <profile> --center <bed centre> --output part.gcode part_print.stl`, with a 120 second timeout. The bed centre is read from `bed_shape` in the profile (110,110 for the default). A non-zero exit is `MvAbstain(stage="slice", reason="slicer_failed", remedy="The slicer could not process this part. Check the model in the viewer.")` with the last 20 lines of stderr logged.
 - No slicer installed: STL and STEP are still returned, with the warning "G-code unavailable: slicer not installed". This is not an abstention.
@@ -325,7 +326,7 @@ Five days remain before the event. The order makes sure a demo exists after step
 
 Main risk: TripoSR's `torchmcubes` dependency compiles native code and can fail on Windows. Mitigations: the Hugging Face Space fallback, and the `assumed` rectangle fallback. Neither stops the build.
 
-New dependencies, in an optional `ai` group so the base install stays light: `torch` (CUDA build), `transformers` (TrOCR), `rembg`, `trimesh`, `gradio_client`, and TripoSR from its GitHub repository. `trimesh` also goes in the base dependencies because `slice.py` needs it.
+New dependencies, in an optional `ai` group so the base install stays light: `torch` (CUDA build), `transformers` (TrOCR), `rembg`, `trimesh`, `gradio_client`, and TripoSR from its GitHub repository. `slice.py` needs only CadQuery, so the base install can slice without the `ai` group.
 
 ## 10. Team sign-off
 
