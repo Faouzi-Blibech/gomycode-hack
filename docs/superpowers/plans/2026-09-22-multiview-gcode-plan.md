@@ -1620,7 +1620,7 @@ git commit -m "Extract part outlines, openings and circles from sketches and pho
 - Test: `tests/test_mv_reference.py`
 
 **Interfaces:**
-- Consumes: `foreground`, `circularity`, `extract` (test only) from Task 5; `MvAbstain`.
+- Consumes: `foreground`, `extract` (test only) from Task 5; `MvAbstain`.
 - Produces: `REFERENCES` table; `RefScale(name, mm_per_px, bbox, image, confidence)`; `find_reference(image_bgr, name) -> RefScale | MvAbstain` (raises `ValueError` for an unknown name).
 
 - [ ] **Step 1: Write the failing tests**
@@ -1702,7 +1702,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from s2c.multiview.outline import circularity, foreground
+from s2c.multiview.outline import foreground
 from s2c.multiview.spec import MvAbstain
 
 REFERENCES = {
@@ -1737,16 +1737,30 @@ def _padded(x, y, w, h, pad=6):
     return x - pad, y - pad, w + 2 * pad, h + 2 * pad
 
 
+def _ellipse(contour) -> tuple[float, float, float]:
+    """Fitted ellipse axes (major, minor) and the worst relative distance of a contour point from it."""
+    (cx, cy), (d1, d2), angle = cv2.fitEllipse(contour)
+    t = np.deg2rad(angle)
+    pts = contour.reshape(-1, 2).astype(np.float64) - (cx, cy)
+    u = (pts[:, 0] * np.cos(t) + pts[:, 1] * np.sin(t)) / (d1 / 2)
+    v = (-pts[:, 0] * np.sin(t) + pts[:, 1] * np.cos(t)) / (d2 / 2)
+    return max(d1, d2), min(d1, d2), float(np.abs(np.hypot(u, v) - 1).max())
+
+
 def _coin(img: np.ndarray, name: str, diameter: float) -> RefScale | MvAbstain:
-    """The smallest round blob is the coin; the part is assumed larger than the coin."""
+    """The smallest blob that is an ellipse is the coin; the part is assumed larger than the coin.
+    Candidates are found by ellipse fit, not by circularity, so a tilted coin reaches the tilt gate."""
     contours, _ = cv2.findContours(foreground(img), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     min_area = 0.0005 * img.shape[0] * img.shape[1]
-    round_ = [c for c in contours if len(c) >= 5 and cv2.contourArea(c) > min_area and circularity(c) >= 0.85]
-    if not round_:
+    candidates = []
+    for c in contours:
+        if len(c) >= 20 and cv2.contourArea(c) > min_area:
+            major, minor, deviation = _ellipse(c)
+            if deviation <= 0.08:
+                candidates.append((cv2.contourArea(c), c, major, minor))
+    if not candidates:
         return MvAbstain(stage="dimensions", reason="coin_not_found", remedy=COIN_REMEDY)
-    coin = min(round_, key=cv2.contourArea)
-    _, (d1, d2), _ = cv2.fitEllipse(coin)
-    major, minor = max(d1, d2), min(d1, d2)
+    _, coin, major, minor = min(candidates, key=lambda e: e[0])
     eccentricity = float(np.sqrt(1 - (minor / major) ** 2))
     if eccentricity > MAX_ECCENTRICITY:
         return MvAbstain(stage="dimensions", reason="coin_tilted", remedy=COIN_REMEDY)
