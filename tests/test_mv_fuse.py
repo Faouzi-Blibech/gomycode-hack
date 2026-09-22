@@ -1,8 +1,15 @@
 import numpy as np
 import pytest
 
-from s2c.multiview.fuse import (Observation, assemble, canonical_outlines, features_from, fuse_envelope, snap_coord,
-                                snap_diameter)
+from s2c.multiview.fuse import (
+    Observation,
+    assemble,
+    canonical_outlines,
+    features_from,
+    fuse_envelope,
+    snap_coord,
+    snap_diameter,
+)
 from s2c.multiview.ocr import Linked, Reading
 from s2c.multiview.outline import PixelCircle, PixelOutline
 from s2c.multiview.spec import Envelope, MvAbstain, Outline

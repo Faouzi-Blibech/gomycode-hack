@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Callable, Literal
+from typing import Literal
 
 import cv2
 import numpy as np

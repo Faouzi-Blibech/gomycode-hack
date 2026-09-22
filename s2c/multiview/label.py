@@ -8,8 +8,9 @@ import logging
 import os
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 

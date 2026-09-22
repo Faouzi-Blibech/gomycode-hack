@@ -1,8 +1,16 @@
 import pytest
 from pydantic import ValidationError
 
-from s2c.multiview.spec import (CANONICAL_OF, FACES, Envelope, MultiViewSpec, face_size, numeric_field_paths,
-                                to_canonical, to_global)
+from s2c.multiview.spec import (
+    CANONICAL_OF,
+    FACES,
+    Envelope,
+    MultiViewSpec,
+    face_size,
+    numeric_field_paths,
+    to_canonical,
+    to_global,
+)
 from tests.mv_helpers import make_spec, outline, rect
 
 ENV = Envelope(x_mm=60.0, y_mm=40.0, z_mm=20.0)

@@ -144,7 +144,7 @@ def slice_solid(solid: cq.Workplane, out_dir: Path, profile_path: Path | None = 
     cmd = [str(slicer), "--export-gcode", "--load", str(profile.path), "--center", f"{cx:g},{cy:g}",
            "--output", str(gcode), str(stl)]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=SLICE_TIMEOUT_S)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=SLICE_TIMEOUT_S, check=False)
         ok = proc.returncode == 0 and gcode.exists()
         if not ok:
             log.warning("slicer failed (%s): %s", proc.returncode, "\n".join(proc.stderr.splitlines()[-20:]))

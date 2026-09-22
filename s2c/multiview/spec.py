@@ -2,7 +2,7 @@
 Owned by the geometry owner. Does not touch s2c/partspec/."""
 from __future__ import annotations
 
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -80,8 +80,8 @@ class Chamfer(_Strict):
     radius_mm: Mm
 
 
-FaceFeature = Annotated[Union[FaceHole, FaceSlot], Field(discriminator="type")]
-Finish = Annotated[Union[Fillet, Chamfer], Field(discriminator="type")]
+FaceFeature = Annotated[FaceHole | FaceSlot, Field(discriminator="type")]
+Finish = Annotated[Fillet | Chamfer, Field(discriminator="type")]
 
 
 class Views(_Strict):
@@ -109,7 +109,7 @@ class MultiViewSpec(_Strict):
     confidence: float = Field(ge=0, le=1)
 
     @model_validator(mode="after")
-    def _check(self) -> "MultiViewSpec":
+    def _check(self) -> MultiViewSpec:
         missing = [p for p in numeric_field_paths(self) if p not in self.provenance]
         if missing:
             raise ValueError(f"missing provenance for {missing}")

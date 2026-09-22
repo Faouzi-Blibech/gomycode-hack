@@ -13,7 +13,7 @@ def test_sketch_rectangle_outline():
     img = page()
     cv2.rectangle(img, (400, 300), (1000, 700), (0, 0, 0), 4)
     o = extract(img)
-    x, y, w, h = o.bbox
+    x, _, w, h = o.bbox
     assert abs(x - 400) <= 5 and abs(w - 600) <= 10 and abs(h - 400) <= 10
     assert o.circles == [] and o.inner == []
 

@@ -3,8 +3,15 @@ import math
 import pytest
 
 from s2c.multiview.build import build
-from s2c.multiview.slice import (choose_down, find_slicer, load_profile, orient_for_print, parse_duration,
-                                 parse_gcode_stats, slice_solid)
+from s2c.multiview.slice import (
+    choose_down,
+    find_slicer,
+    load_profile,
+    orient_for_print,
+    parse_duration,
+    parse_gcode_stats,
+    slice_solid,
+)
 from s2c.multiview.spec import MvAbstain
 from tests.mv_helpers import make_spec, outline
 
