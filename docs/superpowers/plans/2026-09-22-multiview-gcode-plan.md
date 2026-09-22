@@ -6,7 +6,7 @@
 
 **Architecture:** One package, `s2c/multiview/`, one file per stage. `spec.py` is the contract. Model calls (vision label, TrOCR, TripoSR) are injected callables, so every stage is testable with fakes. Geometry is deterministic CadQuery code; G-code comes from PrusaSlicer CLI with a profile stored in the repo.
 
-**Tech Stack:** Python 3.11, uv, pydantic 2, CadQuery 2.4+, OpenCV headless, NumPy, FastAPI, pytest. Optional `ai` extra: torch (CUDA 12.4), transformers (TrOCR), rembg, scikit-image, trimesh, gradio_client, TripoSR from GitHub.
+**Tech Stack:** Python 3.11, uv, pydantic 2, CadQuery 2.4+, OpenCV headless, NumPy, FastAPI, pytest. Optional `ai` extra: torch (PyPI; the CUDA build is a separate opt-in install), transformers (TrOCR), rembg, scikit-image, trimesh, gradio_client, TripoSR from GitHub.
 
 **Spec:** `docs/superpowers/specs/2026-09-22-multiview-gcode-design.md`
 
@@ -117,14 +117,6 @@ ai = [
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6", "httpx>=0.27"]
-
-[tool.uv.sources]
-torch = { index = "pytorch-cu124" }
-
-[[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
-explicit = true
 
 [build-system]
 requires = ["hatchling"]
@@ -3217,7 +3209,10 @@ def default_provider():
 $ErrorActionPreference = "Stop"
 if (-not (Test-Path vendor/TripoSR)) { git clone --depth 1 https://github.com/VAST-AI-Research/TripoSR vendor/TripoSR }
 uv sync --extra ai
-uv run python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
+# PyPI ships a CPU-only torch on Windows. TripoSR needs CUDA locally; without it, hf3d falls back to the
+# Hugging Face Space. The CUDA build is a 2.4 GB download, so install it separately and retry if it drops:
+#   uv pip install torch --index-url https://download.pytorch.org/whl/cu124
+uv run python -c "import torch; print('torch', torch.__version__, 'CUDA available:', torch.cuda.is_available())"
 ```
 
 - [ ] **Step 4: Run tests**
