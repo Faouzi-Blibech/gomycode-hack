@@ -47,6 +47,13 @@ def _result(res) -> dict:
     return {"spec": res.model_dump(mode="json")}
 
 
+def _forget_images(observed: Observed, res) -> None:
+    """Raw images are kept only until a spec exists; after that, merge needs only the silhouettes and the
+    cached mesh. This keeps the rule that images live for the request, plus silhouettes for one hour."""
+    if not isinstance(res, MvAbstain):
+        observed.images.clear()
+
+
 def _tag(items: list, i: int) -> str | None:
     value = items[i] if i < len(items) else None
     return None if value in (None, "", "auto") else value
@@ -63,7 +70,9 @@ def analyze(files: list[UploadFile] = File(...), faces: str = Form("[]"), kinds:
     if isinstance(observed, MvAbstain):
         return {"request_id": rid, "abstain": observed.model_dump()}
     _requests[rid] = (time.time(), observed)
-    return {"request_id": rid, **_result(pipe.fuse(observed)), "labels": [l.model_dump() for l in observed.labels]}
+    res = pipe.fuse(observed)
+    _forget_images(observed, res)
+    return {"request_id": rid, **_result(res), "labels": [l.model_dump() for l in observed.labels]}
 
 
 class MergeBody(BaseModel):
@@ -78,7 +87,9 @@ def merge(body: MergeBody, pipe: MvPipeline = Depends(get_pipeline)) -> dict:
     entry = _requests.get(body.request_id)
     if entry is None:
         raise HTTPException(404, "Unknown or expired request. Analyze the images again.")
-    return _result(pipe.fuse(entry[1], body.user_values, body.accepted, body.rejected))
+    res = pipe.fuse(entry[1], body.user_values, body.accepted, body.rejected)
+    _forget_images(entry[1], res)
+    return _result(res)
 
 
 class BuildBody(BaseModel):

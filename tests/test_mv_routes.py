@@ -20,7 +20,9 @@ def test_analyze_merge_build_and_download(tmp_path, monkeypatch):
     body = c.post("/mv/analyze", files=files, data={"faces": '["front", "top"]', "kinds": '["sketch", "sketch"]'}).json()
     assert body["abstain"]["reason"] == "missing_x"  # no OCR in this pipeline, so the gate asks
     values = {"envelope.x_mm": 60, "envelope.y_mm": 40, "envelope.z_mm": 10}
+    assert len(routes._requests[body["request_id"]][1].images) == 2  # still needed: no spec yet
     spec = c.post("/mv/merge", json={"request_id": body["request_id"], "user_values": values}).json()["spec"]
+    assert routes._requests[body["request_id"]][1].images == []  # dropped once the spec exists
     out = c.post("/mv/build", json={"spec": spec, "request_id": body["request_id"]}).json()
     assert out["iou"]["front"] > 0.85
     assert c.get(out["stl_url"]).status_code == 200

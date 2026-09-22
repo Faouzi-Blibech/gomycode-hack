@@ -123,9 +123,10 @@ class MvPipeline:
         warnings = observed.warnings + warnings + more
         best = max(range(len(observed.observations)), key=lambda i: observed.observations[i].confidence)
         target = observed.observations[best]
+        image = observed.images[best] if best < len(observed.images) else None  # None once routes dropped them
         full, more, observed.mesh = complete({f: ol for f, (ol, _) in outlines.items()}, env, target.face,
-                                             observed.masks[target.face], observed.images[best],
-                                             self.mesh_provider, observed.mesh, tuple(rejected))
+                                             observed.masks[target.face], image, self.mesh_provider,
+                                             observed.mesh, tuple(rejected))
         warnings += more
         with_prov = {f: (ol, outlines[f][1] if f in outlines else ("inferred" if ol.source == "inferred" else "default"))
                      for f, ol in full.items()}
