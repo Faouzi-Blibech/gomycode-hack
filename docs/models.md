@@ -13,3 +13,12 @@ Rules:
 - Never hard-code a provider or model in source.
 - Every call is logged to `logs/vlm.jsonl` with provider, model, latency in ms, prompt and completion tokens.
 - On event day, run `uv run pytest tests/test_golden.py` on the NVIDIA model before switching the demo to it. If the pass rate drops below the fallback provider, keep the fallback and disclose both.
+
+## Multi-view path
+
+| Model | Source | Use | Runs |
+| --- | --- | --- | --- |
+| TripoSR | `stabilityai/TripoSR` (MIT) | Predicts a mesh from one image; only its silhouettes are used, for faces nobody photographed | Local CUDA, else the Hugging Face Space in `TRIPOSR_SPACE` |
+| TrOCR base handwritten | `microsoft/trocr-base-handwritten` | Reads handwritten dimension values until the numbers owner's reader lands | Local, CUDA or CPU |
+| rembg (u2net) | `rembg` | Removes the background before TripoSR | Local CPU |
+| PrusaSlicer | prusa3d.com (AGPL) | Slices the STL to G-code with `profiles/fdm_default.ini` | Local CLI |

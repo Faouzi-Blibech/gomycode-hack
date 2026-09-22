@@ -3892,7 +3892,7 @@ Give up to six face images; missing faces are mirrored, predicted with TripoSR, 
     uv run uvicorn s2c.multiview.app:app --port 8001                                        # /mv API
     powershell -File scripts/setup_triposr.ps1                                              # optional: TrOCR and TripoSR on the GPU
 
-G-code needs PrusaSlicer (`winget install --id Prusa3D.PrusaSlicer -e`); without it you still get STL and STEP.
+G-code needs PrusaSlicer: `winget install --id Prusa3D.PrusaSlicer -e` (needs admin), or unzip the portable zip from the PrusaSlicer GitHub release into `vendor/`. Without it you still get STL and STEP.
 ```
 
 Append to `docs/models.md`:

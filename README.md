@@ -64,6 +64,17 @@ Open the web app on your phone using the LAN URL Vite prints. The API and the ap
 
 The vision model is chosen by three environment variables: `VLM_BASE_URL`, `VLM_MODEL`, `VLM_API_KEY`. Any OpenAI-compatible endpoint works. The table in `docs/models.md` lists NVIDIA Build, Gemini, Groq and Ollama presets.
 
+## Multi-view path (pending team sign-off)
+
+Give up to six face images; missing faces are mirrored, predicted with TripoSR, or assumed. The part is the intersection of the three extruded outlines, sliced to G-code for an FDM printer. Design: `docs/superpowers/specs/2026-09-22-multiview-gcode-design.md`.
+
+    uv run python scripts/mv_build.py examples/mv/l_bracket.json --out tmp/mv_demo          # spec -> STEP, STL, G-code
+    uv run python scripts/mv.py --image front.jpg@front@sketch --image top.jpg@top@sketch   # images -> the same
+    uv run uvicorn s2c.multiview.app:app --port 8001                                        # /mv API
+    powershell -File scripts/setup_triposr.ps1                                              # optional: TrOCR and TripoSR on the GPU
+
+G-code needs PrusaSlicer: `winget install --id Prusa3D.PrusaSlicer -e` (needs admin), or unzip the portable zip from the PrusaSlicer GitHub release into `vendor/`. Without it you still get STL and STEP.
+
 ## Repository layout
 
 ```text
