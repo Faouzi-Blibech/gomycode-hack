@@ -1151,6 +1151,7 @@ log = logging.getLogger(__name__)
 
 DEFAULT_PROFILE = Path(__file__).resolve().parents[2] / "profiles" / "fdm_default.ini"
 WINDOWS_SLICER = Path("C:/Program Files/Prusa3D/PrusaSlicer/prusa-slicer-console.exe")
+VENDOR_DIR = Path(__file__).resolve().parents[2] / "vendor"  # portable PrusaSlicer zip unpacked here, no admin needed
 SLICE_TIMEOUT_S = 120
 # down direction -> (unit vector, rotation (axis, degrees) that turns it into -Z)
 DOWN_DIRECTIONS = {
@@ -1236,8 +1237,9 @@ def fits_bed(solid: cq.Workplane, profile: Profile) -> bool:
 
 
 def find_slicer() -> Path | None:
+    vendored = sorted(VENDOR_DIR.glob("PrusaSlicer*/prusa-slicer-console.exe"))
     for cand in (os.environ.get("SLICER_PATH"), shutil.which("prusa-slicer-console"), shutil.which("prusa-slicer"),
-                 str(WINDOWS_SLICER)):
+                 str(WINDOWS_SLICER), *map(str, vendored)):
         if cand and Path(cand).is_file():
             return Path(cand)
     return None
@@ -1391,7 +1393,7 @@ if __name__ == "__main__":
 Run: `uv run pytest tests/test_mv_slice.py tests/test_mv_examples.py -v`
 Expected: all PASS; `test_real_slice_produces_gcode` is skipped until PrusaSlicer is installed.
 
-Install PrusaSlicer (Windows): `winget install --id Prusa3D.PrusaSlicer -e`. Then run the slicer test again: PASS.
+Install PrusaSlicer (Windows): `winget install --id Prusa3D.PrusaSlicer -e` needs administrator rights. Without them, unzip the portable `PrusaSlicer-<version>.zip` from the GitHub release into `vendor/`; `find_slicer()` looks there. Then run the slicer test again: PASS.
 
 Run: `uv run python scripts/mv_build.py examples/mv/l_bracket.json --out tmp/mv_demo`
 Expected: paths for STEP, STL, print STL and G-code, then print time and filament. Open `tmp/mv_demo/part.step` in FreeCAD: a 50 x 30 x 20 L-bracket with one 5.5 mm hole on each leg.

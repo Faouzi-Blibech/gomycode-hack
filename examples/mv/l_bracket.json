@@ -1,0 +1,21 @@
+{
+  "version": "mv1",
+  "envelope": {"x_mm": 50.0, "y_mm": 30.0, "z_mm": 20.0},
+  "views": {
+    "front": {"outer": [[0, 0], [50, 0], [50, 30], [47, 30], [47, 3], [0, 3]], "inner": [], "source": "observed", "confidence": 1.0},
+    "top": {"outer": [[0, 0], [50, 0], [50, 20], [0, 20]], "inner": [], "source": "observed", "confidence": 1.0},
+    "right": {"outer": [[0, 0], [20, 0], [20, 30], [0, 30]], "inner": [], "source": "observed", "confidence": 1.0}
+  },
+  "features": [
+    {"type": "hole", "face": "top", "a_mm": 20.0, "b_mm": 10.0, "diameter_mm": 5.5},
+    {"type": "hole", "face": "right", "a_mm": 10.0, "b_mm": 18.0, "diameter_mm": 5.5}
+  ],
+  "finishes": [],
+  "provenance": {
+    "envelope.x_mm": "user_written", "envelope.y_mm": "user_written", "envelope.z_mm": "user_written",
+    "views.front.outer": "user_written", "views.top.outer": "user_written", "views.right.outer": "user_written",
+    "features[0].a_mm": "user_written", "features[0].b_mm": "user_written", "features[0].diameter_mm": "user_written",
+    "features[1].a_mm": "user_written", "features[1].b_mm": "user_written", "features[1].diameter_mm": "user_written"
+  },
+  "confidence": 1.0
+}
