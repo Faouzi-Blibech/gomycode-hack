@@ -16,9 +16,15 @@ Rules:
 
 ## Multi-view path
 
-| Model | Source | Use | Runs |
-| --- | --- | --- | --- |
-| TripoSR | `stabilityai/TripoSR` (MIT) | Predicts a mesh from one image; only its silhouettes are used, for faces nobody photographed | Local CUDA, else the Hugging Face Space in `TRIPOSR_SPACE` |
-| TrOCR base handwritten | `microsoft/trocr-base-handwritten` | Reads handwritten dimension values until the numbers owner's reader lands | Local, CUDA or CPU |
-| rembg (u2net) | `rembg` | Removes the background before TripoSR | Local CPU |
-| PrusaSlicer | prusa3d.com (AGPL) | Slices the STL to G-code with `profiles/fdm_default.ini` | Local CLI |
+| Model | Source | Use | Runs | Checked |
+| --- | --- | --- | --- | --- |
+| Qwen-VL | Alibaba Cloud Model Studio (DashScope), OpenAI-compatible | Face labels; transcribes handwritten values, one call per image | `VLM_BASE_URL`, `VLM_MODEL` | pending |
+| Qwen-Image-2.1 | `Qwen/Qwen-Image-2.1` (Qwen Research License) | Draws faces nobody photographed; redraws sketches whose outline is open. Only read back as outlines | `QWEN_IMAGE_SPACE`, or DashScope with `QWEN_IMAGE_BACKEND=dashscope` | pending |
+| Solaria 1.0 (Marigold V2 depth) | `CronosSa/Solaria1.0` Space, commit `f531e56` on 2026-09-23 | Depth map of a photo: through or blind holes, blind depth as a ratio | `SOLARIA_SPACE` (ZeroGPU, `HF_TOKEN` for quota) | pending |
+| TripoSR | `stabilityai/TripoSR` (MIT) | Fallback when Qwen-Image is unavailable or rejected; only its silhouettes are used | Local CUDA, else `TRIPOSR_SPACE` | |
+| Hunyuan3D-2.1 (reference, not wired in) | `tencent/Hunyuan3D-2.1` Space (Tencent Hunyuan Community License; check territory terms) | Candidate replacement for TripoSR: `/shape_generation` takes one image or front, back, left and right views and returns a mesh; only its silhouettes would be used | ZeroGPU Space | |
+| TrOCR base handwritten | `microsoft/trocr-base-handwritten` | Fallback reader when Qwen-VL is unavailable | Local, CUDA or CPU | |
+| rembg (u2net) | `rembg` | Removes the background before TripoSR | Local CPU | |
+| PrusaSlicer | prusa3d.com (AGPL) | Slices the STL to G-code with `profiles/fdm_default.ini` | Local CLI | |
+
+Before the demo: `NETWORK_TESTS=1 uv run pytest tests/test_mv_network.py -v`, then fill in the Checked column with the date.

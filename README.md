@@ -66,12 +66,15 @@ The vision model is chosen by three environment variables: `VLM_BASE_URL`, `VLM_
 
 ## Multi-view path (pending team sign-off)
 
-Give up to six face images; missing faces are mirrored, predicted with TripoSR, or assumed. The part is the intersection of the three extruded outlines, sliced to G-code for an FDM printer. Design: `docs/superpowers/specs/2026-09-22-multiview-gcode-design.md`.
+Give one or more images per face, several of the same face if you have them: they are aligned and voted into one cleaner outline. Qwen-VL reads the numbers you wrote. Faces you did not give are drawn by Qwen-Image and kept only if they agree with the faces you did give; otherwise TripoSR, otherwise a rectangle. Solaria's depth map tells through holes from blind ones. The part is the intersection of the three extruded outlines, sliced to G-code. Designs: `docs/superpowers/specs/2026-09-22-multiview-gcode-design.md` and `docs/superpowers/specs/2026-09-23-qwen-solaria-design.md`.
 
+    uv run python app_mv_gradio.py                                                           # lab app on :7860
     uv run python scripts/mv_build.py examples/mv/l_bracket.json --out tmp/mv_demo          # spec -> STEP, STL, G-code
     uv run python scripts/mv.py --image front.jpg@front@sketch --image top.jpg@top@sketch   # images -> the same
     uv run uvicorn s2c.multiview.app:app --port 8001                                        # /mv API
-    powershell -File scripts/setup_triposr.ps1                                              # optional: TrOCR and TripoSR on the GPU
+    NETWORK_TESTS=1 uv run pytest tests/test_mv_network.py -v                               # live check of the hosted models
+
+Settings are in `.env.example`: Qwen-VL and Qwen-Image on DashScope or Hugging Face, Solaria on Hugging Face. Photos of real parts: shoot top-down with the part lying flat.
 
 G-code needs PrusaSlicer: `winget install --id Prusa3D.PrusaSlicer -e` (needs admin), or unzip the portable zip from the PrusaSlicer GitHub release into `vendor/`. Without it you still get STL and STEP.
 
