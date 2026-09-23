@@ -12,7 +12,12 @@ from s2c.multiview.ocr import Linked, Reading
 from s2c.multiview.outline import PixelOutline, to_face_mm
 from s2c.multiview.raster import iou, outline_mask
 
-CLEARANCE_MM = (2.7, 3.4, 4.5, 5.5, 6.6, 9.0)
+CLEARANCE_CLASSES = {  # ISO 273 clearance holes for M2, M2.5, M3, M4, M5, M6, M8, M10
+    "fine": (2.2, 2.7, 3.2, 4.3, 5.3, 6.4, 8.4, 10.5),
+    "medium": (2.4, 2.9, 3.4, 4.5, 5.5, 6.6, 9.0, 11.0),
+    "coarse": (2.6, 3.1, 3.6, 4.8, 5.8, 7.0, 10.0, 12.0),
+}
+CLEARANCE_MM = CLEARANCE_CLASSES["medium"]
 THICKNESS_MM = (1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0)
 SNAPPABLE = frozenset({"scaled", "inferred", "estimated"})
 DISAGREE = 0.05
@@ -242,8 +247,8 @@ def _grid(v: float) -> float:
     return round(v * 2) / 2
 
 
-def snap_diameter(d: float) -> float:
-    best = min(CLEARANCE_MM, key=lambda c: abs(c - d))
+def snap_diameter(d: float, clearance: str = "medium") -> float:
+    best = min(CLEARANCE_CLASSES[clearance], key=lambda c: abs(c - d))
     return best if abs(best - d) <= 0.4 else _grid(d)
 
 
@@ -261,7 +266,7 @@ def snap_coord(v: float, length: float) -> float:
     return min(max(_grid(v), 0.0), float(length))
 
 
-def snap(data: dict) -> None:
+def snap(data: dict, clearance: str = "medium") -> None:
     """Snap scaled, inferred and estimated values of a spec dict in place (spec 4.5)."""
     prov, snapped = data["provenance"], data.setdefault("snapped", [])
     for k, f in enumerate(data["features"]):
@@ -269,7 +274,7 @@ def snap(data: dict) -> None:
             path = f"features[{k}].{name}"
             if f.get(name) is None or prov.get(path) not in SNAPPABLE:
                 continue
-            new = snap_diameter(f[name]) if name == "diameter_mm" else _grid(f[name])
+            new = snap_diameter(f[name], clearance) if name == "diameter_mm" else _grid(f[name])
             if new > 0 and abs(new - f[name]) > 1e-9:
                 f[name] = new
                 snapped.append(path)
@@ -287,7 +292,8 @@ def snap(data: dict) -> None:
 
 
 def assemble(env: S.Envelope, env_prov: dict, outlines: dict, feats: list[dict], feat_prov: dict,
-             warnings: list[str], user_values: dict | None = None, accepted=()) -> S.MultiViewSpec:
+             warnings: list[str], user_values: dict | None = None, accepted=(), snap_values: bool = True,
+             clearance: str = "medium") -> S.MultiViewSpec:
     """outlines: canonical face -> (Outline, provenance). Applies the user's edits, then snapping."""
     data = {
         "envelope": env.model_dump(),
@@ -306,5 +312,6 @@ def assemble(env: S.Envelope, env_prov: dict, outlines: dict, feats: list[dict],
         if m and int(m.group(1)) < len(data["features"]):
             data["features"][int(m.group(1))][m.group(2)] = float(value)
             data["provenance"][path] = "user_edited"
-    snap(data)
+    if snap_values:
+        snap(data, clearance)
     return S.MultiViewSpec.model_validate(data)

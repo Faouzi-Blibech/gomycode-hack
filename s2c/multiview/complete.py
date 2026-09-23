@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 import numpy as np
 
-from s2c.multiview.qwen_faces import qwen_face
+from s2c.multiview.qwen_faces import SEED, TRIES, qwen_face
 from s2c.multiview.qwen_image import ImageGen
 from s2c.multiview.raster import Mesh, face_mask, iou, mask_to_mm, normalize_mask
 from s2c.multiview.spec import CANONICAL_FACES, Envelope, Outline, face_size
@@ -82,7 +82,8 @@ def assumed_outline(face: str, env: Envelope) -> Outline:
 def complete(outlines: dict[str, Outline], env: Envelope, target_face: str, target_mask: np.ndarray | None,
              image: np.ndarray | None, provider: MeshProvider | None, mesh: Mesh | None = None, rejected=(),
              gen: ImageGen | None = None, refs=(), qwen_cache: dict | None = None,
-             filled_by: dict | None = None) -> tuple[dict[str, Outline], list[str], Mesh | None]:
+             filled_by: dict | None = None, seed: int = SEED, attempts: int = TRIES
+             ) -> tuple[dict[str, Outline], list[str], Mesh | None]:
     """All three canonical outlines, the warnings, and the mesh so the caller can cache it.
     filled_by, when given, receives who filled each face: observed, mirrored, qwen-image, triposr or assumed."""
     result, warnings = dict(outlines), []
@@ -95,7 +96,7 @@ def complete(outlines: dict[str, Outline], env: Envelope, target_face: str, targ
     for face in missing:
         if face in rejected:
             continue
-        drawn = qwen_face(result, env, face, observed, list(refs), gen, qwen_cache)
+        drawn = qwen_face(result, env, face, observed, list(refs), gen, qwen_cache, seed=seed, attempts=attempts)
         if drawn is not None:
             result[face], filled_by[face] = drawn, "qwen-image"
         elif gen is not None or any(key[0] == face for key in qwen_cache):

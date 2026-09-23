@@ -2,6 +2,7 @@
 request and caches the mesh; build() never calls a model. Spec sections 6 and 7."""
 from __future__ import annotations
 
+import copy
 import logging
 import os
 from dataclasses import dataclass, field
@@ -21,11 +22,12 @@ from s2c.multiview.label import Chat, MvLabel, env_chat, hint_label, label_image
 from s2c.multiview.merge_views import merge_same_face
 from s2c.multiview.ocr import BatchReader, Reader, link, read_values
 from s2c.multiview.outline import PixelOutline, extract, resize_long_side
-from s2c.multiview.qwen_faces import RESCUE_PENALTY, rescue_sketch
+from s2c.multiview.qwen_faces import RESCUE_PENALTY, SEED, TRIES, rescue_sketch
 from s2c.multiview.qwen_image import MAX_REFS, ImageGen, default_gen
 from s2c.multiview.qwen_reader import qwen_batch_reader
 from s2c.multiview.raster import Mesh, face_mask, iou, normalize_mask, polygon_mask, solid_mesh
 from s2c.multiview.reference import find_reference
+from s2c.multiview.settings import AiSettings, GeometrySettings
 from s2c.multiview.slice import slice_solid
 
 log = logging.getLogger(__name__)
@@ -83,6 +85,21 @@ class MvPipeline:
         self.batch_reader = batch_reader
         self.image_gen = image_gen
         self.depth = depth
+        self.seed, self.attempts = SEED, TRIES
+        self.draw_faces = self.rescue_enabled = True
+
+    def configured(self, ai: AiSettings) -> MvPipeline:
+        """A copy for one request with the user's AI switches, seed and attempts; the shared pipeline never changes."""
+        pipe = copy.copy(self)
+        if not ai.use_reader:
+            pipe.batch_reader = None
+        if not ai.use_triposr:
+            pipe.mesh_provider = None
+        if not ai.use_solaria:
+            pipe.depth = None
+        pipe.draw_faces, pipe.rescue_enabled = ai.use_qwen_image, ai.use_rescue
+        pipe.seed, pipe.attempts = ai.seed, ai.attempts
+        return pipe
 
     def _label(self, item: ImageInput) -> MvLabel | S.MvAbstain:
         if self.chat is not None:
@@ -136,8 +153,8 @@ class MvPipeline:
         """The outline, and whether Qwen-Image had to redraw the sketch (spec 2026-09-23 section 8)."""
         outline = extract(bgr, mask_out)
         if (isinstance(outline, S.MvAbstain) and outline.reason == "no_outline" and kind != "photo"
-                and self.image_gen is not None):
-            fixed = rescue_sketch(bgr, self.image_gen)
+                and self.rescue_enabled and self.image_gen is not None):
+            fixed = rescue_sketch(bgr, self.image_gen, self.seed)
             if fixed is not None:
                 return fixed, True
         return outline, False
@@ -169,8 +186,9 @@ class MvPipeline:
         observed.masks = {o.face: input_mask(o.outline) for o in merged}
         return observed
 
-    def fuse(self, observed: Observed, user_values: dict | None = None, accepted=(),
-             rejected=()) -> S.MultiViewSpec | S.MvAbstain:
+    def fuse(self, observed: Observed, user_values: dict | None = None, accepted=(), rejected=(),
+             geometry: GeometrySettings | None = None) -> S.MultiViewSpec | S.MvAbstain:
+        geometry = geometry or GeometrySettings()
         env_result = fuse_envelope(observed.observations, user_values)
         if isinstance(env_result, S.MvAbstain):
             return env_result
@@ -184,14 +202,17 @@ class MvPipeline:
         refs = [(o.face, img) for o, img in pairs][:MAX_REFS]
         full, more, observed.mesh = complete({f: ol for f, (ol, _) in outlines.items()}, env, target.face,
                                              observed.masks[target.face], image, self.mesh_provider,
-                                             observed.mesh, tuple(rejected), gen=self.image_gen, refs=refs,
-                                             qwen_cache=observed.qwen_cache, filled_by=observed.filled_by)
+                                             observed.mesh, tuple(rejected),
+                                             gen=self.image_gen if self.draw_faces else None, refs=refs,
+                                             qwen_cache=observed.qwen_cache, filled_by=observed.filled_by,
+                                             seed=self.seed, attempts=self.attempts)
         warnings += more
         with_prov = {f: (ol, outlines[f][1] if f in outlines else ("inferred" if ol.source == "inferred" else "default"))
                      for f, ol in full.items()}
         feats, feat_prov = features_from(observed.observations, env)
         try:
-            return assemble(env, env_prov, with_prov, feats, feat_prov, warnings, user_values, accepted)
+            return assemble(env, env_prov, with_prov, feats, feat_prov, warnings, user_values, accepted,
+                            snap_values=geometry.snap, clearance=geometry.clearance)
         except ValidationError as e:
             log.warning("spec rejected: %s", e)
             return S.MvAbstain(stage="dimensions", reason="invalid_value",

@@ -106,12 +106,12 @@ def _drawn(gen: ImageGen | None, refs, face: str, cache: dict, seed: int) -> np.
 
 
 def qwen_face(outlines: dict[str, Outline], env: Envelope, face: str, observed: list[str], refs,
-              gen: ImageGen | None, cache: dict) -> Outline | None:
-    """The first drawing of `face` that passes the voxel check, trying seeds SEED and SEED + 1."""
-    for attempt in range(TRIES):
-        img = _drawn(gen, refs, face, cache, SEED + attempt)
+              gen: ImageGen | None, cache: dict, seed: int = SEED, attempts: int = TRIES) -> Outline | None:
+    """The first drawing of `face` that passes the voxel check, trying seeds seed .. seed + attempts - 1."""
+    for attempt in range(attempts):
+        img = _drawn(gen, refs, face, cache, seed + attempt)
         if img is None and cache.get(FAILED):
-            return None  # the call failed: a second seed would only wait again
+            return None  # the call failed: another seed would only wait again
         candidate = None if img is None else outline_from_image(img, face, env)
         if candidate is not None and consistent({**outlines, face: candidate}, env, observed):
             return candidate
