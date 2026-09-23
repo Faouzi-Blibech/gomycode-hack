@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import logging
 
+import cv2
 import numpy as np
 
-from s2c.multiview.outline import extract, resize_long_side, to_face_mm
+from s2c.multiview.outline import PixelOutline, extract, foreground, resize_long_side, to_face_mm
 from s2c.multiview.qwen_image import ImageGen, ImageGenError
-from s2c.multiview.raster import polygon_mask
+from s2c.multiview.raster import iou, polygon_mask
 from s2c.multiview.spec import CANONICAL_FACES, Envelope, MvAbstain, Outline, face_size
 
 log = logging.getLogger(__name__)
@@ -111,3 +112,45 @@ def qwen_face(outlines: dict[str, Outline], env: Envelope, face: str, observed: 
         if candidate is not None and consistent({**outlines, face: candidate}, env, observed):
             return candidate
     return None
+
+
+RESCUE_PROMPT = ("Redraw this hand sketch of a mechanical part face as a clean solid black silhouette on a pure "
+                 "white background. Keep the proportions and position exactly. Remove all text, numbers, arrows "
+                 "and dimension lines. Holes are white.")
+RESCUE_IOU = 0.85
+RESCUE_ASPECT = 0.05
+RESCUE_PENALTY = 0.8
+BRIDGE_FRACTION = 0.03  # of the long side: enough to close a gap in a pen line
+
+
+def raw_region(image_bgr: np.ndarray) -> np.ndarray:
+    """The pen strokes with small gaps bridged, largest region filled: what the sketch outline encloses."""
+    ink = foreground(image_bgr)
+    k = max(3, int(BRIDGE_FRACTION * max(ink.shape)) | 1)
+    closed = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    region = np.zeros_like(ink)
+    if contours:
+        cv2.drawContours(region, [max(contours, key=cv2.contourArea)], -1, 255, -1)
+    return region
+
+
+def rescue_sketch(image_bgr: np.ndarray, gen: ImageGen, seed: int = SEED) -> PixelOutline | None:
+    """Qwen-Image redraws a sketch whose outline is not closed. Kept only if it matches the raw strokes."""
+    h, w = image_bgr.shape[:2]
+    try:
+        drawn = gen([image_bgr], RESCUE_PROMPT, seed, "mv_rescue")
+    except ImageGenError as e:
+        log.warning("sketch rescue failed: %s", e)
+        return None
+    outline = extract(cv2.resize(drawn, (w, h), interpolation=cv2.INTER_AREA))
+    if isinstance(outline, MvAbstain):
+        return None
+    raw = raw_region(image_bgr)
+    if iou(polygon_mask(outline.outer, outline.inner, (h, w)), raw) < RESCUE_IOU:
+        return None
+    _, _, rw, rh = cv2.boundingRect(raw)
+    _, _, cw, ch = outline.bbox
+    if rh == 0 or ch == 0 or abs((cw / ch) / (rw / rh) - 1) > RESCUE_ASPECT:
+        return None
+    return outline

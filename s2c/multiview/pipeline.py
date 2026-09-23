@@ -19,6 +19,7 @@ from s2c.multiview.label import Chat, MvLabel, env_chat, hint_label, label_image
 from s2c.multiview.merge_views import merge_same_face
 from s2c.multiview.ocr import BatchReader, Reader, link, read_values
 from s2c.multiview.outline import PixelOutline, extract, resize_long_side
+from s2c.multiview.qwen_faces import RESCUE_PENALTY, rescue_sketch
 from s2c.multiview.qwen_image import MAX_REFS, ImageGen, default_gen
 from s2c.multiview.qwen_reader import qwen_batch_reader
 from s2c.multiview.raster import Mesh, face_mask, iou, normalize_mask, polygon_mask, solid_mesh
@@ -107,19 +108,31 @@ class MvPipeline:
                     return ref
                 bgr, mm_per_px = ref.image, ref.mm_per_px
                 mask_out = (ref.bbox,) if ref.bbox else ()
-            outline = extract(bgr, mask_out)
+            outline, rescued = self._outline(bgr, mask_out, label.input_kind)
             if isinstance(outline, S.MvAbstain):
                 return outline
             values = []
             if reads and label.input_kind != "photo":
                 values = link(read_values(bgr, outline, self.reader, self.batch_reader), outline)
             obs = Observation(face=label.face, kind=label.input_kind, outline=outline, values=values,
-                              mm_per_px=mm_per_px, confidence=label.confidence)
+                              mm_per_px=mm_per_px, confidence=label.confidence * (RESCUE_PENALTY if rescued else 1.0))
             attach_label(obs, label)
+            if rescued:
+                observed.warnings.append(f"{label.face}: sketch cleaned by Qwen-Image, check it")
             observed.observations.append(obs)
             observed.images.append(bgr)
             observed.labels.append(label)
         return self._merge(observed)
+
+    def _outline(self, bgr: np.ndarray, mask_out, kind: str) -> tuple[PixelOutline | S.MvAbstain, bool]:
+        """The outline, and whether Qwen-Image had to redraw the sketch (spec 2026-09-23 section 8)."""
+        outline = extract(bgr, mask_out)
+        if (isinstance(outline, S.MvAbstain) and outline.reason == "no_outline" and kind != "photo"
+                and self.image_gen is not None):
+            fixed = rescue_sketch(bgr, self.image_gen)
+            if fixed is not None:
+                return fixed, True
+        return outline, False
 
     @staticmethod
     def _merge(observed: Observed) -> Observed:
