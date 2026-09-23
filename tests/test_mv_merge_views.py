@@ -104,3 +104,14 @@ def test_a_solaria_result_wins_over_the_labels():
     (merged,), _, _ = merge_same_face(observations, imgs)
     upper = min(range(2), key=lambda k: merged.outline.circles[k].cy)
     assert merged.blind[upper] and merged.depth_ratio[upper] == 0.4 and upper in merged.depth_from_image
+
+
+@pytest.mark.parametrize("angles", [(0, 180), (0, 0, 180, 180)], ids=["two photos", "four photos"])
+def test_a_half_turned_photo_is_turned_back_before_voting(angles):
+    imgs = [photo(angle=a, seed=k) for k, a in enumerate(angles)]
+    observations = [obs(img, 0.95 if k == 0 else 0.9) for k, img in enumerate(imgs)]
+    (merged,), _, _ = merge_same_face(observations, imgs)
+    want = [(PAD + cx * SX, PAD + cy * SY) for cx, cy in HOLES]
+    got = sorted((c.cx, c.cy) for c in merged.outline.circles)
+    assert len(got) == 2
+    assert all(np.hypot(g[0] - w[0], g[1] - w[1]) < 0.01 * np.hypot(512, 341) for g, w in zip(got, sorted(want)))

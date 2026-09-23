@@ -79,6 +79,29 @@ def _vote(masks: list[np.ndarray]) -> np.ndarray:
     return np.where(stack.sum(axis=0) * 2 >= len(masks), 255, 0).astype(np.uint8)
 
 
+def _half_turn(size: tuple[int, int]) -> np.ndarray:
+    """3 x 3 turn by 180 degrees about the centre of a grid of `size` (width, height)."""
+    w, h = size
+    return np.array([[-1.0, 0.0, w - 1.0], [0.0, -1.0, h - 1.0], [0.0, 0.0, 1.0]])
+
+
+def _fit(o: Observation, solid: np.ndarray, to_grid: np.ndarray, ref_grid: np.ndarray, ref_circles: np.ndarray,
+         size: tuple[int, int], diag: float) -> np.ndarray:
+    """Image -> reference grid, trying the photo as taken and turned upside down. Symmetric outlines look the same
+    both ways, so the score adds the share of this photo's holes that land on a reference hole; ties keep as taken."""
+    best, best_score = to_grid, -1.0
+    for turn in (np.eye(3), _half_turn(size)):
+        start = turn @ to_grid
+        t = _align(ref_grid, _warp(solid, start, size)) @ start
+        centres = _apply(t, [[c.cx, c.cy] for c in o.outline.circles])
+        hits = sum(1 for p in centres if len(ref_circles) and
+                   np.min(np.hypot(*(ref_circles - p).T)) < CIRCLE_TOL * diag)
+        score = iou(_warp(solid, t, size), ref_grid) + (hits / len(centres) if len(centres) else 0.0)
+        if score > best_score + 1e-6:
+            best, best_score = t, score
+    return best
+
+
 def _merge_circles(group, transforms, diag: float) -> tuple[list[PixelCircle], dict[tuple[int, int], int]]:
     """Clusters of circle centres; a cluster seen on at least half of the photos becomes one median circle."""
     clusters: list[list[tuple[int, int, float, float, float]]] = []
@@ -182,8 +205,11 @@ def _merge_group(face: str, group: list[Observation], images: list[np.ndarray]):
     ref = max(range(len(group)), key=lambda k: group[k].confidence)
     to_grid = [_to_grid(o, gw, gh) for o in group]
     solids = [_solid_mask(o) for o in group]
-    grids = [_warp(s, g, size) for s, g in zip(solids, to_grid)]
-    transforms = [g if k == ref else _align(grids[ref], grids[k]) @ g for k, g in enumerate(to_grid)]
+    ref_grid = _warp(solids[ref], to_grid[ref], size)
+    ref_circles = _apply(to_grid[ref], [[c.cx, c.cy] for c in group[ref].outline.circles])
+    diag = float(np.hypot(gw, gh))
+    transforms = [g if k == ref else _fit(group[k], solids[k], g, ref_grid, ref_circles, size, diag)
+                  for k, g in enumerate(to_grid)]
     masks = [_warp(s, t, size) for s, t in zip(solids, transforms)]
     first = _vote(masks)
     keep = [k for k in range(len(group))
@@ -201,7 +227,7 @@ def _merge_group(face: str, group: list[Observation], images: list[np.ndarray]):
     outline = extract(cv2.cvtColor(255 - vote, cv2.COLOR_GRAY2BGR))
     if isinstance(outline, MvAbstain):
         return group[ref], images[ref], warnings + [f"{face}: photos could not be merged, using the clearest one"]
-    circles, circle_index = _merge_circles(kept, kept_t, float(np.hypot(gw, gh)))
+    circles, circle_index = _merge_circles(kept, kept_t, diag)
     outline = replace(outline, circles=circles)
     values, more = _merge_values(face, kept, kept_t, circle_index)
     blind, estimates, ratio, from_image = _merge_labels(kept, circle_index, len(circles))
