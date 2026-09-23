@@ -16,6 +16,7 @@ from s2c.multiview.build import build as build_solid
 from s2c.multiview.complete import MeshProvider, complete
 from s2c.multiview.fuse import Observation, assemble, attach_label, canonical_outlines, features_from, fuse_envelope
 from s2c.multiview.label import Chat, MvLabel, env_chat, hint_label, label_image
+from s2c.multiview.merge_views import merge_same_face
 from s2c.multiview.ocr import BatchReader, Reader, link, read_values
 from s2c.multiview.outline import PixelOutline, extract, resize_long_side
 from s2c.multiview.qwen_reader import qwen_batch_reader
@@ -114,7 +115,15 @@ class MvPipeline:
             observed.observations.append(obs)
             observed.images.append(bgr)
             observed.labels.append(label)
-            observed.masks[label.face] = input_mask(outline)
+        return self._merge(observed)
+
+    @staticmethod
+    def _merge(observed: Observed) -> Observed:
+        """One observation per face: several photos of a face are merged (spec 2026-09-23 section 5)."""
+        merged, images, warnings = merge_same_face(observed.observations, observed.images)
+        observed.observations, observed.images = merged, images
+        observed.warnings += warnings
+        observed.masks = {o.face: input_mask(o.outline) for o in merged}
         return observed
 
     def fuse(self, observed: Observed, user_values: dict | None = None, accepted=(),

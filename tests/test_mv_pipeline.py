@@ -90,3 +90,13 @@ def test_default_pipeline_reads_with_qwen_vl_when_configured(monkeypatch):
     for key, value in {"VLM_BASE_URL": "http://localhost:9/v1", "VLM_MODEL": "m", "VLM_API_KEY": "k"}.items():
         monkeypatch.setenv(key, value)
     assert pipeline.default_pipeline().batch_reader is not None
+
+
+def test_two_sketches_of_one_face_merge_into_one_observation(tmp_path):
+    pipe = MvPipeline()
+    observed = pipe.observe([ImageInput(sketch(600, 400), "front", "sketch"),
+                             ImageInput(sketch(606, 404), "front", "sketch")])
+    assert len(observed.observations) == 1 and len(observed.images) == 1
+    assert any(w.startswith("front: merged 2 photos") for w in observed.warnings)
+    spec = pipe.fuse(observed, {"envelope.x_mm": 60, "envelope.y_mm": 40, "envelope.z_mm": 5})
+    assert pipe.build(spec, tmp_path, observed.masks).iou["front"] > 0.85

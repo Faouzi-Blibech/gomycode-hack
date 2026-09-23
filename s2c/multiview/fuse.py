@@ -28,6 +28,8 @@ class Observation:
     mm_per_px: float | None = None              # reference-object scale, photos only
     blind: dict[int, bool] = field(default_factory=dict)             # circle index -> blind, from the label
     depth_estimates: dict[int, float] = field(default_factory=dict)  # circle index -> mm, from the label
+    depth_ratio: dict[int, float] = field(default_factory=dict)      # circle index -> blind depth / axis length, Solaria
+    depth_from_image: set[int] = field(default_factory=set)          # circles whose blind flag came from Solaria
     confidence: float = 0.9
 
 
