@@ -799,7 +799,9 @@ def test_the_runner_comes_from_the_environment(tmp_path, monkeypatch):
 @pytest.mark.skipif(blender_runner() is None, reason="Blender or bpy not configured")
 def test_a_real_blend_file(obj, tmp_path):
     path, warnings = write_blend(obj, tmp_path / "out")
-    assert path.suffix == ".blend" and path.read_bytes()[:7] in (b"BLENDER", b"\x28\xb5\x2f\xfd"[:4] + b"\x00" * 3)
+    data = path.read_bytes()
+    assert path.suffix == ".blend" and warnings == []
+    assert data[:7] == b"BLENDER" or data[:4] == b"\x28\xb5\x2f\xfd"  # plain, or zstd-compressed (Blender 4.2)
     assert os.path.getsize(path) > 1000
 ```
 
@@ -1441,6 +1443,7 @@ from s2c.multiview import artifacts
 from s2c.multiview.artifacts import build_part, bundle, export_part, geometry_key, sweep
 from s2c.multiview.settings import GeometrySettings, MeshSettings, PrintSettings
 from s2c.multiview.spec import MultiViewSpec, MvAbstain
+from tests.mv_helpers import make_spec
 
 SPEC = MultiViewSpec.model_validate_json(
     (Path(__file__).parents[1] / "examples" / "mv" / "l_bracket.json").read_text())
@@ -1492,14 +1495,13 @@ def test_every_format_can_be_exported(tmp_path, monkeypatch):
     assert res.files["blend"].name == "part_blender_kit.zip" and all(s > 0 for s in res.sizes.values())
 
 
-def test_gcode_problems_never_block_the_other_files(tmp_path, monkeypatch):
+def test_gcode_problems_never_block_the_other_files(tmp_path):
     part = build_part(SPEC, root=tmp_path)
     res = export_part(part, ["stl", "gcode"])
     assert set(res.files) == {"stl"} and "G-code unavailable: slicer not installed" in res.warnings
-    huge = SPEC.model_copy(deep=True)
-    res = export_part(part, ["step", "gcode"], printing=PrintSettings(scale_pct=200))
-    assert "step" in res.files and "gcode" not in res.files
-    assert huge.envelope == SPEC.envelope
+    big = build_part(make_spec((150.0, 20.0, 10.0)), root=tmp_path)  # 300 mm long at 200 %: larger than the bed
+    res = export_part(big, ["step", "gcode"], printing=PrintSettings(scale_pct=200))
+    assert set(res.files) == {"step"} and any("larger than the printer bed" in w for w in res.warnings)
 
 
 def test_the_zip_holds_the_files_and_a_manifest(tmp_path):
@@ -1842,6 +1844,8 @@ import pytest
 from s2c.multiview import artifacts
 from s2c.multiview.pipeline import MvPipeline
 from s2c.multiview.settings import AiSettings, ExportSettings, GeometrySettings, MeshSettings, PrintSettings
+from s2c.multiview.spec import MvAbstain
+from s2c.studio import handlers
 from s2c.studio.app import build_app
 from s2c.studio.handlers import Studio, parse_size
 from tests.test_mv_pipeline import sketch
@@ -1904,13 +1908,21 @@ def test_bad_sizes_are_a_message(studio, tmp_path):
     assert not model.ok and "Width" in review.message_html and "Depth" in review.message_html
 
 
-def test_a_failed_finish_keeps_the_review(studio, tmp_path):
+def test_a_failed_finish_keeps_the_review(studio, tmp_path, monkeypatch):
+    real = handlers.build_part
+
+    def fails_on_big_fillets(spec, geometry, root):  # the real failure is pinned in the artifacts tests
+        if geometry.finish == "fillet" and geometry.finish_mm > 5:
+            return MvAbstain(stage="build", reason="fillet_failed", remedy="Reduce the fillet radius.")
+        return real(spec, geometry, root)
+
+    monkeypatch.setattr(handlers, "build_part", fails_on_big_fillets)
     sid = with_images(studio, tmp_path)
     review = studio.analyze(sid, "none", AiSettings())
-    sizes = {"x": "60", "y": "40", "z": "3"}
-    _, model = studio.build(sid, sizes, review.rows, [], GeometrySettings(finish="fillet", finish_mm=1.3))
+    sizes = {"x": "60", "y": "40", "z": "10"}
+    _, model = studio.build(sid, sizes, review.rows, [], GeometrySettings(finish="fillet", finish_mm=6.0))
     assert not model.ok and "fillet" in model.message_html.lower()
-    model = studio.rebuild_geometry(sid, GeometrySettings(finish="fillet", finish_mm=0.3))
+    model = studio.rebuild_geometry(sid, GeometrySettings(finish="fillet", finish_mm=1.0))
     assert model.ok
 
 
@@ -2797,7 +2809,7 @@ def test_the_cli_exports_formats(tmp_path, monkeypatch):
     assert any(p.name == "part.stl" for p in tmp_path.rglob("*")) and list(tmp_path.glob("*.zip"))
 ```
 
-Ruling built into this task: the CLI for exports is a new `scripts/mv_export.py` (spec file in, files out) rather than more flags on `scripts/mv.py`, which stays the images-in tool; `scripts/mv.py` only gains `--format` passthrough by calling the same function. Make `scripts/` importable with an empty `scripts/__init__.py`.
+The command line for exports is a new `scripts/mv_export.py` (spec file in, files out); `scripts/mv.py` stays the images-in tool and is not changed. Make `scripts/` importable with an empty `scripts/__init__.py`.
 
 - [ ] **Step 2: Run them to see them fail**
 
@@ -2842,7 +2854,7 @@ def artifact(key: str, path: str) -> FileResponse:
     return FileResponse(target)
 ```
 
-Use `ARTIFACT_ROOT` through the module attribute (`routes.ARTIFACT_ROOT`) in both functions so tests can redirect it: write `build_part(body.spec, body.settings.geometry, ARTIFACT_ROOT)` as `build_part(..., globals()["ARTIFACT_ROOT"])` only if the plain name does not pick up the monkeypatch; the plain module-level name is read at call time, so it does.
+`ARTIFACT_ROOT` is a module-level name read at call time, so the tests redirect it with `monkeypatch.setattr(routes, "ARTIFACT_ROOT", tmp_path)`.
 
 - [ ] **Step 4: CLI**
 

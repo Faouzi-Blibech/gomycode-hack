@@ -48,7 +48,7 @@ Out of scope: the React `web/` app (the integrator's), user accounts, cloud stor
 | `s2c/studio/` (`theme.py`, `session.py`, `status.py`, `handlers.py`, `app.py`) | The Studio app |
 | `app_mv_studio.py` | Launcher |
 | `scripts/make_examples.py`, `examples/mv/sketches/` | Generated demo sketches for "Try an example" |
-| `s2c/multiview/routes.py`, `scripts/mv.py` | API and CLI parity: formats, quality and print settings |
+| `s2c/multiview/routes.py`, `scripts/mv_export.py` | API and CLI parity: formats, quality and print settings |
 
 ## 4. Settings
 
@@ -147,7 +147,7 @@ The ezdxf "EZDXF" dimension style needs `dimlfac=1`. Shapes go into DXF wrapped 
 
 **Step 3, Model & Export.**
 - Left (`scale=3`): `gr.Model3D(height=520)` showing the preview GLB, set in a `.then()` after the step switch; six rendered views with IoU in the captions.
-- Right (`scale=2`): stat cards (size X × Y × Z mm, volume cm³, and after Export print time, filament g and m); the **Geometry** accordion (open; changing it rebuilds with `trigger_mode="always_last"`); **Mesh & export**; **3D print**; the format `gr.CheckboxGroup`; "Export selected" (primary), then a `gr.DownloadButton` for the zip and a `gr.File` list of the files with their sizes. If amber values were never touched, the button says "Export anyway (N unchecked)".
+- Right (`scale=2`): stat cards (size X × Y × Z mm, volume cm³, and after Export print time, filament g and m); the **Geometry** accordion (open; changing it rebuilds with `trigger_mode="always_last"`); **Mesh & export**; **3D print**; the format `gr.CheckboxGroup`; "Export selected" (primary), then a `gr.DownloadButton` for the zip and a `gr.File` list of the files with their sizes. If amber values were never touched, the Build button in Review says "Build anyway (N unchecked) →".
 
 **States.** The empty state says what to drop. Loading shows stage text. Errors are cards with a remedy and never a traceback. `gr.Warning` is used only for non-blocking notices.
 
@@ -158,7 +158,7 @@ The ezdxf "EZDXF" dimension style needs `dimlfac=1`. Shapes go into DXF wrapped 
 ## 9. API and CLI parity
 
 - `POST /mv/export`: body `{spec, settings}`. Returns file URLs per format, the zip URL, print stats and warnings. `/mv/build` is unchanged.
-- `scripts/mv.py`: `--format` (repeatable), `--quality`, `--material`, `--layer`, `--infill`, `--supports`, `--scale`, `--seed`.
+- `scripts/mv_export.py` (new; a spec JSON in, files and a zip out): `--format` (repeatable), `--quality`, `--material`, `--layer`, `--infill`, `--supports`, `--scale`, `--out`. `scripts/mv.py` (images in) is unchanged.
 
 ## 10. Errors, logging, privacy
 
