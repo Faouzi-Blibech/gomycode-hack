@@ -2159,9 +2159,11 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "cadquery" },
+    { name = "ezdxf" },
     { name = "fastapi" },
     { name = "gradio" },
     { name = "httpx" },
+    { name = "matplotlib" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openai" },
@@ -2170,6 +2172,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
+    { name = "trimesh" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -2197,11 +2200,13 @@ dev = [
 requires-dist = [
     { name = "cadquery", specifier = ">=2.4" },
     { name = "einops", marker = "extra == 'ai'", specifier = ">=0.7" },
+    { name = "ezdxf", specifier = ">=1.1" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "gradio", specifier = ">=4.40" },
     { name = "gradio-client", marker = "extra == 'ai'", specifier = ">=1.3" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "imageio", marker = "extra == 'ai'", specifier = ">=2.34" },
+    { name = "matplotlib", specifier = ">=3.8" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "omegaconf", marker = "extra == 'ai'", specifier = ">=2.3" },
     { name = "openai", specifier = ">=1.40" },
@@ -2214,6 +2219,7 @@ requires-dist = [
     { name = "scikit-image", marker = "extra == 'ai'", specifier = ">=0.24" },
     { name = "torch", marker = "extra == 'ai'", specifier = ">=2.4" },
     { name = "transformers", marker = "extra == 'ai'", specifier = ">=4.44" },
+    { name = "trimesh", specifier = ">=4.4" },
     { name = "trimesh", marker = "extra == 'ai'", specifier = ">=4.4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]

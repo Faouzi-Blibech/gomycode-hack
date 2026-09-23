@@ -16,6 +16,9 @@ dependencies = [
   "pillow>=10",
   "python-dotenv>=1.0",
   "httpx>=0.27",
+  "trimesh>=4.4",
+  "ezdxf>=1.1",
+  "matplotlib>=3.8",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +50,7 @@ markers = [
   "gpu: needs a CUDA GPU and the ai extra",
   "slicer: needs PrusaSlicer installed",
   "network: calls a hosted model; runs only with NETWORK_TESTS=1",
+  "blender: needs Blender or bpy configured (BLENDER_PATH or BLENDER_PYTHON)",
 ]
 
 [tool.ruff]
