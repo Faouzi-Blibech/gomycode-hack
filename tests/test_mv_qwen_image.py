@@ -78,17 +78,35 @@ def test_dashscope_failures_raise_image_gen_error(tmp_path):
     assert time.monotonic() - t0 < 2
 
 
+class FakeJob:
+    """What gradio_client's Client.submit returns: result(timeout) raises TimeoutError, cancel() stops the job."""
+
+    def __init__(self, value=None, delay=0.0):
+        self.value, self.delay, self.cancelled = value, delay, False
+
+    def result(self, timeout=None):
+        if timeout is not None and self.delay > timeout:
+            time.sleep(timeout)
+            raise TimeoutError
+        time.sleep(self.delay)
+        return self.value
+
+    def cancel(self):
+        self.cancelled = True
+        return True
+
+
 class FakeSpace:
     calls: ClassVar[list] = []
 
-    def __init__(self, src, token=None):
+    def __init__(self, src, token=None, **kwargs):
         self.src, self.token = src, token
 
-    def predict(self, **kw):
+    def submit(self, **kw):
         FakeSpace.calls.append((self.src, self.token, kw))
         path = Path(tempfile.mkdtemp()) / "out.png"
         path.write_bytes(PNG)
-        return {"path": str(path)}, 7.0, "rewritten"
+        return FakeJob(({"path": str(path)}, 7.0, "rewritten"))
 
 
 def test_the_space_gets_every_reference_and_a_fixed_seed(tmp_path):
@@ -102,15 +120,18 @@ def test_the_space_gets_every_reference_and_a_fixed_seed(tmp_path):
 
 
 def test_a_slow_space_times_out_quickly(tmp_path):
+    jobs = []
+
     class Slow(FakeSpace):
-        def predict(self, **kw):
-            time.sleep(2)
-            return super().predict(**kw)
+        def submit(self, **kw):
+            jobs.append(FakeJob(delay=5))
+            return jobs[-1]
 
     t0 = time.monotonic()
     with pytest.raises(Q.ImageGenError):
         Q.space_gen("s", None, Slow, timeout_s=0.2, log_path=tmp_path / "l")([REF], "p", 7, "mv_face")
     assert time.monotonic() - t0 < 1.5
+    assert jobs[0].cancelled  # the Space job is stopped, not left running
 
 
 def test_the_backend_comes_from_the_environment(monkeypatch):

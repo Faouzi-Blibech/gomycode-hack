@@ -8,6 +8,7 @@ from s2c.multiview.depth import apply_depth, read_depth, solaria_depth
 from s2c.multiview.fuse import Observation, features_from
 from s2c.multiview.outline import extract
 from s2c.multiview.spec import Envelope
+from tests.test_mv_qwen_image import FakeJob
 
 
 def solaria_ply(path, depth, stride=4):
@@ -92,15 +93,15 @@ def test_the_solaria_provider_sends_a_white_mask_and_returns_depth_at_image_size
     ply = tmp_path / "cloud.ply"
 
     class Fake:
-        def __init__(self, src, token=None):
+        def __init__(self, src, token=None, **kwargs):
             pass
 
-        def predict(self, image, mask, api_name):
+        def submit(self, image, mask, api_name):
             m = cv2.imread(mask["path"], cv2.IMREAD_GRAYSCALE)
             assert api_name == "/gerar_3d" and m.min() == 255
             h, w = m.shape
             solaria_ply(ply, np.tile(np.linspace(0, 1, w, dtype=np.float32), (h, 1)))
-            return str(tmp_path / "d.png"), str(ply), "ok"
+            return FakeJob((str(tmp_path / "d.png"), str(ply), "ok"))
 
     depth = solaria_depth("CronosSa/Solaria1.0", None, Fake, log_path=tmp_path / "l")(np.zeros((1200, 1600, 3), np.uint8))
     assert depth.shape == (1200, 1600) and np.nanmax(depth) == pytest.approx(2.0, abs=0.01)
@@ -111,23 +112,26 @@ def test_a_failing_space_raises(tmp_path):
         def __init__(self, *a, **k):
             pass
 
-        def predict(self, *a, **k):
-            return None, None, "Erro durante a geração 3D"
+        def submit(self, *a, **k):
+            return FakeJob((None, None, "Erro durante a geração 3D"))
 
     with pytest.raises(RuntimeError):
         solaria_depth("s", None, Down, log_path=tmp_path / "l")(np.zeros((100, 100, 3), np.uint8))
 
 
 def test_a_slow_solaria_times_out(tmp_path):
+    jobs = []
+
     class Slow:
         def __init__(self, *a, **k):
             pass
 
-        def predict(self, *a, **k):
-            time.sleep(2)
-            return None, None, "late"
+        def submit(self, *a, **k):
+            jobs.append(FakeJob(delay=5))
+            return jobs[-1]
 
     t0 = time.monotonic()
     with pytest.raises(TimeoutError):
         solaria_depth("s", None, Slow, timeout_s=0.2, log_path=tmp_path / "l")(np.zeros((100, 100, 3), np.uint8))
     assert time.monotonic() - t0 < 1.5
+    assert jobs[0].cancelled

@@ -4,7 +4,6 @@ only ratios of depth differences are used: they do not depend on scale, shift or
 The point cloud is never exported."""
 from __future__ import annotations
 
-import concurrent.futures as cf
 import logging
 import tempfile
 import time
@@ -26,7 +25,7 @@ SEND_LONG_SIDE = 1024
 TIMEOUT_S = 180
 THROUGH, MARK, FLAT = 0.9, 0.1, 0.05
 NEAR, FAR = 0.05, 0.15  # table band, as fractions of the part's bounding-box diagonal
-_pool = cf.ThreadPoolExecutor(max_workers=2)
+HTTP_TIMEOUT_S = 30
 
 
 def read_depth(ply_path, width: int, height: int, stride: int = STRIDE) -> np.ndarray:
@@ -49,12 +48,17 @@ def solaria_depth(space: str, token: str | None = None, client_factory=None, tim
     def run(img: np.ndarray) -> np.ndarray:
         from gradio_client import Client, handle_file
         h, w = img.shape[:2]
-        client = (client_factory or Client)(space, token=token)
+        client = (client_factory or Client)(space, token=token, httpx_kwargs={"timeout": HTTP_TIMEOUT_S})
         with tempfile.TemporaryDirectory() as d:
             src, mask = Path(d) / "image.png", Path(d) / "mask.png"
             cv2.imwrite(str(src), img)
             cv2.imwrite(str(mask), np.full((h, w), 255, np.uint8))  # all white: depth for the whole frame
-            _, ply, status = client.predict(handle_file(str(src)), handle_file(str(mask)), api_name="/gerar_3d")
+            job = client.submit(handle_file(str(src)), handle_file(str(mask)), api_name="/gerar_3d")
+            try:
+                _, ply, status = job.result(timeout=timeout_s)
+            except TimeoutError:
+                job.cancel()  # stop the Space job instead of leaving it to burn quota
+                raise
         ply = ply.get("path") if isinstance(ply, dict) else ply
         if not ply:
             raise RuntimeError(f"Solaria returned no point cloud: {status}")
@@ -64,7 +68,7 @@ def solaria_depth(space: str, token: str | None = None, client_factory=None, tim
         img = resize_long_side(image_bgr, SEND_LONG_SIDE) if max(image_bgr.shape[:2]) > SEND_LONG_SIDE else image_bgr
         t0, ok = time.perf_counter(), False
         try:
-            small = _pool.submit(run, img).result(timeout=timeout_s)
+            small = run(img)
             ok = True
         finally:
             log_call(log_path, "hf-space", space, "mv_depth", t0, ok)

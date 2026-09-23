@@ -3,7 +3,6 @@ Spec 2026-09-23 section 6. Our code only reads the image back as an outline; it 
 from __future__ import annotations
 
 import base64
-import concurrent.futures as cf
 import json
 import logging
 import os
@@ -24,7 +23,7 @@ MAX_REFS = 10
 REF_LONG_SIDE = 1024
 DASHSCOPE_TIMEOUT_S = 90
 SPACE_TIMEOUT_S = 120
-_pool = cf.ThreadPoolExecutor(max_workers=2)  # a timed-out Space call finishes here while the caller moves on
+HTTP_TIMEOUT_S = 30
 
 
 class ImageGenError(RuntimeError):
@@ -113,15 +112,20 @@ def space_gen(space: str, token: str | None = None, client_factory=None, timeout
               log_path="logs/vlm.jsonl") -> ImageGen:
     def run(refs: list[np.ndarray], prompt: str, seed: int) -> np.ndarray:
         from gradio_client import Client, handle_file
-        client = (client_factory or Client)(space, token=token)
+        client = (client_factory or Client)(space, token=token, httpx_kwargs={"timeout": HTTP_TIMEOUT_S})
         with tempfile.TemporaryDirectory() as d:
             files = []
             for k, img in enumerate(refs[:MAX_REFS]):
                 path = Path(d) / f"ref{k}.png"
                 cv2.imwrite(str(path), _ref(img))
                 files.append({"image": handle_file(str(path)), "caption": None})
-            result = client.predict(input_images=files, original_prompt=prompt, enable_extend=False,
-                                    seed=int(seed), randomize_seed=False, api_name="/generate_with_enhance")
+            job = client.submit(input_images=files, original_prompt=prompt, enable_extend=False,
+                                seed=int(seed), randomize_seed=False, api_name="/generate_with_enhance")
+            try:
+                result = job.result(timeout=timeout_s)
+            except TimeoutError:
+                job.cancel()  # stop the Space job instead of leaving it to burn quota
+                raise
         image = result[0] if isinstance(result, (list, tuple)) else result
         path = image.get("path") if isinstance(image, dict) else image
         if not path:
@@ -131,7 +135,7 @@ def space_gen(space: str, token: str | None = None, client_factory=None, timeout
     def gen(refs: list[np.ndarray], prompt: str, seed: int, stage: str) -> np.ndarray:
         t0, ok = time.perf_counter(), False
         try:
-            img = _pool.submit(run, refs, prompt, seed).result(timeout=timeout_s)
+            img = run(refs, prompt, seed)
             ok = True
             return img
         except ImageGenError:
