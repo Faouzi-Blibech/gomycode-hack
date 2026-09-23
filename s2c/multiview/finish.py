@@ -18,7 +18,11 @@ def apply_geometry(spec: MultiViewSpec, geometry: GeometrySettings) -> tuple[Mul
     if geometry.finish == "none":
         return spec, []
     size = min(geometry.finish_mm, max_finish_mm(spec))
-    warnings = [] if size == geometry.finish_mm else [f"{geometry.finish.capitalize()} reduced to {size:g} mm to fit the part"]
+    if size == geometry.finish_mm:
+        warnings = []
+    else:
+        msg = f"{geometry.finish.capitalize()} reduced to {size:g} mm to fit the part"
+        warnings = [msg]
     data = spec.model_dump()
     k = len(data["finishes"])
     data["finishes"].append({"type": geometry.finish, "edges": geometry.finish_edges, "radius_mm": size})
