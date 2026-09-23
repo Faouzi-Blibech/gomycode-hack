@@ -1,5 +1,6 @@
-"""Fill the canonical faces nobody photographed: predicted from a TripoSR mesh, else assumed rectangular.
-The mirror rule already ran in fuse. Spec section 6.3. The mesh is only rendered, never exported."""
+"""Fill the canonical faces nobody photographed: drawn by Qwen-Image, else predicted from a TripoSR mesh, else
+assumed rectangular. The mirror rule already ran in fuse. Spec 2026-09-22 section 6.3, spec 2026-09-23 section 7.
+Neither the drawn image nor the mesh is exported; both are only read back as outlines."""
 from __future__ import annotations
 
 import itertools
@@ -8,6 +9,8 @@ from collections.abc import Callable
 
 import numpy as np
 
+from s2c.multiview.qwen_faces import qwen_face
+from s2c.multiview.qwen_image import ImageGen
 from s2c.multiview.raster import Mesh, face_mask, iou, mask_to_mm, normalize_mask
 from s2c.multiview.spec import CANONICAL_FACES, Envelope, Outline, face_size
 
@@ -76,13 +79,28 @@ def assumed_outline(face: str, env: Envelope) -> Outline:
     return Outline(outer=[(0.0, 0.0), (a, 0.0), (a, b), (0.0, b)], source="assumed", confidence=0.3)
 
 
-def complete(outlines: dict[str, Outline], env: Envelope, target_face: str, target_mask: np.ndarray,
-             image: np.ndarray | None, provider: MeshProvider | None, mesh: Mesh | None = None,
-             rejected=()) -> tuple[dict[str, Outline], list[str], Mesh | None]:
-    """All three canonical outlines, the warnings, and the mesh so the caller can cache it."""
+def complete(outlines: dict[str, Outline], env: Envelope, target_face: str, target_mask: np.ndarray | None,
+             image: np.ndarray | None, provider: MeshProvider | None, mesh: Mesh | None = None, rejected=(),
+             gen: ImageGen | None = None, refs=(), qwen_cache: dict | None = None,
+             filled_by: dict | None = None) -> tuple[dict[str, Outline], list[str], Mesh | None]:
+    """All three canonical outlines, the warnings, and the mesh so the caller can cache it.
+    filled_by, when given, receives who filled each face: observed, mirrored, qwen-image, triposr or assumed."""
     result, warnings = dict(outlines), []
+    filled_by = {} if filled_by is None else filled_by
+    qwen_cache = {} if qwen_cache is None else qwen_cache
+    filled_by.update({f: ol.source for f, ol in outlines.items()})
+    observed = list(outlines)
     missing = [f for f in CANONICAL_FACES if f not in outlines]
-    wanted = [f for f in missing if f not in rejected]
+    tried_qwen = []
+    for face in missing:
+        if face in rejected:
+            continue
+        drawn = qwen_face(result, env, face, observed, list(refs), gen, qwen_cache)
+        if drawn is not None:
+            result[face], filled_by[face] = drawn, "qwen-image"
+        elif gen is not None or any(key[0] == face for key in qwen_cache):
+            tried_qwen.append(face)
+    wanted = [f for f in missing if f not in rejected and f not in result]
     if wanted and mesh is None and provider is not None and image is not None:
         try:
             mesh = provider(image)
@@ -97,12 +115,16 @@ def complete(outlines: dict[str, Outline], env: Envelope, target_face: str, targ
         else:
             warnings.append("predicted view unreliable")
     for face in missing:
+        if face in result:
+            continue
         if fitted is not None and face in wanted:
             try:
-                result[face] = predicted_outline(fitted, face, env, score)
-                continue
+                result[face], filled_by[face] = predicted_outline(fitted, face, env, score), "triposr"
             except ValueError:
                 log.warning("predicted %s view was empty", face)
-        result[face] = assumed_outline(face, env)
-        warnings.append(f"assumed rectangular {face}, check it")
+        if face not in result:
+            result[face], filled_by[face] = assumed_outline(face, env), "assumed"
+            warnings.append(f"assumed rectangular {face}, check it")
+        if face in tried_qwen:
+            warnings.append(f"{face}: Qwen-Image view rejected, {filled_by[face]} used")
     return result, warnings, mesh

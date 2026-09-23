@@ -72,7 +72,8 @@ def analyze(files: list[UploadFile] = File(...), faces: str = Form("[]"), kinds:
     _requests[rid] = (time.time(), observed)
     res = pipe.fuse(observed)
     _forget_images(observed, res)
-    return {"request_id": rid, **_result(res), "labels": [l.model_dump() for l in observed.labels]}
+    return {"request_id": rid, **_result(res), "labels": [l.model_dump() for l in observed.labels],
+            "filled_by": observed.filled_by}
 
 
 class MergeBody(BaseModel):
@@ -89,7 +90,7 @@ def merge(body: MergeBody, pipe: MvPipeline = Depends(get_pipeline)) -> dict:
         raise HTTPException(404, "Unknown or expired request. Analyze the images again.")
     res = pipe.fuse(entry[1], body.user_values, body.accepted, body.rejected)
     _forget_images(entry[1], res)
-    return _result(res)
+    return {**_result(res), "filled_by": entry[1].filled_by}
 
 
 class BuildBody(BaseModel):

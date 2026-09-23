@@ -21,7 +21,9 @@ def test_analyze_merge_build_and_download(tmp_path, monkeypatch):
     assert body["abstain"]["reason"] == "missing_x"  # no OCR in this pipeline, so the gate asks
     values = {"envelope.x_mm": 60, "envelope.y_mm": 40, "envelope.z_mm": 10}
     assert len(routes._requests[body["request_id"]][1].images) == 2  # still needed: no spec yet
-    spec = c.post("/mv/merge", json={"request_id": body["request_id"], "user_values": values}).json()["spec"]
+    merged = c.post("/mv/merge", json={"request_id": body["request_id"], "user_values": values}).json()
+    assert merged["filled_by"] == {"front": "observed", "top": "observed", "right": "assumed"}
+    spec = merged["spec"]
     assert routes._requests[body["request_id"]][1].images == []  # dropped once the spec exists
     out = c.post("/mv/build", json={"spec": spec, "request_id": body["request_id"]}).json()
     assert out["iou"]["front"] > 0.85

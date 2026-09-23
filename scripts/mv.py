@@ -46,7 +46,7 @@ def main() -> None:
 
     print(f"spec    {out / 'spec.json'}\nSTEP    {res.step}\nSTL     {res.stl}\nG-code  {res.gcode or 'none'}")
     for face in ("front", "top", "right"):
-        print(f"{face:<7} {getattr(spec.views, face).source}")
+        print(f"{face:<7} {getattr(spec.views, face).source} ({observed.filled_by.get(face, '')})")
     amber = {p: s for p, s in spec.provenance.items() if s in ("scaled", "inferred", "estimated", "default")}
     for path, source in amber.items():
         print(f"check   {path} ({source})")

@@ -100,3 +100,16 @@ def test_two_sketches_of_one_face_merge_into_one_observation(tmp_path):
     assert any(w.startswith("front: merged 2 photos") for w in observed.warnings)
     spec = pipe.fuse(observed, {"envelope.x_mm": 60, "envelope.y_mm": 40, "envelope.z_mm": 5})
     assert pipe.build(spec, tmp_path, observed.masks).iou["front"] > 0.85
+
+
+def test_qwen_draws_the_missing_faces(tmp_path):
+    from tests.mv_helpers import rect
+    from tests.test_mv_qwen_faces import fake_gen, silhouette
+    gen = fake_gen(silhouette(rect(60, 10), 60, 10), silhouette(rect(10, 40), 10, 40))
+    pipe = MvPipeline(image_gen=gen)
+    observed = pipe.observe([ImageInput(sketch(600, 400), "front", "sketch")])
+    spec = pipe.fuse(observed, {"envelope.x_mm": 60, "envelope.y_mm": 40, "envelope.z_mm": 10})
+    assert observed.filled_by == {"front": "observed", "top": "qwen-image", "right": "qwen-image"}
+    assert spec.views.top.source == "inferred" and spec.provenance["views.top.outer"] == "inferred"
+    assert pipe.build(spec, tmp_path, observed.masks).iou["front"] > 0.85
+    assert len(gen.calls) == 2 and gen.calls[0][0] == 1

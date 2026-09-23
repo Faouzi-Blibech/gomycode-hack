@@ -2,6 +2,7 @@ import json
 import tempfile
 import time
 from pathlib import Path
+from typing import ClassVar
 
 import cv2
 import httpx
@@ -78,7 +79,7 @@ def test_dashscope_failures_raise_image_gen_error(tmp_path):
 
 
 class FakeSpace:
-    calls = []
+    calls: ClassVar[list] = []
 
     def __init__(self, src, token=None):
         self.src, self.token = src, token

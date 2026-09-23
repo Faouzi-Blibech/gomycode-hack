@@ -19,6 +19,7 @@ from s2c.multiview.label import Chat, MvLabel, env_chat, hint_label, label_image
 from s2c.multiview.merge_views import merge_same_face
 from s2c.multiview.ocr import BatchReader, Reader, link, read_values
 from s2c.multiview.outline import PixelOutline, extract, resize_long_side
+from s2c.multiview.qwen_image import MAX_REFS, ImageGen, default_gen
 from s2c.multiview.qwen_reader import qwen_batch_reader
 from s2c.multiview.raster import Mesh, face_mask, iou, normalize_mask, polygon_mask, solid_mesh
 from s2c.multiview.reference import find_reference
@@ -44,6 +45,8 @@ class Observed:
     labels: list[MvLabel]
     warnings: list[str] = field(default_factory=list)
     mesh: Mesh | None = None
+    qwen_cache: dict = field(default_factory=dict)            # (face, seed) -> drawn image, or None after a failure
+    filled_by: dict[str, str] = field(default_factory=dict)   # canonical face -> who filled it
 
 
 @dataclass
@@ -70,10 +73,11 @@ def input_mask(outline: PixelOutline) -> np.ndarray:
 class MvPipeline:
     def __init__(self, chat: Chat | None = None, reader: Reader | None = None,
                  mesh_provider: MeshProvider | None = None, slicer: Path | None = None, profile: Path | None = None,
-                 batch_reader: BatchReader | None = None):
+                 batch_reader: BatchReader | None = None, image_gen: ImageGen | None = None):
         self.chat, self.reader, self.mesh_provider = chat, reader, mesh_provider
         self.slicer, self.profile = slicer, profile
         self.batch_reader = batch_reader
+        self.image_gen = image_gen
 
     def _label(self, item: ImageInput) -> MvLabel | S.MvAbstain:
         if self.chat is not None:
@@ -137,9 +141,12 @@ class MvPipeline:
         best = max(range(len(observed.observations)), key=lambda i: observed.observations[i].confidence)
         target = observed.observations[best]
         image = observed.images[best] if best < len(observed.images) else None  # None once routes dropped them
+        pairs = sorted(zip(observed.observations, observed.images), key=lambda p: -p[0].confidence)
+        refs = [(o.face, img) for o, img in pairs][:MAX_REFS]
         full, more, observed.mesh = complete({f: ol for f, (ol, _) in outlines.items()}, env, target.face,
                                              observed.masks[target.face], image, self.mesh_provider,
-                                             observed.mesh, tuple(rejected))
+                                             observed.mesh, tuple(rejected), gen=self.image_gen, refs=refs,
+                                             qwen_cache=observed.qwen_cache, filled_by=observed.filled_by)
         warnings += more
         with_prov = {f: (ol, outlines[f][1] if f in outlines else ("inferred" if ol.source == "inferred" else "default"))
                      for f, ol in full.items()}
@@ -170,7 +177,7 @@ class MvPipeline:
 
 
 def default_pipeline() -> MvPipeline:
-    """Qwen-VL from the environment; TrOCR and TripoSR when the ai extra is installed."""
+    """Qwen-VL and Qwen-Image from the environment; TrOCR and TripoSR when the ai extra is installed."""
     reader = provider = None
     try:
         from s2c.multiview.ocr import trocr_reader
@@ -184,4 +191,4 @@ def default_pipeline() -> MvPipeline:
         log.warning("TripoSR unavailable: %s", e)
     read_chat = env_chat(stage="mv_read")
     return MvPipeline(chat=env_chat(), reader=reader, mesh_provider=provider,
-                      batch_reader=qwen_batch_reader(read_chat) if read_chat else None)
+                      batch_reader=qwen_batch_reader(read_chat) if read_chat else None, image_gen=default_gen())
