@@ -51,3 +51,17 @@ def test_a_wrong_face_tag_is_explained(tmp_path):
 def test_rebuild_before_analyze_explains():
     out = dict(zip(A.OUTPUTS, A.Handlers(MvPipeline()).rebuild([], [], None)))
     assert out["message"] == "Analyze images first."
+
+
+def test_outputs_and_uploads_are_deleted_after_an_hour(tmp_path):
+    import os
+    import time
+    old, fresh = tmp_path / "old", tmp_path / "fresh"
+    old.mkdir()
+    fresh.mkdir()
+    (old / "part.stl").write_text("solid")
+    two_hours_ago = time.time() - 7200
+    os.utime(old, (two_hours_ago, two_hours_ago))
+    A.sweep_outputs(tmp_path)
+    assert not old.exists() and fresh.exists()
+    assert A.build_app(MvPipeline()).delete_cache == (3600, 3600)

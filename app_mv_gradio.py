@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 import re
+import shutil
+import time
 import uuid
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from s2c.multiview.raster import outline_mask
 from s2c.multiview.spec import CANONICAL_FACES, FACES, MultiViewSpec, MvAbstain, face_size
 
 OUT_ROOT = Path("tmp/mv_gradio")
+TTL_S = 3600  # built files and Gradio's upload cache live one hour, as docs/disclosure.md says
 FACE_CHOICES = ("auto", *FACES)
 KIND_CHOICES = ("auto", "sketch", "photo", "drawing")
 REFERENCES = ["none", "1 TND", "1 EUR", "2 EUR", "card", "a4"]
@@ -27,6 +30,16 @@ NOTICE = ("Photos of real parts: shoot top-down, with the part lying flat on a p
           "Images are sent to DashScope and Hugging Face Spaces to read the handwriting and predict missing faces.")
 OUTPUTS = ("faces", "reads", "values", "warnings", "message", "model", "views", "files", "stats", "state")
 _FEATURE = re.compile(r"(\w+)\[(\d+)\]\.(\w+)")
+
+
+def sweep_outputs(root: Path = OUT_ROOT, ttl_s: float = TTL_S) -> None:
+    """Delete build folders older than the time-to-live."""
+    if not root.exists():
+        return
+    now = time.time()
+    for d in root.iterdir():
+        if d.is_dir() and now - d.stat().st_mtime > ttl_s:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 def new_state() -> dict:
@@ -165,6 +178,7 @@ class Handlers:
         review = self._review(observed, res, state)
         if isinstance(res, MvAbstain):
             return _pack(state, **review)
+        sweep_outputs(OUT_ROOT)
         built = self.pipe.build(res, OUT_ROOT / uuid.uuid4().hex, observed.masks)
         if isinstance(built, MvAbstain):
             return _pack(state, **{**review, "message": _abstain(built)})
@@ -190,7 +204,7 @@ class Handlers:
 
 def build_app(pipe: MvPipeline) -> gr.Blocks:
     handlers = Handlers(pipe)
-    with gr.Blocks(title="Sketch-to-CAD lab") as app:
+    with gr.Blocks(title="Sketch-to-CAD lab", delete_cache=(TTL_S, TTL_S)) as app:
         state = gr.State(new_state())
         gr.Markdown("# Sketch-to-CAD: multi-view lab\n\n" + NOTICE)
         with gr.Row():
