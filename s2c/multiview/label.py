@@ -19,6 +19,7 @@ from s2c.multiview.spec import MvAbstain
 log = logging.getLogger(__name__)
 Chat = Callable[[list[dict]], str]
 _ESTIMATE_KEY = re.compile(r"^holes\[\d+\]\.depth_mm$")
+CHAT_TIMEOUT_S = 60
 
 
 class LabelHole(BaseModel):
@@ -101,7 +102,8 @@ def env_chat(log_path: str | Path = "logs/vlm.jsonl", stage: str = "mv_label") -
     if not (base and model and key):
         return None
     from openai import OpenAI
-    client, path = OpenAI(base_url=base, api_key=key), Path(log_path)
+    # The library default is 600 s with 2 retries; a hung provider must not hold an image for half an hour
+    client, path = OpenAI(base_url=base, api_key=key, timeout=CHAT_TIMEOUT_S, max_retries=1), Path(log_path)
 
     def chat(messages: list[dict]) -> str:
         t0 = time.perf_counter()

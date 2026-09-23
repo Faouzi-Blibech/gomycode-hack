@@ -50,3 +50,20 @@ def test_code_fences_are_stripped():
 def test_hint_label_without_a_model():
     label = hint_label("right", "photo")
     assert (label.face, label.input_kind) == ("right", "photo")
+
+
+def test_the_chat_client_gives_up_in_a_minute(monkeypatch):
+    import openai
+
+    from s2c.multiview.label import env_chat
+    made = {}
+
+    class Recorder:
+        def __init__(self, **kwargs):
+            made.update(kwargs)
+
+    monkeypatch.setattr(openai, "OpenAI", Recorder)
+    for key, value in {"VLM_BASE_URL": "http://localhost:9/v1", "VLM_MODEL": "m", "VLM_API_KEY": "k"}.items():
+        monkeypatch.setenv(key, value)
+    assert env_chat() is not None
+    assert made["timeout"] == 60 and made["max_retries"] == 1
