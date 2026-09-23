@@ -19,6 +19,7 @@ GATE_IOU = 0.95
 TRIES = 2
 SEED = 7
 CONFIDENCE = 0.6
+FAILED = ("qwen-image-failed",)  # cache key: a call failed, so this request stops asking
 VIEWER = {
     "front": "the front, looking straight along the depth axis, with the top of the part at the top of the image",
     "top": "directly above, looking down, with the front edge of the part at the bottom of the image",
@@ -90,16 +91,17 @@ def consistent(outlines: dict[str, Outline], env: Envelope, observed: list[str],
 
 
 def _drawn(gen: ImageGen | None, refs, face: str, cache: dict, seed: int) -> np.ndarray | None:
-    """The generated image for (face, seed), from the cache when possible. A failure is cached as None."""
+    """The generated image for (face, seed), from the cache when possible. After one failed call the request
+    stops asking: a slow or broken Space would otherwise cost a full timeout per face and per seed."""
     key = (face, seed)
     if key not in cache:
-        if gen is None or not refs:
+        if gen is None or not refs or cache.get(FAILED):
             return None
         try:
             cache[key] = gen([img for _, img in refs], face_prompt([f for f, _ in refs], face), seed, "mv_face")
         except ImageGenError as e:
             log.warning("Qwen-Image %s failed: %s", face, e)
-            cache[key] = None
+            cache[key], cache[FAILED] = None, True
     return cache[key]
 
 
@@ -108,6 +110,8 @@ def qwen_face(outlines: dict[str, Outline], env: Envelope, face: str, observed: 
     """The first drawing of `face` that passes the voxel check, trying seeds SEED and SEED + 1."""
     for attempt in range(TRIES):
         img = _drawn(gen, refs, face, cache, SEED + attempt)
+        if img is None and cache.get(FAILED):
+            return None  # the call failed: a second seed would only wait again
         candidate = None if img is None else outline_from_image(img, face, env)
         if candidate is not None and consistent({**outlines, face: candidate}, env, observed):
             return candidate

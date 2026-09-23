@@ -115,3 +115,10 @@ def test_a_rejected_face_skips_qwen():
     complete(front_only(), ENV, "front", None, IMAGE, None, rejected=("top", "right"), gen=gen,
              refs=[("front", IMAGE)], filled_by=filled)
     assert gen.calls == [] and filled["top"] == "assumed"
+
+
+def test_a_failed_call_is_not_retried_for_this_or_any_other_face():
+    gen = fake_gen(ImageGenError("timed out"))
+    filled = {}
+    complete(front_only(), ENV, "front", None, IMAGE, None, gen=gen, refs=[("front", IMAGE)], filled_by=filled)
+    assert len(gen.calls) == 1 and filled["top"] == filled["right"] == "assumed"
