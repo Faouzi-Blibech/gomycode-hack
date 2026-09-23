@@ -5,12 +5,13 @@ import logging
 import os
 import re
 import shutil
-import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import cadquery as cq
 
+from s2c.multiview.proc import run, tail
 from s2c.multiview.spec import MvAbstain
 
 log = logging.getLogger(__name__)
@@ -19,6 +20,8 @@ DEFAULT_PROFILE = Path(__file__).resolve().parents[2] / "profiles" / "fdm_defaul
 WINDOWS_SLICER = Path("C:/Program Files/Prusa3D/PrusaSlicer/prusa-slicer-console.exe")
 VENDOR_DIR = Path(__file__).resolve().parents[2] / "vendor"  # portable PrusaSlicer zip unpacked here, no admin needed
 SLICE_TIMEOUT_S = 120
+DATADIR = Path(tempfile.gettempdir()) / "s2c-prusaslicer"  # never read the user's own PrusaSlicer presets
+SLICE_THREADS = 4
 # down direction -> (unit vector, rotation (axis, degrees) that turns it into -Z)
 DOWN_DIRECTIONS = {
     "-z": ((0, 0, -1), None),
@@ -54,7 +57,7 @@ class SliceResult:
 def load_profile(path: Path | str | None = None) -> Profile:
     path = Path(path or os.environ.get("SLICER_PROFILE") or DEFAULT_PROFILE)
     values = {}
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if "=" in line and not line.lstrip().startswith("#"):
             key, value = line.split("=", 1)
             values[key.strip()] = value.strip()
@@ -125,9 +128,12 @@ def parse_gcode_stats(text: str) -> tuple[float | None, float | None]:
     return (parse_duration(t.group(1)) if t else None), (float(g.group(1)) if g else None)
 
 
-def slice_solid(solid: cq.Workplane, out_dir: Path, profile_path: Path | None = None,
-                slicer: Path | None = None) -> SliceResult | MvAbstain:
+def slice_solid(solid: cq.Workplane, out_dir: Path, profile_path: Path | None = None, slicer: Path | None = None,
+                overrides: list[str] | None = None, scale: float = 1.0) -> SliceResult | MvAbstain:
+    """`overrides` are PrusaSlicer flags applied on top of the profile; `scale` resizes the print only."""
     profile = load_profile(profile_path)
+    if scale != 1.0:
+        solid = cq.Workplane("XY").add(solid.val().scale(scale))
     printable = orient_for_print(solid)
     if not fits_bed(printable, profile):
         return MvAbstain(stage="slice", reason="too_big_for_bed",
@@ -141,18 +147,15 @@ def slice_solid(solid: cq.Workplane, out_dir: Path, profile_path: Path | None = 
         return SliceResult(stl, None, None, None, ["G-code unavailable: slicer not installed"])
     gcode = out_dir / "part.gcode"
     cx, cy = profile.center
-    cmd = [str(slicer), "--export-gcode", "--load", str(profile.path), "--center", f"{cx:g},{cy:g}",
+    cmd = [str(slicer), "--export-gcode", "--load", str(profile.path), *(overrides or []),
+           "--center", f"{cx:g},{cy:g}", "--threads", str(SLICE_THREADS), "--datadir", str(DATADIR),
            "--output", str(gcode), str(stl)]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=SLICE_TIMEOUT_S, check=False)
-        ok = proc.returncode == 0 and gcode.exists()
-        if not ok:
-            log.warning("slicer failed (%s): %s", proc.returncode, "\n".join(proc.stderr.splitlines()[-20:]))
-    except subprocess.TimeoutExpired:
-        ok = False
-        log.warning("slicer timed out after %s s", SLICE_TIMEOUT_S)
-    if not ok:
+    log_path = out_dir / "slicer.log"
+    code = run(cmd, SLICE_TIMEOUT_S, log_path)
+    if code != 0 or not gcode.exists():
+        why = "timed out" if code is None else f"exit code {code}"
+        log.warning("slicer failed (%s): %s", why, tail(log_path))
         return MvAbstain(stage="slice", reason="slicer_failed",
                          remedy="The slicer could not process this part. Check the model in the viewer.")
-    seconds, grams = parse_gcode_stats(gcode.read_text(errors="ignore"))
+    seconds, grams = parse_gcode_stats(gcode.read_text(encoding="utf-8", errors="replace"))
     return SliceResult(stl, gcode, seconds, grams)
