@@ -120,9 +120,13 @@ def link(readings: list[Reading], outline: PixelOutline) -> list[Linked]:
 @lru_cache(maxsize=1)
 def _trocr(model_name: str):
     import torch
-    from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+    from huggingface_hub import snapshot_download
+    from transformers import RobertaTokenizer, TrOCRProcessor, VisionEncoderDecoderModel, ViTImageProcessor
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    processor = TrOCRProcessor.from_pretrained(model_name)
+    # transformers 5 does not fetch vocab.json and merges.txt for this repo by itself; take the small files explicitly
+    local = snapshot_download(model_name, allow_patterns=["*.json", "*.txt"])
+    processor = TrOCRProcessor(image_processor=ViTImageProcessor.from_pretrained(local),
+                               tokenizer=RobertaTokenizer.from_pretrained(local))
     model = VisionEncoderDecoderModel.from_pretrained(model_name).to(device).eval()
     return processor, model, device
 
