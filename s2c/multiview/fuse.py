@@ -218,7 +218,9 @@ def features_from(observations: list[Observation], env: S.Envelope):
                 d, d_prov = c.d * (sa + sb) / 2, "scaled"
             depth, depth_prov = None, None
             if o.blind.get(i):
-                if i in o.depth_estimates:
+                if i in o.depth_ratio:
+                    depth, depth_prov = o.depth_ratio[i] * axis_len, "estimated"
+                elif i in o.depth_estimates:
                     depth, depth_prov = min(o.depth_estimates[i], axis_len), "estimated"
                 else:
                     depth, depth_prov = axis_len / 2, "default"

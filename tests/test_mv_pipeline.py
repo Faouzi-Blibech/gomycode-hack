@@ -113,3 +113,30 @@ def test_qwen_draws_the_missing_faces(tmp_path):
     assert spec.views.top.source == "inferred" and spec.provenance["views.top.outer"] == "inferred"
     assert pipe.build(spec, tmp_path, observed.masks).iou["front"] > 0.85
     assert len(gen.calls) == 2 and gen.calls[0][0] == 1
+
+
+def test_solaria_runs_once_per_face_and_its_ratio_becomes_a_depth():
+    from tests.test_mv_depth import plate_photo, scene
+    calls = []
+
+    def depth(img):
+        calls.append(img.shape)
+        return scene(0.4)
+
+    data = cv2.imencode(".png", plate_photo())[1].tobytes()
+    pipe = MvPipeline(depth=depth)
+    observed = pipe.observe([ImageInput(data, "front", "photo"), ImageInput(data, "front", "photo")])
+    assert len(calls) == 1
+    spec = pipe.fuse(observed, {"envelope.x_mm": 60, "envelope.y_mm": 40, "envelope.z_mm": 10})
+    assert sorted(f.depth_mm for f in spec.features if f.depth_mm) == [4.0]
+
+
+def test_a_failing_depth_provider_only_warns():
+    from tests.test_mv_depth import plate_photo
+
+    def down(img):
+        raise RuntimeError("Space asleep")
+
+    data = cv2.imencode(".png", plate_photo())[1].tobytes()
+    observed = MvPipeline(depth=down).observe([ImageInput(data, "front", "photo")])
+    assert "front: depth unavailable" in observed.warnings

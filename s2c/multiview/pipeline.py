@@ -3,6 +3,7 @@ request and caches the mesh; build() never calls a model. Spec sections 6 and 7.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from s2c.multiview import spec as S
 from s2c.multiview.build import BuildError, export
 from s2c.multiview.build import build as build_solid
 from s2c.multiview.complete import MeshProvider, complete
+from s2c.multiview.depth import DepthProvider, apply_depth, solaria_depth
 from s2c.multiview.fuse import Observation, assemble, attach_label, canonical_outlines, features_from, fuse_envelope
 from s2c.multiview.label import Chat, MvLabel, env_chat, hint_label, label_image
 from s2c.multiview.merge_views import merge_same_face
@@ -74,11 +76,13 @@ def input_mask(outline: PixelOutline) -> np.ndarray:
 class MvPipeline:
     def __init__(self, chat: Chat | None = None, reader: Reader | None = None,
                  mesh_provider: MeshProvider | None = None, slicer: Path | None = None, profile: Path | None = None,
-                 batch_reader: BatchReader | None = None, image_gen: ImageGen | None = None):
+                 batch_reader: BatchReader | None = None, image_gen: ImageGen | None = None,
+                 depth: DepthProvider | None = None):
         self.chat, self.reader, self.mesh_provider = chat, reader, mesh_provider
         self.slicer, self.profile = slicer, profile
         self.batch_reader = batch_reader
         self.image_gen = image_gen
+        self.depth = depth
 
     def _label(self, item: ImageInput) -> MvLabel | S.MvAbstain:
         if self.chat is not None:
@@ -92,6 +96,7 @@ class MvPipeline:
         reads = self.reader is not None or self.batch_reader is not None
         if not reads:
             observed.warnings.append("OCR unavailable: enter the dimensions by hand")
+        excluded: list[tuple] = []
         for item in images:
             bgr = cv2.imdecode(np.frombuffer(item.data, np.uint8), cv2.IMREAD_COLOR)
             if bgr is None:
@@ -122,6 +127,9 @@ class MvPipeline:
             observed.observations.append(obs)
             observed.images.append(bgr)
             observed.labels.append(label)
+            excluded.append(mask_out)
+        if self.depth is not None:
+            observed.warnings += self._depths(observed, excluded)
         return self._merge(observed)
 
     def _outline(self, bgr: np.ndarray, mask_out, kind: str) -> tuple[PixelOutline | S.MvAbstain, bool]:
@@ -133,6 +141,24 @@ class MvPipeline:
             if fixed is not None:
                 return fixed, True
         return outline, False
+
+    def _depths(self, observed: Observed, excluded: list[tuple]) -> list[str]:
+        """Solaria once per face, on its most confident photo that shows a hole (spec 2026-09-23 section 9)."""
+        best: dict[str, int] = {}
+        for k, o in enumerate(observed.observations):
+            if o.kind == "photo" and o.outline.circles and (
+                    o.face not in best or o.confidence > observed.observations[best[o.face]].confidence):
+                best[o.face] = k
+        warnings = []
+        for face, k in best.items():
+            try:
+                depth = self.depth(observed.images[k])
+            except Exception as e:
+                log.warning("Solaria failed on %s: %s", face, e)
+                warnings.append(f"{face}: depth unavailable")
+                continue
+            warnings += apply_depth(observed.observations[k], depth, excluded[k])
+        return warnings
 
     @staticmethod
     def _merge(observed: Observed) -> Observed:
@@ -190,7 +216,7 @@ class MvPipeline:
 
 
 def default_pipeline() -> MvPipeline:
-    """Qwen-VL and Qwen-Image from the environment; TrOCR and TripoSR when the ai extra is installed."""
+    """Qwen-VL, Qwen-Image and Solaria from the environment; TrOCR and TripoSR when the ai extra is installed."""
     reader = provider = None
     try:
         from s2c.multiview.ocr import trocr_reader
@@ -203,5 +229,7 @@ def default_pipeline() -> MvPipeline:
     except Exception as e:
         log.warning("TripoSR unavailable: %s", e)
     read_chat = env_chat(stage="mv_read")
+    space = os.environ.get("SOLARIA_SPACE")
     return MvPipeline(chat=env_chat(), reader=reader, mesh_provider=provider,
-                      batch_reader=qwen_batch_reader(read_chat) if read_chat else None, image_gen=default_gen())
+                      batch_reader=qwen_batch_reader(read_chat) if read_chat else None, image_gen=default_gen(),
+                      depth=solaria_depth(space, os.environ.get("HF_TOKEN")) if space else None)
