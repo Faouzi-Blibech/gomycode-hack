@@ -16,8 +16,9 @@ from s2c.multiview.build import build as build_solid
 from s2c.multiview.complete import MeshProvider, complete
 from s2c.multiview.fuse import Observation, assemble, attach_label, canonical_outlines, features_from, fuse_envelope
 from s2c.multiview.label import Chat, MvLabel, env_chat, hint_label, label_image
-from s2c.multiview.ocr import Reader, link, read_values
+from s2c.multiview.ocr import BatchReader, Reader, link, read_values
 from s2c.multiview.outline import PixelOutline, extract, resize_long_side
+from s2c.multiview.qwen_reader import qwen_batch_reader
 from s2c.multiview.raster import Mesh, face_mask, iou, normalize_mask, polygon_mask, solid_mesh
 from s2c.multiview.reference import find_reference
 from s2c.multiview.slice import slice_solid
@@ -67,9 +68,11 @@ def input_mask(outline: PixelOutline) -> np.ndarray:
 
 class MvPipeline:
     def __init__(self, chat: Chat | None = None, reader: Reader | None = None,
-                 mesh_provider: MeshProvider | None = None, slicer: Path | None = None, profile: Path | None = None):
+                 mesh_provider: MeshProvider | None = None, slicer: Path | None = None, profile: Path | None = None,
+                 batch_reader: BatchReader | None = None):
         self.chat, self.reader, self.mesh_provider = chat, reader, mesh_provider
         self.slicer, self.profile = slicer, profile
+        self.batch_reader = batch_reader
 
     def _label(self, item: ImageInput) -> MvLabel | S.MvAbstain:
         if self.chat is not None:
@@ -80,7 +83,8 @@ class MvPipeline:
 
     def observe(self, images: list[ImageInput], reference: str | None = None) -> Observed | S.MvAbstain:
         observed = Observed([], [], {}, [])
-        if self.reader is None:
+        reads = self.reader is not None or self.batch_reader is not None
+        if not reads:
             observed.warnings.append("OCR unavailable: enter the dimensions by hand")
         for item in images:
             bgr = cv2.imdecode(np.frombuffer(item.data, np.uint8), cv2.IMREAD_COLOR)
@@ -102,8 +106,8 @@ class MvPipeline:
             if isinstance(outline, S.MvAbstain):
                 return outline
             values = []
-            if self.reader is not None and label.input_kind != "photo":
-                values = link(read_values(bgr, outline, self.reader), outline)
+            if reads and label.input_kind != "photo":
+                values = link(read_values(bgr, outline, self.reader, self.batch_reader), outline)
             obs = Observation(face=label.face, kind=label.input_kind, outline=outline, values=values,
                               mm_per_px=mm_per_px, confidence=label.confidence)
             attach_label(obs, label)
@@ -157,7 +161,7 @@ class MvPipeline:
 
 
 def default_pipeline() -> MvPipeline:
-    """Vision model from the environment, TrOCR and TripoSR when the ai extra is installed."""
+    """Qwen-VL from the environment; TrOCR and TripoSR when the ai extra is installed."""
     reader = provider = None
     try:
         from s2c.multiview.ocr import trocr_reader
@@ -169,4 +173,6 @@ def default_pipeline() -> MvPipeline:
         provider = default_provider()
     except Exception as e:
         log.warning("TripoSR unavailable: %s", e)
-    return MvPipeline(chat=env_chat(), reader=reader, mesh_provider=provider)
+    read_chat = env_chat(stage="mv_read")
+    return MvPipeline(chat=env_chat(), reader=reader, mesh_provider=provider,
+                      batch_reader=qwen_batch_reader(read_chat) if read_chat else None)

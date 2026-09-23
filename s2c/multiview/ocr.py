@@ -17,6 +17,7 @@ from s2c.multiview.outline import PixelOutline, foreground
 log = logging.getLogger(__name__)
 
 Reader = Callable[[np.ndarray], tuple[str, float]]  # BGR crop -> (text, confidence)
+BatchReader = Callable[[list[np.ndarray]], list[tuple[str, float]] | None]  # every crop of one image; None on failure
 _DIAMETER_SIGNS = "⌀ØøΦφ∅"
 _VALUE = re.compile(r"^(⌀|D|R)?(\d+(?:\.\d+)?)$")
 STROKE_PX = 25
@@ -80,16 +81,23 @@ def text_regions(image_bgr: np.ndarray, outline: PixelOutline) -> list[tuple[int
     return boxes
 
 
-def read_values(image_bgr: np.ndarray, outline: PixelOutline, reader: Reader) -> list[Reading]:
+def read_values(image_bgr: np.ndarray, outline: PixelOutline, reader: Reader | None,
+                batch: BatchReader | None = None) -> list[Reading]:
+    """One batch call for every crop when a batch reader is given; the single-crop reader is the fallback."""
+    boxes = text_regions(image_bgr, outline)
+    crops = [image_bgr[max(y - 6, 0): y + h + 6, max(x - 6, 0): x + w + 6] for x, y, w, h in boxes]
+    reads = batch(crops) if batch is not None and crops else None
+    if reads is None:
+        if reader is None:
+            return []
+        reads = [reader(crop) for crop in crops]
     out = []
-    for x, y, w, h in text_regions(image_bgr, outline):
-        crop = image_bgr[max(y - 6, 0): y + h + 6, max(x - 6, 0): x + w + 6]
-        text, confidence = reader(crop)
+    for box, (text, confidence) in zip(boxes, reads):
         parsed = parse_value(text)
         if parsed is None:
-            log.info("dropped OCR read %r at %s", text, (x, y, w, h))
+            log.info("dropped OCR read %r at %s", text, box)
             continue
-        out.append(Reading(parsed[0], parsed[1], (x, y, w, h), float(confidence), text))
+        out.append(Reading(parsed[0], parsed[1], box, float(confidence), text))
     return out
 
 

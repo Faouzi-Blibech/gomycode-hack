@@ -94,7 +94,7 @@ def hint_label(face: str, kind: str = "sketch") -> MvLabel:
     return MvLabel(face=face, input_kind=kind, confidence=0.9)
 
 
-def env_chat(log_path: str | Path = "logs/vlm.jsonl") -> Chat | None:
+def env_chat(log_path: str | Path = "logs/vlm.jsonl", stage: str = "mv_label") -> Chat | None:
     """OpenAI-compatible chat from VLM_BASE_URL, VLM_MODEL, VLM_API_KEY; None when not configured.
     Swap for the integrator's VLMClient when s2c/vision/ lands."""
     base, model, key = (os.environ.get(k) for k in ("VLM_BASE_URL", "VLM_MODEL", "VLM_API_KEY"))
@@ -109,7 +109,7 @@ def env_chat(log_path: str | Path = "logs/vlm.jsonl") -> Chat | None:
         usage = r.usage
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"provider": base, "model": model, "stage": "mv_label",
+            f.write(json.dumps({"provider": base, "model": model, "stage": stage,
                                 "latency_ms": round((time.perf_counter() - t0) * 1000),
                                 "prompt_tokens": getattr(usage, "prompt_tokens", None),
                                 "completion_tokens": getattr(usage, "completion_tokens", None)}) + "\n")

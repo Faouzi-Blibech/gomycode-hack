@@ -20,7 +20,7 @@ def sketch(w_px, h_px, circles=()):
 def fake_reads(per_image):
     calls = iter(per_image)
 
-    def read_values(bgr, outline, reader):
+    def read_values(bgr, outline, reader, batch=None):
         x, y, w, h = outline.bbox
         out = []
         for value, where in next(calls):
@@ -68,3 +68,25 @@ def test_build_errors_become_abstentions(tmp_path):
                                "features[0].diameter_mm": "user_edited"})
     res = pipe.build(MultiViewSpec.model_validate(data), tmp_path)
     assert isinstance(res, MvAbstain) and res.stage == "build" and res.reason == "feature_outside_part"
+
+
+def test_the_batch_reader_feeds_ocr(monkeypatch):
+    seen = []
+
+    def fake(bgr, outline, reader, batch=None):
+        seen.append((reader, batch))
+        return []
+
+    def batch(crops):
+        return []
+
+    monkeypatch.setattr(pipeline, "read_values", fake)
+    observed = MvPipeline(batch_reader=batch).observe([ImageInput(sketch(600, 400), "front", "sketch")])
+    assert seen == [(None, batch)]
+    assert "OCR unavailable: enter the dimensions by hand" not in observed.warnings
+
+
+def test_default_pipeline_reads_with_qwen_vl_when_configured(monkeypatch):
+    for key, value in {"VLM_BASE_URL": "http://localhost:9/v1", "VLM_MODEL": "m", "VLM_API_KEY": "k"}.items():
+        monkeypatch.setenv(key, value)
+    assert pipeline.default_pipeline().batch_reader is not None
