@@ -47,6 +47,7 @@ One OpenAI-compatible client. Configure with `VLM_BASE_URL`, `VLM_MODEL`, `VLM_A
 
 - Python 3.11, `uv` for environments, `pytest`, `ruff`.
 - `uv sync` to install, `uv run pytest` to test, `uv run uvicorn s2c.api:app --reload` for the API, `uv run python app_gradio.py` for the lab UI.
+- `uv run python app_mv_studio.py` for the Studio (multi-view guided flow, parameters, every export).
 - `web/`: Vite + React + TypeScript + three. `npm install`, `npm run dev`.
 
 ## Testing

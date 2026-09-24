@@ -15,7 +15,11 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from s2c.multiview.artifacts import ROOT as ARTIFACT_ROOT
+from s2c.multiview.artifacts import build_part as _build_part
+from s2c.multiview.artifacts import bundle, export_part
 from s2c.multiview.pipeline import ImageInput, MvPipeline, Observed, default_pipeline
+from s2c.multiview.settings import StudioSettings
 from s2c.multiview.spec import MultiViewSpec, MvAbstain
 
 router = APIRouter(prefix="/mv", tags=["multiview"])
@@ -124,3 +128,35 @@ def files(bid: str, name: str) -> FileResponse:
     if not _ID.match(bid) or not _NAME.match(name) or not path.is_file():
         raise HTTPException(404, "File not found or expired.")
     return FileResponse(path)
+
+
+_KEY = re.compile(r"^[0-9a-f]{20}$")
+
+
+class ExportBody(BaseModel):
+    spec: MultiViewSpec
+    settings: StudioSettings = StudioSettings()
+
+
+@router.post("/export")
+def export_files(body: ExportBody) -> dict:
+    part = _build_part(body.spec, body.settings.geometry, ARTIFACT_ROOT)
+    if isinstance(part, MvAbstain):
+        return {"abstain": part.model_dump()}
+    s = body.settings
+    res = export_part(part, s.export.formats, s.mesh, s.printing)
+    zip_path = bundle(part, res, s.model_dump(mode="json"))
+    base = f"/mv/artifacts/{part.key}"
+    files_by_format = {f: f"{base}/{p.relative_to(part.folder).as_posix()}" for f, p in res.files.items()}
+    return {"key": part.key, "files": files_by_format, "zip_url": f"{base}/{zip_path.name}",
+            "print_time_s": res.print_time_s, "filament_g": res.filament_g, "warnings": res.warnings}
+
+
+@router.get("/artifacts/{key}/{path:path}")
+def artifact(key: str, path: str) -> FileResponse:
+    parts = path.split("/")
+    root = (ARTIFACT_ROOT / key).resolve()
+    target = (root / path).resolve() if _KEY.match(key) and all(_NAME.match(p) for p in parts) else None
+    if target is None or root not in target.parents or not target.is_file():
+        raise HTTPException(404, "File not found or expired.")
+    return FileResponse(target)

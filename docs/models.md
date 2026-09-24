@@ -26,5 +26,8 @@ Rules:
 | TrOCR base handwritten | `microsoft/trocr-base-handwritten` | Fallback reader when Qwen-VL is unavailable | Local, CUDA or CPU | |
 | rembg (u2net) | `rembg` | Removes the background before TripoSR | Local CPU | |
 | PrusaSlicer | prusa3d.com (AGPL) | Slices the STL to G-code with `profiles/fdm_default.ini` | Local CLI | |
+| ezdxf | `ezdxf` (MIT) | Writes the DXF, SVG and PDF drawings | Local | |
+| trimesh | `trimesh` (MIT) | Writes the OBJ, GLB and PLY meshes | Local | |
+| Blender / bpy 4.2 | blender.org (GPL) | Writes a native `.blend`; optional, runs as its own process | Local, `BLENDER_PATH` or `scripts/setup_blender.ps1` | |
 
 Before the demo: `NETWORK_TESTS=1 uv run pytest tests/test_mv_network.py -v`, then fill in the Checked column with the date.

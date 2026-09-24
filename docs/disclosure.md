@@ -17,6 +17,7 @@ Every call is logged to `logs/vlm.jsonl` with provider, model, stage and latency
 - Images are sent to DashScope and to Hugging Face Spaces for the calls above. The app says so next to the upload. Those services keep their own logs: the public Qwen-Image Space, for one, saves the images it receives. Use DashScope directly (`QWEN_IMAGE_BACKEND=dashscope`) for anything confidential.
 - API: images live only for the request; silhouettes and exported files stay in `tmp/mv/` for one hour.
 - Gradio lab app: uploads stay in Gradio's cache and built files in `tmp/mv_gradio/`, both deleted after one hour. While a browser session is open, its photos stay in that session's memory.
+- Studio: builds also live under `tmp/mv_gradio/` for one hour after their last use. Each export's zip carries a `manifest.json` listing the part's values, their sources, and the settings used to build and export it.
 - No model output is executed. Geometry is built by our own CadQuery code from validated JSON.
 
 ## Licences

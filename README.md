@@ -68,8 +68,9 @@ The vision model is chosen by three environment variables: `VLM_BASE_URL`, `VLM_
 
 Give one or more images per face, several of the same face if you have them: they are aligned and voted into one cleaner outline. Qwen-VL reads the numbers you wrote. Faces you did not give are drawn by Qwen-Image and kept only if they agree with the faces you did give; otherwise TripoSR, otherwise a rectangle. Solaria's depth map tells through holes from blind ones. The part is the intersection of the three extruded outlines, sliced to G-code. Designs: `docs/superpowers/specs/2026-09-22-multiview-gcode-design.md` and `docs/superpowers/specs/2026-09-23-qwen-solaria-design.md`.
 
-    uv run python app_mv_gradio.py                                                           # lab app on :7860
+    uv run python app_mv_studio.py                                                           # the Studio on :7860 (guided flow, parameters, every export)
     uv run python scripts/mv_build.py examples/mv/l_bracket.json --out tmp/mv_demo          # spec -> STEP, STL, G-code
+    uv run python scripts/mv_export.py examples/mv/l_bracket.json --format stl --format step --format pdf  # spec -> chosen formats + zip
     uv run python scripts/mv.py --image front.jpg@front@sketch --image top.jpg@top@sketch   # images -> the same
     uv run uvicorn s2c.multiview.app:app --port 8001                                        # /mv API
     NETWORK_TESTS=1 uv run pytest tests/test_mv_network.py -v                               # live check of the hosted models
@@ -77,6 +78,8 @@ Give one or more images per face, several of the same face if you have them: the
 Settings are in `.env.example`: Qwen-VL and Qwen-Image on DashScope or Hugging Face, Solaria on Hugging Face. Photos of real parts: shoot top-down with the part lying flat.
 
 G-code needs PrusaSlicer: `winget install --id Prusa3D.PrusaSlicer -e` (needs admin), or unzip the portable zip from the PrusaSlicer GitHub release into `vendor/`. Without it you still get STL and STEP.
+
+Export formats: STL, STEP, 3MF, OBJ, GLB, PLY, BREP, Blender, DXF/SVG/PDF drawing, G-code, and a zip with a manifest. Blender: set `BLENDER_PATH`, or run `scripts/setup_blender.ps1`; without it the download is a Blender kit.
 
 ## Repository layout
 
