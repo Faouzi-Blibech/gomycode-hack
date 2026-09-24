@@ -10,7 +10,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from s2c.multiview import artifacts, routes
-from s2c.multiview.spec import MvAbstain
 
 SPEC = json.loads((Path(__file__).parents[1] / "examples" / "mv" / "l_bracket.json").read_text())
 
@@ -83,17 +82,15 @@ def test_artifact_route_rejects_dotdot(tmp_path, monkeypatch):
 
 def test_export_abstain(tmp_path, monkeypatch):
     c = client(tmp_path, monkeypatch)
-    # /export takes a spec, not an image upload; the abstain branch is the builder's, reached the same way
-    # tests/test_studio_ui.py exercises it: monkeypatch the build so it abstains.
-    monkeypatch.setattr(routes, "_build_part",
-                         lambda spec, geometry, root: MvAbstain(stage="build", reason="fillet_failed",
-                                                                 remedy="Reduce the fillet radius."))
-    r = c.post("/mv/export", json={"spec": SPEC})
+    # a fillet too large for the part to hold: tests/test_studio_artifacts.py proves this is a real
+    # BuildError("fillet_failed") out of build_part, not a mock.
+    body = {"spec": SPEC, "settings": {"geometry": {"finish": "fillet", "finish_mm": 8.0}}}
+    r = c.post("/mv/export", json=body)
     assert r.status_code == 200
     abstain = r.json()["abstain"]
     assert abstain["stage"] == "build"
     assert abstain["reason"] == "fillet_failed"
-    assert abstain["remedy"] == "Reduce the fillet radius."
+    assert abstain["remedy"]
 
 
 def test_cli_bad_material(tmp_path, capsys):
@@ -117,3 +114,18 @@ def test_cli_help_does_not_sweep(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         mv_export.main(["--help"])
     assert exc.value.code == 0
+
+
+def test_cli_bad_layer_does_not_sweep(tmp_path, capsys, monkeypatch):
+    from scripts import mv_export
+
+    def boom():
+        raise AssertionError("swept before the bad --layer was reported")
+
+    monkeypatch.setattr(mv_export, "sweep", boom)
+    spec_path = Path(__file__).parents[1] / "examples" / "mv" / "l_bracket.json"
+    with pytest.raises(SystemExit) as exc:
+        mv_export.main(["--layer", "5.0", str(spec_path), "--out", str(tmp_path)])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "Traceback" not in err

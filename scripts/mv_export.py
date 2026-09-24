@@ -25,7 +25,6 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--scale", type=float, default=100.0)
     ap.add_argument("--out", default="tmp/export")
     args = ap.parse_args(argv)
-    sweep()  # after parse_args: --help (or a bad argument) must not touch old builds
     spec = MultiViewSpec.model_validate_json(Path(args.spec).read_text())
     formats = ExportSettings(formats=args.format or ExportSettings().formats).formats
     mesh = MeshSettings(quality=args.quality)
@@ -34,6 +33,7 @@ def main(argv: list[str] | None = None) -> None:
                                   supports=args.supports, scale_pct=args.scale)
     except ValidationError as e:
         ap.error(str(e))
+    sweep()  # after parse_args AND validation: --help or any bad argument must not touch old builds
     part = build_part(spec)
     if isinstance(part, MvAbstain):
         raise SystemExit(f"{part.stage}: {part.reason}. {part.remedy}")
