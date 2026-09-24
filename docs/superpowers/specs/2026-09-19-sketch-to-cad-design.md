@@ -2,7 +2,7 @@
 
 Date: 2026-09-19
 Event: GOMYCODE "Come Build with AI" hackathon, 27 September 2026, 09:00 to 20:00, submission 17:30 Tunis time
-Team: 3 people (integrator, geometry owner, numbers owner)
+Team: 4 people (integrator, backend and security owner, geometry owner, numbers owner). Grew from 3 on 24 September; see section 5.
 Status: approved design, pre-implementation
 
 ## 1. What we are building
@@ -114,8 +114,9 @@ All Python modules live in the `s2c` package (`s2c/partspec/`, `s2c/vision/`, `s
 | `partspec/` | Pydantic models for PartSpec, Topology, Annotations, Measurements, Abstain. JSON schema export. | Integrator |
 | `vision/` | OpenAI-compatible client, prompt templates, schema-in-prompt, validate, retry once with the error, abstain on second failure. | Integrator |
 | `merge.py` | Fuse Topology + Annotations + Measurements into a PartSpec. Confidence gates. Provenance per field. | Integrator |
-| `api.py` | FastAPI: `/analyze`, `/build`, `/files/{id}`. Stateless, files in a temp dir with TTL. | Integrator |
-| `app_gradio.py` | Lab UI: upload, run pipeline, show PartSpec JSON, silhouettes, IoU, download. | Integrator |
+| `pipeline.py` | Wire every stage together, fall back to a fake per missing module. | Integrator |
+| `api.py` | FastAPI: `/analyze`, `/merge`, `/build`, `/files/{id}`. Stateless, files in a temp dir with TTL, swept on every request. Upload limits, CORS allowlist, no leaked errors. | Backend and security owner |
+| `app_gradio.py` | Lab UI: upload, run pipeline, show PartSpec JSON, silhouettes, IoU, download. | Backend and security owner |
 | `web/` | React + Three.js mobile web app: camera capture, sliders, STL viewer, download. | Integrator, with geometry owner on the viewer |
 | `builder.py` | PartSpec to CadQuery solid. STEP + STL export. | Geometry owner |
 | `views.py` | Solid to 6 silhouettes as binary images. | Geometry owner |
@@ -124,6 +125,8 @@ All Python modules live in the `s2c` package (`s2c/partspec/`, `s2c/vision/`, `s
 | `ocr.py` | Find dimension annotations on a sketch or drawing, read the value, link it to an edge or a hole. | Numbers owner |
 | `metrology.py` | Coin detection, eccentricity gate, mm-per-pixel, outer contour and hole circles in mm. | Numbers owner |
 | `tests/` for OCR and metrology accuracy | Labelled set, accuracy report. | Numbers owner |
+| `tests/test_golden.py` | Full pipeline against the golden set, 5 percent or 1 mm. | Backend and security owner |
+| Security evidence | Prompt-injection suite, merge property test, dependency audit and secret scan in CI, one test per privacy claim, `docs/security.md`. | Backend and security owner |
 
 ### 4.2 Contracts (frozen on day one)
 
@@ -260,7 +263,8 @@ Mobile web app: three screens.
 
 - `main` is always demoable. Feature branches per person, PRs reviewed by one other person, squash merge.
 - Commit messages are plain, in the team's voice. No AI attribution lines and no co-author trailers, in commits or PR bodies.
-- Contracts in `partspec/` change only through a PR that all three approve, and never on event day.
+- Contracts in `partspec/` change only through a PR that all four approve, and never on event day.
+- Four owners: the integrator (Faouzi) owns contracts, vision, merge, pipeline, the web app and the demo; the backend and security owner owns the API, the lab UI, the golden harness, security evidence, and reviews the integrator's PRs; the geometry owner and the numbers owner are unchanged.
 - Each person has a role brief in `docs/roles/` written to be pasted into their AI assistant.
 - `CLAUDE.md` at the repo root carries the rules, grammar and contracts so any AI tool in the repo respects them.
 
@@ -278,7 +282,7 @@ Event day plan (per the hackathon's published schedule: roster due 10:00, NVIDIA
 - 09:00 to 10:00: setup, sanity checks on the fallback provider, submit the team roster well before the 10:00 deadline. No NVIDIA key exists yet at this point.
 - 10:15 to 11:15: attend the voucher-activation workshop. This is the earliest the sponsor's key can exist.
 - 11:15 to 12:00: set `VLM_BASE_URL`/`VLM_MODEL`/`VLM_API_KEY` to NVIDIA Build, run the golden set against it. Only swap the demo to NVIDIA Build once that run actually passes; until it does, keep the working fallback provider configured and disclose both. Treat the swap as conditional, not a certainty.
-- 12:00 to 14:00: fixes, polish, mentors.
+- 12:00 to 14:00: fixes, polish, mentors. Backend and security owner runs the live injection test against the NVIDIA model and tests the app on two phones on the venue Wi-Fi.
 - 14:00 to 15:30: record the 90-second video, with real time to spare rather than at the last minute.
 - 15:30 to 17:00: project card, tool disclosure, README, final deploy.
 - 17:00 to 17:30: submit. Nothing new started in this final stretch.
@@ -292,7 +296,7 @@ Event day plan (per the hackathon's published schedule: roster due 10:00, NVIDIA
 | Quality of AI use | 20 | The model does topology only. Why we never generate code. Provider swap and why NVIDIA Build. |
 | Testing + reliability | 15 | Abstention gates, round-trip IoU, golden-set accuracy numbers, latency and cost per request. |
 | Experience + demo | 15 | 90 seconds: sketch, phone, sliders, print. |
-| Responsible AI + data | 10 | No image storage beyond the request, human edits before export, no code execution, full model and tool disclosure. |
+| Responsible AI + data | 10 | No image storage beyond the request, human edits before export, no code execution, full model and tool disclosure. Each claim backed by a test, listed in `docs/security.md`; live prompt-injection result on the demo model. |
 
 ## 8. Out of scope for version 1
 

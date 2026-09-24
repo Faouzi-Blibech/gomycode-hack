@@ -596,7 +596,7 @@ git commit -m "Render six orthographic silhouettes from a solid"
 - Create: `tests/golden/<name>/expected.json` and `image.jpg` for each case, `tests/test_golden_files.py`, `scripts/render_golden.py`
 
 **Interfaces:**
-- Produces: folders the integrator's `tests/test_golden.py` and the numbers owner's accuracy tests consume. `expected.json` schema is in `tests/golden/README.md`.
+- Produces: folders the backend and security owner's `tests/test_golden.py` (their plan, Task 4) and the numbers owner's accuracy tests consume. `expected.json` schema is in `tests/golden/README.md`.
 
 - [ ] **Step 1: Write the well-formedness test**
 

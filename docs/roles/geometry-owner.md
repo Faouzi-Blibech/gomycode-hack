@@ -29,7 +29,7 @@ Coordinate convention: front view is the XY plane, extrusion along +Z. Origin at
 3. `flange`, `l_bracket`, `profile_extrusion`.
 4. Features: `hole` (through and blind), `slot`, `fillet`, `chamfer` with the edge selectors from the grammar.
 5. `views.py`: render each face to a binary mask. Simplest approach: tessellate the solid, project every triangle along the view axis, and rasterise with OpenCV `fillPoly`. Test: `s2c.silhouette.iou` of a built plate against its own front silhouette above 0.98.
-6. The golden set. This is the most valuable thing you can deliver in the first three days because the other two cannot test without it.
+6. The golden set. This is the most valuable thing you can deliver in the first three days because nobody else can test without it. The backend and security owner's golden harness (`tests/test_golden.py`) runs on it; agree the `expected.json` format with them first.
 7. Three.js viewer: load an STL blob, orbit controls, auto-fit camera, re-load on every slider change.
 
 ## Tips

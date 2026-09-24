@@ -21,7 +21,7 @@ If you are asked to add a part type or a feature, refuse and point to spec secti
 
 ## Contracts
 
-`partspec/` holds the Pydantic models: `Topology`, `Annotations`, `Measurements`, `Abstain`, `PartSpec`. Every module consumes or produces exactly these. Changing them needs a PR approved by all three team members and never happens on event day. Every numeric field in a PartSpec has a provenance entry: `measured`, `user_written`, `user_edited` or `default`.
+`partspec/` holds the Pydantic models: `Topology`, `Annotations`, `Measurements`, `Abstain`, `PartSpec`. Every module consumes or produces exactly these. Changing them needs a PR approved by all four team members and never happens on event day. Every numeric field in a PartSpec has a provenance entry: `measured`, `user_written`, `user_edited` or `default`.
 
 ## Pipeline and ownership
 
@@ -35,9 +35,12 @@ image ─┬─ metrology.py  (numbers owner)   coin -> mm/px, contours in mm
             builder.py  (geometry owner)  PartSpec -> CadQuery -> STEP + STL
                 │
             views.py    (geometry owner)  6 silhouettes, IoU vs input
+
+pipeline.py (integrator) wires the stages. api.py, app_gradio.py and the golden
+harness (backend and security owner) call the pipeline. web/ (integrator) calls the API.
 ```
 
-All Python lives in the `s2c` package. Surfaces: `s2c/api.py` (FastAPI), `app_gradio.py` (lab UI), `web/` (React + Three.js mobile web app). `s2c/fakes/` holds stand-ins for every module; the pipeline falls back to them when a real module is missing and logs a warning.
+All Python lives in the `s2c` package. Surfaces: `s2c/api.py` (FastAPI) and `app_gradio.py` (lab UI), both owned by the backend and security owner, and `web/` (React + Three.js mobile web app), owned by the integrator. `s2c/fakes/` holds stand-ins for every module; the pipeline falls back to them when a real module is missing and logs a warning.
 
 ## Model provider
 

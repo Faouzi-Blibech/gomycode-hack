@@ -115,7 +115,7 @@ Accuracy numbers, updated as tests land:
 
 ## Team
 
-Three people, three owners. The integrator owns the contracts, model layer, merge, API and UIs. The geometry owner owns the builder, views and the golden parts. The numbers owner owns coin metrology and dimension OCR. Briefs for each role are in `docs/roles/`.
+Four people, four owners. The integrator owns the contracts, model layer, merge, pipeline and the mobile web app. The backend and security owner owns the API, the lab UI, the golden-set harness and the security evidence. The geometry owner owns the builder, views and the golden parts. The numbers owner owns coin metrology and dimension OCR. Briefs for each role are in `docs/roles/`.
 
 ## Status
 
