@@ -127,7 +127,7 @@ def merge(
         return Abstain(
             stage="merge", reason=f"missing_{field}",
             remedy=f"We could not read the {field.replace('_', ' ')}. Enter it below.",
-            partial=_partial(values, unplaced),
+            partial=_partial(values),
         )
 
     part, provenance = _assemble_part(kind, values, measurements, topology)
@@ -142,16 +142,13 @@ def merge(
     except ValidationError as e:
         return Abstain(stage="merge", reason="inconsistent_dimensions",
                        remedy=f"The dimensions do not fit together: {e.errors()[0]['msg']}.",
-                       partial=_partial(values, unplaced))
+                       partial=_partial(values))
 
 
-def _partial(values: Values, unplaced: _Unplaced) -> dict:
-    """What was recovered, for the UI. Abstain has no warnings field, so the unplaced-value
-    warnings ride in `partial` under "warnings", only when there are any."""
-    partial: dict = {k: v for k, (v, _) in values.items()}
-    if unplaced.warnings:
-        partial["warnings"] = list(unplaced.warnings)
-    return partial
+def _partial(values: Values) -> dict[str, float]:
+    """What was recovered, as a value map of numbers only. Unplaced-value warnings are not carried
+    on an Abstain: answering it re-runs merge with the same inputs and the PartSpec warns."""
+    return {k: v for k, (v, _) in values.items()}
 
 
 def _values_from_annotations(ann: Annotations, kind: str,

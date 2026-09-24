@@ -39,11 +39,6 @@ def warned(warnings, *needles):
     return [w for w in warnings if all(n in w for n in needles)]
 
 
-def warnings_of(out):
-    """PartSpec carries warnings; an Abstain carries them in partial, having no field of its own."""
-    return out.warnings if isinstance(out, PartSpec) else (out.partial or {}).get("warnings", [])
-
-
 WIDTH, HEIGHT, THICK = ann(60.0, linked_to="width"), ann(40.0, linked_to="height"), ann(5.0, linked_to="thickness")
 ONE_HOLE = [{"u": 0.2, "v": 0.25}]
 
@@ -54,15 +49,12 @@ def test_slot_length_never_becomes_thickness():  # C3
     a = Annotations(items=[*plain, ann(25.0, linked_to="slot_length")], confidence=0.9)
     out = merge(topo(), source_input="sketch", annotations=a)
 
-    # same abstention as with no slot annotation at all: the slot length is not a thickness
+    # exactly the abstention there is with no slot annotation at all: the slot length is not a thickness
     assert isinstance(out, Abstain), f"slot length was used as a part dimension: {out}"
     assert without_slot.reason == "missing_thickness"
-    assert (out.reason, out.remedy) == (without_slot.reason, without_slot.remedy)
-    assert {k: v for k, v in out.partial.items() if k != "warnings"} == without_slot.partial
-    assert "thickness" not in out.partial
-    # and the slot value is carried, not silently lost
-    assert warned(out.partial["warnings"], "slot_length", "25 mm", "not used")
+    assert (out.reason, out.remedy, out.partial) == (without_slot.reason, without_slot.remedy, without_slot.partial)
 
+    # the slot value is not lost: answering the abstention brings its warning back on the spec
     spec = merge(topo(), source_input="sketch", annotations=a, user_values={"thickness": 4.0})
     assert isinstance(spec, PartSpec)
     assert spec.part.thickness_mm == 4.0 and spec.provenance["part.thickness_mm"] == "user_edited"
@@ -82,7 +74,46 @@ def test_corner_radius_is_never_assigned_to_another_dimension():  # same defect 
                     confidence=0.9)
     out = merge(topo(part_type="spacer"), source_input="sketch", annotations=a)
     assert isinstance(out, Abstain) and out.reason == "missing_length", f"corner radius became a length: {out}"
-    assert warned(warnings_of(out), "corner_radius", "2 mm", "not used")
+    spec = merge(topo(part_type="spacer"), source_input="sketch", annotations=a, user_values={"length": 30.0})
+    assert spec.part.length_mm == 30.0
+    assert warned(spec.warnings, "corner_radius", "2 mm", "not used")
+
+
+# Abstain.partial is a value map (the UI and the golden harness read it as numbers), so it never
+# carries warnings. Nothing is lost: answering the abstention re-runs merge and the spec warns.
+ABSTAINS_WITH_UNPLACED_VALUES = {
+    "slot length, thickness missing": (
+        {}, "sketch", [WIDTH, HEIGHT, ann(25.0, linked_to="slot_length")], None,
+        {"thickness": 4.0}, ("slot_length", "25 mm")),
+    "extra measured circle, length missing": (
+        {"part_type": "spacer"}, "photo", [],
+        meas(50.0, 50.0, [Circle(x=25, y=25, diameter=20), Circle(x=10, y=10, diameter=4)]),
+        {"length": 30.0}, ("measured circle", "4 mm")),
+    "hole past the detected holes, height missing": (
+        {"holes": ONE_HOLE}, "sketch", [WIDTH, THICK, ann(8.0, "diameter", "hole_diameter", hole_index=2)], None,
+        {"height": 40.0}, ("hole 3", "8 mm")),
+}
+
+
+@pytest.mark.parametrize("case", list(ABSTAINS_WITH_UNPLACED_VALUES.values()), ids=list(ABSTAINS_WITH_UNPLACED_VALUES))
+def test_abstain_partial_is_numbers_only_and_the_warning_returns_on_the_spec(case):
+    topo_kw, source, items, m, answer, needles = case
+    kw = {"source_input": source, "annotations": Annotations(items=items, confidence=0.9), "measurements": m}
+    out = merge(topo(**topo_kw), **kw)
+    assert isinstance(out, Abstain) and out.reason.startswith("missing_")
+    assert all(isinstance(v, float) for v in out.partial.values()), out.partial
+
+    spec = merge(topo(**topo_kw), **kw, user_values=answer)
+    assert isinstance(spec, PartSpec)
+    assert warned(spec.warnings, *needles, "not used")
+
+
+def test_inconsistent_dimensions_partial_is_numbers_only():
+    a = Annotations(items=[ann(20.0, "diameter", "outer_diameter"), ann(30.0, "diameter", "inner_diameter"),
+                           ann(30.0, linked_to="length"), ann(3.0, "radius")], confidence=0.9)
+    out = merge(topo(part_type="spacer"), source_input="sketch", annotations=a)
+    assert isinstance(out, Abstain) and out.reason == "inconsistent_dimensions"
+    assert all(isinstance(v, float) for v in out.partial.values()), out.partial
 
 
 def test_radius_on_a_part_without_a_radius_is_warned_not_dropped():  # C1
@@ -184,6 +215,7 @@ OTHER_DROP_PATHS = {
 @pytest.mark.parametrize("case", list(OTHER_DROP_PATHS.values()), ids=list(OTHER_DROP_PATHS))
 def test_other_drop_paths_warn(case):
     topo_kw, items, user_values, needles = case
-    out = merge(topo(**topo_kw), source_input="sketch", annotations=Annotations(items=items, confidence=0.9),
-                user_values=user_values)
-    assert warned(warnings_of(out), *needles, "not used"), warnings_of(out)
+    spec = merge(topo(**topo_kw), source_input="sketch", annotations=Annotations(items=items, confidence=0.9),
+                 user_values=user_values)
+    assert isinstance(spec, PartSpec)
+    assert warned(spec.warnings, *needles, "not used"), spec.warnings
