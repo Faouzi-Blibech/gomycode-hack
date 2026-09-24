@@ -45,7 +45,7 @@ Privacy: the image lives only for the request. Keeping crops for training is opt
 - Each view carries a written label: TOP, FRONT, SIDE, RIGHT, LEFT, BOTTOM, BACK, or the French DESSUS, FACE, CÔTÉ, DROITE, GAUCHE, DESSOUS, ARRIÈRE. A missing label falls back to the layout position and becomes an issue.
 - Units are millimetres. A sheet whose values look like inches (leading-dot decimals such as `.50` throughout, all values under 10) raises an issue asking "mm or inches?".
 - Drawing conventions: thick continuous lines for visible edges, dashed lines for hidden edges, dash-dot lines for centre lines and axes, thin dimension lines with arrowheads between extension lines, leaders for `Ø` and `R`, chained and overall dimensions, angles with `°`, chamfers as `2×45°` or `C2`, hole callouts such as `Ø6 THRU` or `Ø6 ↧10`.
-- Any object, not only mechanical parts: outlines may contain free curves.
+- Simple mechanical parts only (decided 2026-09-24 for time): plates, L-brackets, flanges, spacers, blocks and profile extrusions, the team's part grammar. Outlines are lines, circles and arcs; a smooth stroke that fits none of them is kept as a curve so it is not lost.
 
 ## 4. Pipeline
 
@@ -404,7 +404,7 @@ The package depends only on `s2c/vision/client.py` from the rest of the codebase
 
 | Set | Content | Use |
 | --- | --- | --- |
-| Golden sheets | 15 to 20 real hand-drawn sheets by several people: the reference drawing (a bridge block with four holes) redrawn by hand, and a mug, a phone, a bottle, a bracket, a box with a pocket. Each with `expected.json`: every dimension and what it measures, features, envelope. | the reported numbers |
+| Golden sheets | 15 to 20 real hand-drawn sheets by several people: the reference drawing (a bridge block with four holes) redrawn by hand, a plate with through and blind holes, an L-bracket with a slot, a flange with a bolt circle, a spacer, a stepped block, and a box with a pocket. Each with `expected.json`: every dimension and what it measures, features, envelope. | the reported numbers |
 | Vector fixtures | reference positions and dimensions written in code, for example the FRONT view of the reference drawing (X positions 0, 1.00, 1.50, 2.50, 3.00, 4.00) | exact unit tests of linking, solving, badges, prediction |
 | Crops | 200 to 400 labelled value crops cut from the golden sheets | the reader head-to-head |
 | Synthetic sheets (optional) | random CadQuery parts projected with OCCT hidden-line removal and drawn in a hand-drawn style | a larger regression set if time allows |
@@ -440,7 +440,7 @@ Every stage has tests on small synthetic inputs, written before the code. Every 
 | --- | --- |
 | Must | capture; two readers with agreement; grammar; views and labels; lines and circles; hidden, arrowhead, dimension, extension and leader classification; linking for linear, chained, diameter and radius values; solve with cross-view matching and badges; prediction ranks 1, 2 and 5; holes through and blind; JSON and abstains; debug overlays; golden runner and the accuracy numbers |
 | Should | angles and chamfers; prediction ranks 3 and 4; unclear-reading proposals; meaning check; `resolve()` with edits; reader head-to-head; Brev setup script; correction records |
-| Could | free-curve quality; slots; centre lines as evidence; synthetic sheets; opt-in crop storage |
+| Could | slots; centre lines as evidence; synthetic sheets; opt-in crop storage |
 | Later | CRNN; fine-tuning a vision model on corrections; the photo path |
 
 ## 16. Open items
