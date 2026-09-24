@@ -1,3 +1,5 @@
+import os
+import time
 from pathlib import Path
 
 import gradio as gr
@@ -5,6 +7,7 @@ import numpy as np
 import pytest
 
 from s2c.multiview import artifacts
+from s2c.multiview.artifacts import ExportResult
 from s2c.multiview.pipeline import MvPipeline
 from s2c.multiview.settings import AiSettings, ExportSettings, GeometrySettings, MeshSettings, PrintSettings
 from s2c.multiview.spec import MvAbstain
@@ -71,7 +74,7 @@ def test_bad_sizes_are_a_message(studio, tmp_path):
     assert not model.ok and "Width" in review.message_html and "Depth" in review.message_html
 
 
-def test_a_failed_finish_keeps_the_review(studio, tmp_path, monkeypatch):
+def fail_big_fillets(monkeypatch):
     real = handlers.build_part
 
     def fails_on_big_fillets(spec, geometry, root):  # the real failure is pinned in the artifacts tests
@@ -80,6 +83,10 @@ def test_a_failed_finish_keeps_the_review(studio, tmp_path, monkeypatch):
         return real(spec, geometry, root)
 
     monkeypatch.setattr(handlers, "build_part", fails_on_big_fillets)
+
+
+def test_a_failed_finish_keeps_the_review(studio, tmp_path, monkeypatch):
+    fail_big_fillets(monkeypatch)
     sid = with_images(studio, tmp_path)
     review = studio.analyze(sid, "none", AiSettings())
     sizes = {"x": "60", "y": "40", "z": "10"}
@@ -87,6 +94,79 @@ def test_a_failed_finish_keeps_the_review(studio, tmp_path, monkeypatch):
     assert not model.ok and "fillet" in model.message_html.lower()
     model = studio.rebuild_geometry(sid, GeometrySettings(finish="fillet", finish_mm=1.0))
     assert model.ok
+
+
+def test_a_failed_finish_opens_the_model_step(studio, tmp_path, monkeypatch):
+    fail_big_fillets(monkeypatch)
+    sid = with_images(studio, tmp_path)
+    review = studio.analyze(sid, "none", AiSettings())
+    sizes = {"x": "60", "y": "40", "z": "10"}
+    _, model = studio.build(sid, sizes, review.rows, [], GeometrySettings(finish="fillet", finish_mm=6.0))
+    assert model.ok is False and model.open_step == 2  # the finish controls live in step 3
+    assert studio.rebuild_geometry(sid, GeometrySettings(finish="none")).ok
+
+
+def test_a_failed_part_without_a_finish_stays_on_the_review(studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(handlers, "build_part",
+                        lambda spec, geometry, root: MvAbstain(stage="build", reason="bad", remedy="Fix it."))
+    sid = with_images(studio, tmp_path)
+    review = studio.analyze(sid, "none", AiSettings())
+    _, model = studio.build(sid, {"x": "60", "y": "40", "z": "10"}, review.rows, [], GeometrySettings())
+    assert model.ok is False and model.open_step is None
+
+
+def app_fn(app, name):
+    return next(f.fn for f in app.fns.values() if f.name == name)
+
+
+def test_the_build_button_shows_a_failed_finish_in_step_3(studio, tmp_path, monkeypatch):
+    fail_big_fillets(monkeypatch)
+    sid = with_images(studio, tmp_path)
+    review = studio.analyze(sid, "none", AiSettings())
+    on_build = app_fn(build_app(studio=studio), "on_build")
+    out = on_build(sid, "60", "40", "10", review.rows, [], True, "medium", "fillet", 6.0, "all_vertical")
+    step, model_msg = out[0], out[-4]
+    assert isinstance(step, gr.Walkthrough) and step.selected == 2 and "fillet_failed" in model_msg
+
+
+def test_old_builds_are_swept_when_a_part_is_built(studio, tmp_path):
+    old = studio.root / "old"
+    old.mkdir(parents=True)
+    past = time.time() - 7200
+    os.utime(old, (past, past))
+    sid = with_images(studio, tmp_path)
+    review = studio.analyze(sid, "none", AiSettings())
+    _, model = studio.build(sid, {"x": "60", "y": "40", "z": "10"}, review.rows, [], GeometrySettings())
+    assert model.ok and not old.exists()
+
+
+def test_suggested_sizes_fill_the_axes_that_have_one(studio, tmp_path):
+    sid = with_images(studio, tmp_path)
+    assert studio.suggested_sizes(sid) == {}  # nothing analysed yet
+    review = studio.analyze(sid, "none", AiSettings())
+    review, model = studio.build(sid, {"x": "60", "y": "40", "z": ""}, review.rows, [], GeometrySettings())
+    assert not model.ok and "missing_z" in review.message_html
+    hint = review.sizes["z"]["placeholder"].removeprefix("suggested ")
+    assert parse_size(hint) and studio.suggested_sizes(sid) == {"z": hint}
+
+
+def test_cancel_stops_analyze():
+    app = build_app(MvPipeline())
+    analyze = next(i for i, f in app.fns.items() if f.name == "on_analyze")
+    cancels = [f for f in app.fns.values() if f.is_cancel_function and analyze in f.cancels]
+    assert cancels and app.blocks[cancels[0].targets[0][0]].value == "Cancel"
+
+
+def test_export_stats_show_filament_in_grams_and_metres(studio, tmp_path, monkeypatch):
+    sid = with_images(studio, tmp_path)
+    review = studio.analyze(sid, "none", AiSettings())
+    studio.build(sid, {"x": "60", "y": "40", "z": "10"}, review.rows, [], GeometrySettings())
+    gcode = tmp_path / "part.gcode"
+    gcode.write_text("; fake")
+    monkeypatch.setattr(handlers, "export_part",
+                        lambda *a, **k: ExportResult({"gcode": gcode}, {"gcode": 6}, 2692, 12.4))
+    exported = studio.export(sid, ExportSettings(formats=["gcode"]), MeshSettings(), PrintSettings())
+    assert "12.4 g · 4.16 m" in exported.stats_html
 
 
 def test_a_file_that_is_not_an_image_is_explained(studio, tmp_path):
@@ -109,6 +189,20 @@ def test_redraw_moves_to_new_seeds(tmp_path, monkeypatch):
     seeds_before = {c[2] for c in gen.calls}
     studio.redraw(sid)
     assert seeds_before == {10} and {c[2] for c in gen.calls} == {10, 11}
+
+
+def test_redraw_draws_a_random_seed_when_asked(tmp_path, monkeypatch):
+    monkeypatch.setattr("s2c.multiview.slice.find_slicer", lambda: None)
+    seeds = iter([100, 5000])
+    monkeypatch.setattr(handlers.random, "randint", lambda a, b: next(seeds))
+    gen = fake_gen(np.zeros((300, 300, 3), np.uint8))
+    studio = Studio(MvPipeline(image_gen=gen), root=tmp_path / "files")
+    sid = with_images(studio, tmp_path, faces=(("front", 600, 400),))
+    review = studio.analyze(sid, "none", AiSettings(seed=10, attempts=1, randomize_seed=True))
+    studio.build(sid, {"x": "60", "y": "40", "z": "10"}, review.rows, [], GeometrySettings())
+    assert {c[2] for c in gen.calls} == {100}
+    review = studio.redraw(sid)
+    assert review.seed == 5000 and {c[2] for c in gen.calls} == {100, 5000}  # not 100 + attempts
 
 
 def test_print_time_is_floored_to_hours_and_minutes():
@@ -135,3 +229,19 @@ def test_the_example_loads_two_tagged_sketches(studio):
     studio.load_examples(sid)
     items = studio.store.get(sid).items
     assert [(i.face, i.kind) for i in items] == [("front", "sketch"), ("top", "sketch")]
+
+
+def test_the_example_images_are_small():
+    pngs = sorted(handlers.EXAMPLES.glob("*.png"))
+    assert pngs and all(p.stat().st_size < 300_000 for p in pngs)
+
+
+def test_the_example_analyzes_and_builds(studio):
+    sid = studio.store.new()
+    studio.load_examples(sid)
+    review = studio.analyze(sid, "none", AiSettings())
+    assert review.stage == "review" and len(review.faces) == 2  # both outlines found
+    _, model = studio.build(sid, {"x": "50", "y": "30", "z": "20"}, review.rows, [], GeometrySettings())
+    assert model.ok
+    scores = {c.split(" ")[0]: float(c.rsplit(" ", 1)[1]) for _, c in model.views if "match" in c}  # "front · match 0.97"
+    assert set(scores) == {"front", "top"} and min(scores.values()) > 0.9

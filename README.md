@@ -69,6 +69,7 @@ The vision model is chosen by three environment variables: `VLM_BASE_URL`, `VLM_
 Give one or more images per face, several of the same face if you have them: they are aligned and voted into one cleaner outline. Qwen-VL reads the numbers you wrote. Faces you did not give are drawn by Qwen-Image and kept only if they agree with the faces you did give; otherwise TripoSR, otherwise a rectangle. Solaria's depth map tells through holes from blind ones. The part is the intersection of the three extruded outlines, sliced to G-code. Designs: `docs/superpowers/specs/2026-09-22-multiview-gcode-design.md` and `docs/superpowers/specs/2026-09-23-qwen-solaria-design.md`.
 
     uv run python app_mv_studio.py                                                           # the Studio on :7860 (guided flow, parameters, every export)
+    uv run python app_mv_gradio.py                                                           # the simple lab app
     uv run python scripts/mv_build.py examples/mv/l_bracket.json --out tmp/mv_demo          # spec -> STEP, STL, G-code
     uv run python scripts/mv_export.py examples/mv/l_bracket.json --format stl --format step --format pdf  # spec -> chosen formats + zip
     uv run python scripts/mv.py --image front.jpg@front@sketch --image top.jpg@top@sketch   # images -> the same

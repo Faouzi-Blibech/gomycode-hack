@@ -34,9 +34,20 @@ def test_a_part_is_built_once(tmp_path, monkeypatch):
     monkeypatch.setattr(artifacts, "build", lambda spec: calls.append(1) or real(spec))
     first = build_part(SPEC, root=tmp_path)
     second = build_part(SPEC.model_copy(update={"warnings": ["x"]}), root=tmp_path)
-    assert first is second and calls == [1]
+    assert second.solid is first.solid and second.folder == first.folder and calls == [1]
     assert first.preview.exists() and first.bbox_mm == pytest.approx((50, 30, 20))
     assert set(first.views) == {"front", "back", "left", "right", "top", "bottom"}
+
+
+def test_a_cached_part_carries_the_latest_provenance_into_the_manifest(tmp_path):
+    first = build_part(SPEC, root=tmp_path)
+    edited = SPEC.model_copy(update={"provenance": {**SPEC.provenance, "features[0].a_mm": "user_edited"},
+                                     "warnings": [*SPEC.warnings, "x"]})
+    second = build_part(edited, root=tmp_path)
+    assert second.solid is first.solid
+    with zipfile.ZipFile(bundle(second, export_part(second, ["stl"]))) as z:
+        manifest = json.loads(z.read("manifest.json"))
+    assert manifest["spec"]["provenance"]["features[0].a_mm"] == "user_edited" and "x" in manifest["warnings"]
 
 
 def test_a_finish_that_cannot_be_built_is_a_card(tmp_path):
@@ -80,6 +91,16 @@ def test_the_zip_holds_the_files_and_a_manifest(tmp_path):
         manifest = json.loads(z.read("manifest.json"))
     assert manifest["spec"]["provenance"]["envelope.x_mm"] == "user_written"
     assert manifest["settings"] == {"mesh": {"quality": "normal"}} and manifest["part"]["key"] == part.key
+
+
+def test_each_export_gets_its_own_zip(tmp_path):
+    part = build_part(SPEC, root=tmp_path)
+    first = bundle(part, export_part(part, ["stl"]), {"formats": ["stl"]})
+    second = bundle(part, export_part(part, ["step"]), {"formats": ["step"]})
+    assert first != second and first.name.startswith(f"sketch-to-cad-{part.key[:8]}-")
+    with zipfile.ZipFile(first) as z:
+        assert sorted(z.namelist()) == ["manifest.json", "part.stl"]
+    assert not list(part.folder.glob("*.part"))  # the temporary files are gone
 
 
 def test_the_sweep_deletes_old_folders_only(tmp_path):

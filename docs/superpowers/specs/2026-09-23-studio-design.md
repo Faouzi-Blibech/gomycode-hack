@@ -138,7 +138,7 @@ The ezdxf "EZDXF" dimension style needs `dimlfac=1`. Shapes go into DXF wrapped 
 **Step 1, Capture.**
 - Left (`scale=3`): a drop zone (`gr.File(file_count="multiple", file_types=["image"])`) that appends to an items state and clears itself; a `@gr.render` card per image: thumbnail, face `gr.Dropdown` (auto + six faces), type `gr.Radio` (auto/sketch/photo/drawing), Remove. Stable `key=`s; face and type are kept in a separate tags state so choosing does not redraw.
 - Right (`scale=2`): a coverage strip (six chips: front ✓2, top ✓1, right "AI will draw it"); reference object dropdown; the "shoot top-down, part flat" note; "Try an example" (loads the generated demo sketches); the **Reading & AI** accordion; Analyze (primary) and Cancel.
-- Analyze is a generator with `gr.Progress` and stage text. It runs with `concurrency_id="models"` and `concurrency_limit=2`, and ends by unlocking and selecting Step 2.
+- Analyze shows its stage text through `gr.Progress` ("Reading your images, then drawing any missing faces…"); Cancel stops it. It runs with `concurrency_id="models"` and `concurrency_limit=2`, and ends by unlocking and selecting Step 2.
 
 **Step 2, Review.**
 - A status card: green "ready to build", or the red stop card (stage, reason, remedy). `missing_x` names the Width box.
@@ -151,7 +151,7 @@ The ezdxf "EZDXF" dimension style needs `dimlfac=1`. Shapes go into DXF wrapped 
 
 **States.** The empty state says what to drop. Loading shows stage text. Errors are cards with a remedy and never a traceback. `gr.Warning` is used only for non-blocking notices.
 
-**Session.** A server-side dict keyed by a UUID holds the `Observed`, spec, settings and last part key. `gr.State` holds only the UUID (`time_to_live=3600`, with a `delete_callback` that drops the entry). No `.change` handler is attached to a State.
+**Session.** A server-side dict keyed by a UUID holds the `Observed`, spec, settings and last part key. `gr.State` holds only the UUID (`time_to_live=3600`, with a `delete_callback` that drops the entry). No `.change` handler is attached to the session State. The one allowed `.change` trigger is the small integer `version` State, which drives the `@gr.render` of Step 1's image cards when an image is added or removed or the example is loaded.
 
 **Accessibility.** Every input has a label. Chip text says the meaning, so colour is never the only signal. Chip colours meet 4.5:1 contrast. Columns wrap at `min_width=320`.
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -22,6 +23,8 @@ MATERIALS: dict[str, tuple[int, int, int, int]] = {
     "PLA": (210, 215, 60, 60), "PETG": (240, 240, 80, 80), "ABS": (250, 255, 100, 100),
     "ASA": (255, 260, 100, 100), "TPU": (225, 225, 50, 50),
 }
+DENSITIES: dict[str, float] = {"PLA": 1.24, "PETG": 1.27, "ABS": 1.04, "ASA": 1.07, "TPU": 1.21}  # g/cm3
+FILAMENT_MM = 1.75
 NOZZLES = (0.2, 0.4, 0.6, 0.8)
 EDGE_LABELS = {"all_vertical": "Outline corners", "top": "Front-face edges", "bottom": "Back-face edges",
                "all": "All edges"}
@@ -106,6 +109,11 @@ class StudioSettings(_Model):
     mesh: MeshSettings = Field(default_factory=MeshSettings)
     printing: PrintSettings = Field(default_factory=PrintSettings)
     export: ExportSettings = Field(default_factory=ExportSettings)
+
+
+def filament_metres(grams: float, material: str) -> float:
+    """Length of 1.75 mm filament for a mass: 12.4 g of PLA is 10 cm3, about 4.16 m."""
+    return grams / DENSITIES[material] / (math.pi * (FILAMENT_MM / 2) ** 2)  # cm3 / mm2 = 1000 mm3 / mm2 = m
 
 
 def settings_hash(model: BaseModel) -> str:

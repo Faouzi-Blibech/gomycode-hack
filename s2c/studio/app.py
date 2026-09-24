@@ -100,7 +100,9 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
                             randomize = gr.Checkbox(False, label="Randomize seed")
                             attempts = gr.Slider(1, 4, value=2, step=1, label="Attempts per face",
                                                  info="Each attempt uses the next seed, about 30 s")
-                        analyze = gr.Button("Analyze →", variant="primary")
+                        with gr.Row():
+                            analyze = gr.Button("Analyze →", variant="primary", scale=3)
+                            cancel = gr.Button("Cancel", scale=1)
             # ---- 2 review ----
             with gr.Step("Review", id=1):
                 review_msg = gr.HTML()
@@ -109,6 +111,7 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
                         with gr.Row():
                             sizes = {a: gr.Textbox(label=AXIS_LABEL[a], max_lines=1, elem_classes=["size"])
                                      for a in AXES}
+                        suggest = gr.Button("Use suggested sizes", size="sm")
                         values = gr.Dataframe(headers=["Field", "Value (mm)", "Source"], type="array",
                                               datatype=["str", "number", "html"], interactive=True,
                                               static_columns=[0, 2], column_widths=["45%", "20%", "35%"],
@@ -200,6 +203,10 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
         def on_redraw(s):
             return show_review(studio.redraw(s))
 
+        def on_suggest(s, *boxes):  # fills only the empty boxes; Build records them as the user's own values
+            hints = studio.suggested_sizes(s)
+            return [hints[a] if a in hints and not str(v or "").strip() else gr.update() for a, v in zip(AXES, boxes)]
+
         def on_build(s, x, y, z, rows, rej, *g):
             try:
                 geometry = geometry_settings(*g)
@@ -207,9 +214,10 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
                 msg = card("Check the geometry settings", str(e), "stop")
                 return [gr.update(), msg, *[gr.update()] * (len(review_outputs) - 1), msg, None, [], ""]
             r, m = studio.build(s, {"x": x, "y": y, "z": z}, rows, rej, geometry)
-            if r.ok and not m.ok:  # the part itself failed: say so on the step the user is looking at
+            target = 2 if m.ok else m.open_step  # a finish that cannot be built opens step 3, where its controls are
+            if target is None and r.ok:  # the part itself failed: say so on the step the user is looking at
                 r.message_html = m.message_html
-            step = gr.Walkthrough(selected=2) if m.ok else gr.update()
+            step = gr.update() if target is None else gr.Walkthrough(selected=target)
             return [step, *show_review(r), m.message_html, m.preview, m.views, m.stats_html]
 
         def on_geometry(s, *g):
@@ -239,9 +247,11 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
         drop.upload(on_upload, [drop, sid, version], [drop, version, coverage])
         example.click(on_example, [sid, version], [version, coverage])
         app.load(studio.coverage_html, [sid], [coverage])
-        analyze.click(on_analyze, [sid, reference, *ai_inputs], [walk, capture_msg, *review_outputs],
-                      concurrency_id="models", concurrency_limit=2)
+        analyzing = analyze.click(on_analyze, [sid, reference, *ai_inputs], [walk, capture_msg, *review_outputs],
+                                  concurrency_id="models", concurrency_limit=2)
+        cancel.click(None, None, None, cancels=[analyzing])
         redraw.click(on_redraw, [sid], review_outputs, concurrency_id="models", concurrency_limit=2)
+        suggest.click(on_suggest, [sid, *sizes.values()], list(sizes.values()))
         # The viewer is filled in a .then() after the step switch: a Model3D that gets its first file while its
         # step is still hidden never mounts its canvas (Gradio 6.28).
         build.click(on_build, [sid, *sizes.values(), values, rejected, *geometry_inputs],

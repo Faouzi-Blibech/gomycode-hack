@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from s2c.multiview.proc import run, tail
 from s2c.multiview.settings import (
+    DENSITIES,
     FORMATS,
     MATERIALS,
     ExportSettings,
@@ -13,6 +14,7 @@ from s2c.multiview.settings import (
     MeshSettings,
     PrintSettings,
     StudioSettings,
+    filament_metres,
     settings_hash,
 )
 
@@ -52,6 +54,12 @@ def test_the_hash_is_stable_and_changes_with_values():
     assert settings_hash(PrintSettings()) == settings_hash(PrintSettings())
     assert settings_hash(PrintSettings()) != settings_hash(PrintSettings(infill_pct=40))
     assert len(settings_hash(GeometrySettings())) == 16
+
+
+def test_filament_length_comes_from_the_material_density():
+    assert set(DENSITIES) == set(MATERIALS)
+    assert filament_metres(12.4, "PLA") == pytest.approx(4.16, abs=0.005)  # 10 cm3 of 1.75 mm filament
+    assert filament_metres(12.4, "ABS") > filament_metres(12.4, "PETG")  # lighter plastic, longer strand
 
 
 def test_run_writes_output_to_the_log(tmp_path):

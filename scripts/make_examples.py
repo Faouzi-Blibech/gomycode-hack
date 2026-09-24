@@ -12,9 +12,12 @@ INK = (40, 40, 40)
 
 
 def canvas():
-    img = np.full((1000, 1400, 3), 250, np.uint8)
-    noise = np.random.default_rng(3).normal(0, 2, img.shape)
-    return np.clip(img + noise, 0, 255).astype(np.uint8)
+    """Off-white paper, a little darker towards the corners like a phone photo of a sheet. Smooth on purpose: the
+    per-pixel noise this used to add made each PNG about 1.9 MB; this keeps them near 40 KB."""
+    h, w = 1000, 1400
+    yy, xx = np.mgrid[0:h, 0:w]
+    shade = 250 - 12 * (((xx - w / 2) / w) ** 2 + ((yy - h / 2) / h) ** 2)
+    return np.repeat(np.round(shade).astype(np.uint8)[:, :, None], 3, axis=2)
 
 
 def to_px(points, x0, y0, height_mm):

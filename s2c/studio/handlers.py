@@ -14,9 +14,18 @@ import numpy as np
 
 from s2c.multiview import spec as S
 from s2c.multiview.artifacts import ROOT, build_part, bundle, export_part, sweep
+from s2c.multiview.fuse import fuse_envelope
 from s2c.multiview.pipeline import ImageInput, MvPipeline
 from s2c.multiview.raster import iou, outline_mask
-from s2c.multiview.settings import AiSettings, ExportSettings, GeometrySettings, MeshSettings, PrintSettings
+from s2c.multiview.settings import (
+    DENSITIES,
+    AiSettings,
+    ExportSettings,
+    GeometrySettings,
+    MeshSettings,
+    PrintSettings,
+    filament_metres,
+)
 from s2c.studio.session import Item, SessionStore
 from s2c.studio.theme import FACE_BADGES, TRUSTED, bullet_html, card, chip, source_chip, stats_html
 
@@ -53,6 +62,7 @@ class Model:
     preview: str | None = None
     views: list[tuple[np.ndarray, str]] = field(default_factory=list)
     stats_html: str = ""
+    open_step: int | None = None  # the step whose controls can fix a failure the user cannot fix where they are
 
 
 @dataclass
@@ -179,8 +189,19 @@ class Studio:
         session = self.store.get(sid)
         if session.observed is None:
             return Review(False, "capture", card("Nothing to redraw", "Analyze your images first.", "check"))
-        session.ai = session.ai.model_copy(update={"seed": session.ai.seed + session.ai.attempts})
+        seed = random.randint(0, 2**31 - 1) if session.ai.randomize_seed else session.ai.seed + session.ai.attempts
+        session.ai = session.ai.model_copy(update={"seed": seed})
         return self._review(session, self._fuse(session))
+
+    def suggested_sizes(self, sid: str) -> dict[str, str]:
+        """The suggestion for each size the last review is missing, e.g. {"z": "10"}: a view that shows that axis
+        next to a known one, scaled. The same fuse_envelope call the review made, so the same partial."""
+        session = self.store.get(sid)
+        if session.observed is None:
+            return {}
+        res = fuse_envelope(session.observed.observations, dict(session.edits))
+        suggested = (res.partial or {}).get("suggested", {}) if isinstance(res, S.MvAbstain) else {}
+        return {axis: f"{suggested[f'envelope.{axis}_mm']:g}" for axis in AXES if f"envelope.{axis}_mm" in suggested}
 
     def _fuse(self, session):
         return self.pipe.configured(session.ai).fuse(session.observed, dict(session.edits),
@@ -295,10 +316,13 @@ class Studio:
         return self._model(session)
 
     def _model(self, session) -> Model:
+        sweep(self.root)
         part = build_part(session.spec, session.geometry, self.root)
         if isinstance(part, S.MvAbstain):
             session.part = None
-            return Model(False, _abstain_card(part))
+            # A finish that cannot be built is fixed with the Geometry controls, which live in step 3 (index 2)
+            finish_failed = part.stage == "build" and session.geometry.finish != "none"
+            return Model(False, _abstain_card(part), open_step=2 if finish_failed else None)
         session.part, session.exported = part, None
         masks = session.observed.masks
         views = []
@@ -308,7 +332,7 @@ class Studio:
         x, y, z = part.bbox_mm
         stats = stats_html([("Size", f"{x:.1f} × {y:.1f} × {z:.1f} mm"),
                             ("Volume", f"{part.volume_mm3 / 1000:.2f} cm³"),
-                            ("Solid mass, PLA", f"{part.volume_mm3 * 1.24 / 1000:.1f} g")])
+                            ("Solid mass, PLA", f"{part.volume_mm3 * DENSITIES['PLA'] / 1000:.1f} g")])
         note = " ".join(part.warnings)
         return Model(True, card("Part built", note or "Rotate the part, then choose formats and export.", "ok"),
                      str(part.preview), views, stats)
@@ -328,7 +352,9 @@ class Studio:
         items = [("Size", f"{x:.1f} × {y:.1f} × {z:.1f} mm"), ("Files", str(len(res.files))),
                  ("Download", f"{zip_path.stat().st_size / 1024:.0f} KB")]
         if res.print_time_s:
-            items += [("Print time", duration_text(res.print_time_s)), ("Filament", f"{res.filament_g or 0:.1f} g")]
+            grams = res.filament_g or 0
+            items += [("Print time", duration_text(res.print_time_s)),
+                      ("Filament", f"{grams:.1f} g · {filament_metres(grams, printing.material):.2f} m")]
         tone = "check" if res.warnings else "ok"
         body = " · ".join(res.warnings) or "Every file is in the zip, with a manifest of the values and their sources."
         return Exported(card("Files ready", body, tone), [str(p) for p in res.files.values()], str(zip_path),

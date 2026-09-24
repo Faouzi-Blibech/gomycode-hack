@@ -3,10 +3,12 @@ A part is keyed by its geometry (never by warnings or provenance); files by mesh
 under ROOT/<key>/ and are deleted an hour after their last use. Nothing the user did not change is recomputed."""
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
 import shutil
+import tempfile
 import threading
 import time
 import zipfile
@@ -104,11 +106,12 @@ def build_part(
     geometry = geometry or GeometrySettings()
     key = geometry_key(spec, geometry)
     folder = Path(root) / key
+    final, warnings = apply_geometry(spec, geometry)
     cached = _parts.get((str(root), key))
     if cached is not None and cached.preview.exists():  # the sweep may have removed the files
         _touch(folder)
-        return cached
-    final, warnings = apply_geometry(spec, geometry)
+        # same solid and files; this request's provenance and warnings, which the manifest records
+        return dataclasses.replace(cached, spec=final, warnings=warnings)
     try:
         solid = build(final)
     except BuildError as e:
@@ -179,10 +182,8 @@ def export_part(part: Part, formats, mesh: MeshSettings | None = None, printing:
 
 
 def bundle(part: Part, result: ExportResult, settings: dict | None = None) -> Path:
-    target = part.folder / f"sketch-to-cad-{part.key[:8]}.zip"
-    tmp = target.with_suffix(".part")
+    """One zip per exported file set, settings and spec, so a later export never overwrites a zip already handed out."""
     manifest = {
-        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "part": {"key": part.key, "volume_mm3": round(part.volume_mm3, 3),
                  "bbox_mm": [round(v, 3) for v in part.bbox_mm]},
         "files": {f: p.name for f, p in result.files.items()},
@@ -191,11 +192,23 @@ def bundle(part: Part, result: ExportResult, settings: dict | None = None) -> Pa
         "warnings": [*part.spec.warnings, *result.warnings],
         "spec": part.spec.model_dump(mode="json"),
     }
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
-        for path in result.files.values():
-            z.write(path, arcname=path.name)
-        z.writestr("manifest.json", json.dumps(manifest, indent=2))
-    os.replace(tmp, target)
+    paths = sorted(p.relative_to(part.folder).as_posix() if p.is_relative_to(part.folder) else p.name
+                   for p in result.files.values())  # mesh-fine/part.stl and mesh-normal/part.stl differ
+    body = json.dumps({"paths": paths, "manifest": manifest}, sort_keys=True, default=str)
+    target = part.folder / f"sketch-to-cad-{part.key[:8]}-{hashlib.sha256(body.encode()).hexdigest()[:8]}.zip"
+    manifest = {"generated_at": datetime.now(UTC).isoformat(timespec="seconds"), **manifest}
+    part.folder.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(suffix=".part", dir=part.folder)  # unique: concurrent exports never share it
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+            for path in result.files.values():
+                z.write(path, arcname=path.name)
+            z.writestr("manifest.json", json.dumps(manifest, indent=2))
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
     return target
 
 
