@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -101,6 +103,41 @@ def test_each_export_gets_its_own_zip(tmp_path):
     with zipfile.ZipFile(first) as z:
         assert sorted(z.namelist()) == ["manifest.json", "part.stl"]
     assert not list(part.folder.glob("*.part"))  # the temporary files are gone
+
+
+def test_concurrent_builds_share_one_build(tmp_path, monkeypatch):
+    calls = []
+    real = artifacts.build
+
+    def counting(spec):
+        calls.append(1)
+        time.sleep(0.3)
+        return real(spec)
+
+    monkeypatch.setattr(artifacts, "build", counting)
+    results = [None, None]
+
+    def run(i):
+        results[i] = build_part(SPEC, GeometrySettings(), tmp_path)
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(calls) == 1
+    first, second = results
+    assert first.key == second.key and first.preview.exists() and second.preview.exists()
+
+
+def test_swept_folder_rebuilds(tmp_path, monkeypatch):
+    calls = []
+    real = artifacts.build
+    monkeypatch.setattr(artifacts, "build", lambda spec: calls.append(1) or real(spec))
+    first = build_part(SPEC, root=tmp_path)
+    shutil.rmtree(first.folder)
+    second = build_part(SPEC, root=tmp_path)
+    assert second.preview.exists() and len(calls) == 2
 
 
 def test_the_sweep_deletes_old_folders_only(tmp_path):

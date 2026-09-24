@@ -83,10 +83,21 @@ class _Lru:
 
 
 _parts = _Lru(LRU_SIZE)
+_key_locks: dict[tuple[str, str], threading.Lock] = {}
+_key_locks_guard = threading.Lock()
 
 
 def clear_cache() -> None:
     _parts.clear()
+
+
+def _lock_for(cache_key: tuple[str, str]) -> threading.Lock:
+    # one lock per (root, key); a key's lock stays here after it leaves the LRU, bounded by distinct keys per process
+    with _key_locks_guard:
+        lock = _key_locks.get(cache_key)
+        if lock is None:
+            lock = _key_locks[cache_key] = threading.Lock()
+        return lock
 
 
 def geometry_key(spec: S.MultiViewSpec, geometry: GeometrySettings | None = None) -> str:
@@ -107,23 +118,29 @@ def build_part(
     key = geometry_key(spec, geometry)
     folder = Path(root) / key
     final, warnings = apply_geometry(spec, geometry)
-    cached = _parts.get((str(root), key))
+    cache_key = (str(root), key)
+    cached = _parts.get(cache_key)
     if cached is not None and cached.preview.exists():  # the sweep may have removed the files
         _touch(folder)
         # same solid and files; this request's provenance and warnings, which the manifest records
         return dataclasses.replace(cached, spec=final, warnings=warnings)
-    try:
-        solid = build(final)
-    except BuildError as e:
-        return S.MvAbstain(stage="build", reason=e.reason, remedy=e.remedy)
-    bb = solid.val().BoundingBox()
-    mesh = solid_mesh(solid)
-    views = {f: normalize_mask(face_mask(mesh, f, final.envelope)[0]) for f in S.FACES}
-    _touch(folder)
-    preview = write_glb(solid, folder / "preview.glb", "normal")
-    part = Part(key, final, solid, volume(solid), (bb.xlen, bb.ylen, bb.zlen), views, preview, folder, warnings)
-    _parts.put((str(root), key), part)
-    return part
+    with _lock_for(cache_key):
+        cached = _parts.get(cache_key)  # someone else may have built it while we waited for the lock
+        if cached is not None and cached.preview.exists():
+            _touch(folder)
+            return dataclasses.replace(cached, spec=final, warnings=warnings)
+        try:
+            solid = build(final)
+        except BuildError as e:
+            return S.MvAbstain(stage="build", reason=e.reason, remedy=e.remedy)
+        bb = solid.val().BoundingBox()
+        mesh = solid_mesh(solid)
+        views = {f: normalize_mask(face_mask(mesh, f, final.envelope)[0]) for f in S.FACES}
+        _touch(folder)
+        preview = write_glb(solid, folder / "preview.glb", "normal")
+        part = Part(key, final, solid, volume(solid), (bb.xlen, bb.ylen, bb.zlen), views, preview, folder, warnings)
+        _parts.put(cache_key, part)
+        return part
 
 
 def _mesh_files(part: Part, wanted: list[str], quality: str) -> dict[str, Path]:
