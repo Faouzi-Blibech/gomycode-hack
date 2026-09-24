@@ -121,6 +121,10 @@ def app_fn(app, name):
     return next(f.fn for f in app.fns.values() if f.name == name)
 
 
+def app_event(app, name):
+    return next(f for f in app.fns.values() if f.name == name)
+
+
 def test_the_build_button_shows_a_failed_finish_in_step_3(studio, tmp_path, monkeypatch):
     fail_big_fillets(monkeypatch)
     sid = with_images(studio, tmp_path)
@@ -323,3 +327,30 @@ def test_analyze_guard(studio, tmp_path):
     on_analyze = app_fn(build_app(studio=studio), "on_analyze")
     out = on_analyze(sid, "none", True, True, True, True, True, 7, False, 99)  # attempts=99 is out of range
     assert "Check the AI settings" in out[1]
+
+
+def test_on_geometry_wiring(studio):
+    app = build_app(studio=studio)
+    event = app_event(app, "on_geometry")
+    assert event.trigger_mode == "always_last"
+    n_outputs = len(event.outputs)  # [model_msg, model, views, stats, *sizes.values(), values]
+    on_geometry = event.fn
+
+    # failure path: nothing analyzed yet, still returns exactly as many values as the wired outputs
+    empty_sid = studio.store.new()
+    out = on_geometry(empty_sid, True, "medium", "none", 1.0, "all_vertical")
+    assert len(out) == n_outputs
+
+    # success path: analyze + build the example, then change the clearance
+    sid = studio.store.new()
+    studio.load_examples(sid)
+    review = studio.analyze(sid, "none", AiSettings())
+    review, model = studio.build(sid, {"x": "50", "y": "30", "z": "20"}, review.rows, [], GeometrySettings())
+    assert model.ok and review.rows  # the example has a hole, so the values table is not empty
+    out = on_geometry(sid, True, "coarse", "none", 1.0, "all_vertical")
+    assert len(out) == n_outputs
+    refreshed_rows = out[-1]  # the values Dataframe is the last wired output
+    assert refreshed_rows and refreshed_rows != review.rows  # carries the new snapped diameter, not the stale one
+    assert refreshed_rows[-1][1] == 4.8  # medium (5.0) -> coarse snaps the drawn hole's diameter down
+    session = studio.store.get(sid)
+    assert session.shown[session.row_paths[-1]] == refreshed_rows[-1][1]

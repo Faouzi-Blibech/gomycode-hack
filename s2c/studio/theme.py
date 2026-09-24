@@ -37,7 +37,7 @@ CSS = """
 .size.required label span {color:#991B1B}
 .dark .size.required label span {color:#FCA5A5}
 @media (max-width: 640px) {
-    label span {white-space:normal; overflow-wrap:anywhere}
+    label[data-testid="block-label"] {white-space:normal; overflow-wrap:anywhere}
 }
 """
 
