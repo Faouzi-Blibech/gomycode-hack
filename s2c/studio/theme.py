@@ -36,6 +36,9 @@ CSS = """
 .size.required textarea, .size.required input {border-color:#DC2626 !important}
 .size.required label span {color:#991B1B}
 .dark .size.required label span {color:#FCA5A5}
+@media (max-width: 640px) {
+    label span {white-space:normal; overflow-wrap:anywhere}
+}
 """
 
 

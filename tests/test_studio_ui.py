@@ -12,8 +12,10 @@ from s2c.multiview.pipeline import MvPipeline
 from s2c.multiview.settings import AiSettings, ExportSettings, GeometrySettings, MeshSettings, PrintSettings
 from s2c.multiview.spec import MvAbstain
 from s2c.studio import handlers
+from s2c.studio import session as session_mod
 from s2c.studio.app import build_app
 from s2c.studio.handlers import Studio, parse_size
+from s2c.studio.session import SessionStore
 from tests.test_mv_pipeline import sketch
 from tests.test_mv_qwen_faces import fake_gen
 
@@ -52,7 +54,7 @@ def test_coverage_shows_which_faces_are_given(studio, tmp_path):
 def test_analyze_asks_for_sizes_then_build_and_export(studio, tmp_path):
     sid = with_images(studio, tmp_path)
     review = studio.analyze(sid, "none", AiSettings())
-    assert not review.ok and "missing_x" in review.message_html
+    assert not review.ok and "Missing x" in review.message_html
     assert all(review.sizes[a]["required"] for a in "xyz")
     review, model = studio.build(sid, {"x": "60", "y": "40", "z": "10"}, review.rows, [], GeometrySettings())
     assert model.ok and Path(model.preview).exists() and len(model.views) == 6
@@ -92,7 +94,7 @@ def test_a_failed_finish_keeps_the_review(studio, tmp_path, monkeypatch):
     sizes = {"x": "60", "y": "40", "z": "10"}
     _, model = studio.build(sid, sizes, review.rows, [], GeometrySettings(finish="fillet", finish_mm=6.0))
     assert not model.ok and "fillet" in model.message_html.lower()
-    model = studio.rebuild_geometry(sid, GeometrySettings(finish="fillet", finish_mm=1.0))
+    _, model = studio.rebuild_geometry(sid, GeometrySettings(finish="fillet", finish_mm=1.0))
     assert model.ok
 
 
@@ -103,7 +105,7 @@ def test_a_failed_finish_opens_the_model_step(studio, tmp_path, monkeypatch):
     sizes = {"x": "60", "y": "40", "z": "10"}
     _, model = studio.build(sid, sizes, review.rows, [], GeometrySettings(finish="fillet", finish_mm=6.0))
     assert model.ok is False and model.open_step == 2  # the finish controls live in step 3
-    assert studio.rebuild_geometry(sid, GeometrySettings(finish="none")).ok
+    assert studio.rebuild_geometry(sid, GeometrySettings(finish="none"))[1].ok
 
 
 def test_a_failed_part_without_a_finish_stays_on_the_review(studio, tmp_path, monkeypatch):
@@ -126,7 +128,7 @@ def test_the_build_button_shows_a_failed_finish_in_step_3(studio, tmp_path, monk
     on_build = app_fn(build_app(studio=studio), "on_build")
     out = on_build(sid, "60", "40", "10", review.rows, [], True, "medium", "fillet", 6.0, "all_vertical")
     step, model_msg = out[0], out[-4]
-    assert isinstance(step, gr.Walkthrough) and step.selected == 2 and "fillet_failed" in model_msg
+    assert isinstance(step, gr.Walkthrough) and step.selected == 2 and "Fillet failed" in model_msg
 
 
 def test_old_builds_are_swept_when_a_part_is_built(studio, tmp_path):
@@ -145,7 +147,7 @@ def test_suggested_sizes_fill_the_axes_that_have_one(studio, tmp_path):
     assert studio.suggested_sizes(sid) == {}  # nothing analysed yet
     review = studio.analyze(sid, "none", AiSettings())
     review, model = studio.build(sid, {"x": "60", "y": "40", "z": ""}, review.rows, [], GeometrySettings())
-    assert not model.ok and "missing_z" in review.message_html
+    assert not model.ok and "Missing z" in review.message_html
     hint = review.sizes["z"]["placeholder"].removeprefix("suggested ")
     assert parse_size(hint) and studio.suggested_sizes(sid) == {"z": hint}
 
@@ -245,3 +247,79 @@ def test_the_example_analyzes_and_builds(studio):
     assert model.ok
     scores = {c.split(" ")[0]: float(c.rsplit(" ", 1)[1]) for _, c in model.views if "match" in c}  # "front · match 0.97"
     assert set(scores) == {"front", "top"} and min(scores.values()) > 0.9
+
+
+def test_cleared_size_reverts(studio, tmp_path):
+    sid = with_images(studio, tmp_path)
+    review = studio.analyze(sid, "none", AiSettings())
+    review, model = studio.build(sid, {"x": "60", "y": "40", "z": "10"}, review.rows, [], GeometrySettings())
+    assert model.ok
+    session = studio.store.get(sid)
+    assert session.edits["envelope.x_mm"] == 60
+    review, model = studio.build(sid, {"x": "", "y": "40", "z": "10"}, review.rows, [], GeometrySettings())
+    assert "envelope.x_mm" not in session.edits
+    assert not model.ok  # x is unmeasured in this fixture, so clearing it makes the envelope incomplete again
+    assert review.sizes["x"]["value"] == ""
+
+
+def test_bad_image_names_file(studio, tmp_path):
+    sid = studio.store.new()
+    bad = tmp_path / "notes.pdf"
+    bad.write_bytes(b"%PDF-1.4")
+    studio.add_images(sid, [str(bad)])
+    studio.set_face(sid, studio.store.get(sid).items[0].id, "front")
+    review = studio.analyze(sid, "none", AiSettings())
+    assert not review.ok and "notes.pdf" in review.message_html
+    assert "bad_image" not in review.message_html
+
+
+def test_abstain_titles_are_words():
+    html = handlers._abstain_card(MvAbstain(stage="outline", reason="no_outline", remedy="Draw a closed outline."))
+    assert "no_outline" not in html
+
+
+def test_clearance_change_refreshes_review(studio, tmp_path):
+    sid = with_images(studio, tmp_path, faces=(("front", 600, 400),))
+    top = tmp_path / "top-hole.png"
+    top.write_bytes(sketch(600, 100, circles=((200, 50, 20),)))
+    studio.add_images(sid, [str(top)])
+    item = studio.store.get(sid).items[-1]
+    studio.set_face(sid, item.id, "top")
+    studio.set_kind(sid, item.id, "sketch")
+    review = studio.analyze(sid, "none", AiSettings())
+    review, model = studio.build(sid, {"x": "60", "y": "40", "z": "10"}, review.rows, [],
+                                 GeometrySettings(clearance="fine"))
+    assert model.ok and review.rows
+    idx = next(i for i, r in enumerate(review.rows) if "diameter" in r[0].lower())
+    fine_diam = review.rows[idx][1]
+
+    review, model = studio.rebuild_geometry(sid, GeometrySettings(clearance="coarse"))
+    assert model.ok
+    coarse_diam = review.rows[idx][1]
+    assert coarse_diam != fine_diam
+
+    session = studio.store.get(sid)
+    path = session.row_paths[idx]
+    assert session.shown[path] == coarse_diam  # so the next Build does not read the table as an edit
+
+
+def test_get_none_uses_one_id():
+    store = SessionStore()
+    session = store.get(None)
+    assert session.id in store._items and store._items[session.id] is session
+
+
+def test_idle_sessions_swept_without_new_visitor(monkeypatch):
+    monkeypatch.setattr(session_mod, "SWEEP_EVERY_S", 0)
+    store = SessionStore(ttl_s=0.05)
+    sid1, sid2 = store.new(), store.new()
+    time.sleep(0.1)
+    store.get(sid1)
+    assert sid2 not in store._items
+
+
+def test_analyze_guard(studio, tmp_path):
+    sid = with_images(studio, tmp_path)
+    on_analyze = app_fn(build_app(studio=studio), "on_analyze")
+    out = on_analyze(sid, "none", True, True, True, True, True, 7, False, 99)  # attempts=99 is out of range
+    assert "Check the AI settings" in out[1]

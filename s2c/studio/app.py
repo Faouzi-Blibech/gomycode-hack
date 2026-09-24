@@ -39,7 +39,7 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
         return studio.store.new()
 
     with gr.Blocks(title="Sketch-to-CAD Studio", delete_cache=(3600, 3600)) as app:
-        sid = gr.State(new_session, time_to_live=3600, delete_callback=studio.store.drop)
+        sid = gr.State(new_session)  # session.py sweeps idle sessions lazily: gr.State never fires delete_callback
         version = gr.State(0)
         built = gr.State(None)  # the preview GLB, handed to the viewer once its step is on screen
         gr.HTML(header_html(status))
@@ -195,7 +195,12 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
 
         def on_analyze(s, ref, *v, progress=gr.Progress()):  # noqa: B008 - how Gradio injects a progress bar
             progress(0.1, desc="Reading your images, then drawing any missing faces…")
-            r = studio.analyze(s, ref, ai_settings(*v))
+            try:
+                ai = ai_settings(*v)
+            except ValueError as e:
+                msg = card("Check the AI settings", str(e), "stop")
+                return [gr.update(), msg, *[gr.update()] * len(review_outputs)]
+            r = studio.analyze(s, ref, ai)
             if r.stage == "capture":
                 return [gr.update(), r.message_html, *[gr.update()] * len(review_outputs)]
             return [gr.Walkthrough(selected=1), "", *show_review(r)]
@@ -222,10 +227,13 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
 
         def on_geometry(s, *g):
             try:
-                m = studio.rebuild_geometry(s, geometry_settings(*g))
+                geometry = geometry_settings(*g)
             except ValueError as e:
-                return card("Check the geometry settings", str(e), "stop"), gr.update(), gr.update(), gr.update()
-            return m.message_html, m.preview, m.views, m.stats_html
+                msg = card("Check the geometry settings", str(e), "stop")
+                return msg, gr.update(), gr.update(), gr.update(), *[gr.update()] * len(sizes), gr.update()
+            r, m = studio.rebuild_geometry(s, geometry)
+            return (m.message_html, m.preview, m.views, m.stats_html,
+                    *(_size_update(r.sizes.get(a, {})) for a in AXES), r.rows)
 
         def on_export(s, fmts, q, mat, noz, lay, inf, pat, per, sup, br, sc):
             try:
@@ -258,8 +266,8 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
                     [walk, *review_outputs, model_msg, built, views, stats], concurrency_id="cad").then(
             lambda path: path, [built], [model], api_visibility="private")
         gr.on([snap.input, clearance.input, finish.input, finish_mm.release, finish_edges.input], on_geometry,
-              [sid, *geometry_inputs], [model_msg, model, views, stats], trigger_mode="always_last",
-              concurrency_id="cad")
+              [sid, *geometry_inputs], [model_msg, model, views, stats, *sizes.values(), values],
+              trigger_mode="always_last", concurrency_id="cad")
         export.click(on_export, [sid, formats, quality, material, nozzle, layer, infill, pattern, perimeters,
                                  supports, brim, scale], [export_msg, download, files, stats], concurrency_id="cad")
     return app

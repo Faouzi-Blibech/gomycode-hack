@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from s2c.multiview import spec as S
@@ -109,8 +110,15 @@ def _value(spec: S.MultiViewSpec, path: str) -> float:
     return data[head][name]
 
 
+_REASON_WORDS = {"bad_image": "Image not readable"}
+
+
+def _reason_words(reason: str) -> str:
+    return _REASON_WORDS.get(reason, reason.replace("_", " ").capitalize())
+
+
 def _abstain_card(a: S.MvAbstain) -> str:
-    return card(f"Stopped at {a.stage}: {a.reason}", a.remedy, "stop")
+    return card(f"Stopped at {a.stage}: {_reason_words(a.reason)}", a.remedy, "stop")
 
 
 class Studio:
@@ -176,6 +184,10 @@ class Studio:
             except OSError:
                 missing = card("Image missing", f"{item.name} is no longer available. Add it again.", "stop")
                 return Review(False, "capture", missing)
+            if cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR) is None:
+                bad = card("Image not readable", f"{item.name} is not an image we can read. Upload a JPEG or PNG.",
+                          "stop")
+                return Review(False, "capture", bad)
             images.append(ImageInput(data, None if item.face == "auto" else item.face,
                                      None if item.kind == "auto" else item.kind))
         pipe = self.pipe.configured(ai)
@@ -212,7 +224,7 @@ class Studio:
         abstain = res if isinstance(res, S.MvAbstain) else None
         session.spec = spec
         observed = session.observed
-        known = ((abstain.partial or {}).get("known", {}) if abstain else {}) if not spec else {}
+        known = (abstain.partial or {}).get("known", {}) if abstain else {}
         suggested = ((abstain.partial or {}).get("suggested", {}) if abstain else {})
         sizes = {}
         for axis in AXES:
@@ -279,6 +291,7 @@ class Studio:
             text = str(sizes.get(axis, "")).strip()
             path = f"envelope.{axis}_mm"
             if not text:
+                edits.pop(path, None)
                 continue
             value = parse_size(text)
             if value is None:
@@ -304,16 +317,18 @@ class Studio:
             return review, Model(False, review.message_html)
         return review, self._model(session)
 
-    def rebuild_geometry(self, sid: str, geometry: GeometrySettings) -> Model:
+    def rebuild_geometry(self, sid: str, geometry: GeometrySettings) -> tuple[Review, Model]:
+        """A finish/clearance/snap change re-fuses (so the Review table shows the new snapped values, not stale
+        ones) and rebuilds; the caller maps the returned review onto the sizes and the values table."""
         session = self.store.get(sid)
         if session.observed is None:
-            return Model(False, card("Nothing to build", "Analyze your images first.", "check"))
+            msg = card("Nothing to build", "Analyze your images first.", "check")
+            return Review(False, "capture", msg), Model(False, msg)
         session.geometry = geometry
-        res = self._fuse(session)
-        if isinstance(res, S.MvAbstain):
-            return Model(False, _abstain_card(res))
-        session.spec = res
-        return self._model(session)
+        review = self._review(session, self._fuse(session))
+        if not review.ok:
+            return review, Model(False, review.message_html)
+        return review, self._model(session)
 
     def _model(self, session) -> Model:
         sweep(self.root)
