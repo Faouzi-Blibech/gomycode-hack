@@ -91,6 +91,7 @@ In `pyproject.toml`, add to `dependencies`:
 ```toml
   "scikit-image>=0.24",
   "scipy>=1.13",
+  "skan>=0.12",
 ```
 
 and add after the `[dependency-groups]` block:
@@ -1124,14 +1125,15 @@ git commit -m "Add swappable handwriting readers: vision model, PaddleOCR, TrOCR
 ### Task 5: Synthetic sheets, text boxes and two-reader agreement
 
 **Files:**
-- Create: `tests/sketch/synth.py`, `s2c/sketch/text.py`
+- Create: `tests/sketch/synth.py`, `tests/sketch/conftest.py`, `s2c/sketch/text.py`
 - Test: `tests/sketch/test_text.py`
 
 **Interfaces:**
 - Consumes: `Crop`, `ReaderResult`, `Reader` (Task 4); `parse_text`, `match_label`, `Parsed` (Task 2); `Reading`, `SketchAbstain` (Task 1).
 - Produces:
   - `tests/sketch/synth.py`: class `Sheet(w=1600, h=1131)` with `line`, `dashed`, `circle`, `arrowhead`, `text(s, centre, scale=0.8, t=2, rotate=False)`, `hdim(x1, x2, y_obj, y_line, text)` (x1 < x2), `vdim(y1, y2, x_obj, x_line, text, rotate=False)` (y1 < y2), `leader(tip, tail, text)`, `bgr()`, `ink()`, and attribute `texts: list[tuple[str, box]]`; function `bridge_block(sheet, labels=True)` drawing TOP, FRONT, SIDE of the reference part at 4 px per mm with FRONT's bottom-left at (200, 900), TOP's at (200, 520), SIDE's at (800, 900); class `TruthReader(texts, name="truth", confidence=0.95, swap=None, upright_only=False)`.
-  - `s2c/sketch/text.py`: dataclass `TextItem(id, box, readings: list[Reading], parsed: Parsed | None, label: ViewName | None, role: "label" | "dimension" | "other", badge: "written" | "uncertain" | None, confidence: float, candidates: list[float])`; `find_text_boxes(ink, stroke_px) -> list[tuple[int, int, int, int]]`; `read_texts(sheet_bgr, boxes, readers) -> list[TextItem] | SketchAbstain`; `erase_mask(texts, shape, pad=2) -> np.ndarray` (255 where label and dimension texts sit).
+  - `s2c/sketch/text.py`: dataclass `TextItem(id, box, readings: list[Reading], parsed: Parsed | None, label: ViewName | None, role: "label" | "dimension" | "other", badge: "written" | "uncertain" | None, confidence: float, candidates: list[float])`; `find_text_boxes(ink, stroke_px) -> list[tuple[int, int, int, int]]` (the classical fallback detector); `detect_text_boxes(sheet_bgr, ink, stroke_px) -> list[tuple[int, int, int, int]]` (the pipeline's entry: PaddleOCR's pretrained PP-OCRv5 text detector when `SKETCH_TEXT_DETECTOR` is `auto` (default) or `paddle` and PaddleOCR is installed, else `find_text_boxes`); `read_texts(sheet_bgr, boxes, readers) -> list[TextItem] | SketchAbstain`; `erase_mask(texts, shape, pad=2) -> np.ndarray` (255 where label and dimension texts sit).
+  - `tests/sketch/conftest.py`: an autouse fixture that sets `SKETCH_TEXT_DETECTOR=classical`, so the synthetic tests stay deterministic even where PaddleOCR is installed.
 
 The reference part (the "bridge block"), in mm: overall 100 wide (X), 50 high (Y), 25 deep (Z). FRONT outline `(0,0) (37.5,0) (37.5,12.5) (62.5,12.5) (62.5,0) (100,0) (100,12.5) (75,12.5) (75,50) (62.5,50) (62.5,25) (37.5,25) (37.5,50) (25,50) (25,12.5) (0,12.5)`. Two vertical Ø12.5 through holes in the base at X 12.5 and 87.5, Z 12.5; one horizontal Ø12.5 through hole along X in both uprights at Y 37.5, Z 12.5. Written values: FRONT `100`, `37.5` twice (bottom), chain `12.5 25 12.5` (top), `37.5` (left), chain `25 12.5 12.5` (right); TOP `2xØ12.5` leader, `12.5` (hole X), `12.5` (hole from the back edge); SIDE `Ø12.5` leader, chain `12.5 12.5` (top), `12.5` (hole from the top), `50`.
 
@@ -1436,7 +1438,37 @@ def test_readers_down_abstains():
 
 def test_no_text_needs_no_reader():
     assert read_texts(np.full((100, 100, 3), 255, np.uint8), [], []) == []
+
+
+def test_classical_detector_is_the_fallback(monkeypatch):
+    from s2c.sketch.text import detect_text_boxes
+    sh = sheet()
+    monkeypatch.setenv("SKETCH_TEXT_DETECTOR", "classical")
+    assert detect_text_boxes(sh.bgr(), sh.ink(), 3.0) == find_text_boxes(sh.ink(), 3.0)
+
+
+@pytest.mark.skipif(os.environ.get("SKETCH_MODEL_TESTS") != "1", reason="downloads a model")
+def test_paddle_detector_finds_the_written_values(monkeypatch):
+    from s2c.sketch.text import detect_text_boxes
+    sh = sheet()
+    monkeypatch.setenv("SKETCH_TEXT_DETECTOR", "paddle")
+    boxes = detect_text_boxes(sh.bgr(), sh.ink(), 3.0)
+    found = sum(any(_overlap(box, b) > 0.5 for box in boxes) for _, b in sh.texts)
+    assert found >= 0.9 * len(sh.texts)
 ```
+
+```python
+# tests/sketch/conftest.py
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def classical_text_detector(monkeypatch):
+    """Synthetic tests must not depend on whether PaddleOCR happens to be installed."""
+    monkeypatch.setenv("SKETCH_TEXT_DETECTOR", "classical")
+```
+
+Add `import os` and `import pytest` at the top of `tests/sketch/test_text.py`.
 
 - [ ] **Step 3: Run to confirm failure**
 
@@ -1450,6 +1482,8 @@ Expected: FAIL with `ModuleNotFoundError: No module named 's2c.sketch.text'`.
 """Stage 2: find text boxes, read them with every reader, decide what each text is."""
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -1460,6 +1494,7 @@ from s2c.sketch.grammar import Parsed, match_label, parse_text
 from s2c.sketch.models import Reading, SketchAbstain, ViewName
 from s2c.sketch.readers import Crop, Reader
 
+log = logging.getLogger(__name__)
 MIN_CONFIDENCE = 0.6
 PAD = 4
 
@@ -1599,6 +1634,42 @@ def _decide(tid: str, box, readings: list[Reading], n_readers: int) -> TextItem:
                     max((r.confidence for r in readings), default=0.0))
 
 
+_DETECTOR = None
+
+
+def _paddle_boxes(sheet_bgr: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """PaddleOCR's pretrained text detector (PP-OCRv5 det). Checked against PaddleOCR 3.x
+    (`TextDetection(...).predict(...)` returning `dt_polys`)."""
+    global _DETECTOR
+    if _DETECTOR is None:
+        from paddleocr import TextDetection
+
+        _DETECTOR = TextDetection(
+            model_name=os.environ.get("SKETCH_PADDLE_DET", "PP-OCRv5_server_det"))
+    res = list(_DETECTOR.predict(sheet_bgr, batch_size=1))[0]
+    data = res.json.get("res", res.json) if hasattr(res, "json") else dict(res)
+    boxes = []
+    for poly in data.get("dt_polys", []):
+        p = np.asarray(poly, float)
+        x0, y0 = p.min(0)
+        x1, y1 = p.max(0)
+        boxes.append((max(0, int(x0) - PAD), max(0, int(y0) - PAD),
+                      int(x1 - x0) + 2 * PAD, int(y1 - y0) + 2 * PAD))
+    return boxes
+
+
+def detect_text_boxes(sheet_bgr: np.ndarray, ink: np.ndarray, stroke_px: float):
+    """Pretrained detector first; the classical detector when PaddleOCR is missing or fails."""
+    choice = os.environ.get("SKETCH_TEXT_DETECTOR", "auto")
+    if choice in ("auto", "paddle"):
+        try:
+            return _paddle_boxes(sheet_bgr)
+        except Exception as exc:  # missing optional dependency, or a model error
+            if choice == "paddle":
+                log.warning("paddle text detector failed, using the classical one: %s", exc)
+    return find_text_boxes(ink, stroke_px)
+
+
 def erase_mask(texts: list[TextItem], shape, pad: int = 2) -> np.ndarray:
     mask = np.zeros(shape[:2], np.uint8)
     for t in texts:
@@ -1616,7 +1687,7 @@ Expected: 8 passed. Tuning notes: if two neighbouring chain values merge into on
 - [ ] **Step 6: Commit**
 
 ```bash
-git add tests/sketch/synth.py s2c/sketch/text.py tests/sketch/test_text.py
+git add tests/sketch/synth.py tests/sketch/conftest.py s2c/sketch/text.py tests/sketch/test_text.py
 git commit -m "Find and read dimension text with two readers that must agree"
 ```
 
@@ -2000,9 +2071,9 @@ from typing import Literal
 
 import cv2
 import numpy as np
+from skan import Skeleton as SkanSkeleton
 from skimage.morphology import skeletonize
 
-_OFFS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 SMOOTH_TURN_DEG = 35.0
 
 
@@ -2033,65 +2104,18 @@ class Prim:
 
 
 def trace(mask: np.ndarray) -> list[np.ndarray]:
+    """Skeleton paths between endpoints and junctions, plus closed loops, as (x, y) polylines.
+    The graph comes from skan (a maintained skeleton-analysis library), not our own tracer."""
     sk = skeletonize(mask > 0)
     if not sk.any():
         return []
-    h, w = sk.shape
-    count = cv2.filter2D(sk.astype(np.uint8), -1, np.ones((3, 3), np.float32),
-                         borderType=cv2.BORDER_CONSTANT) - sk.astype(np.uint8)
-    node = sk & (count != 2)
-    visited = np.zeros_like(sk)
-
-    def neighbours(y, x):
-        for dy, dx in _OFFS:
-            yy, xx = y + dy, x + dx
-            if 0 <= yy < h and 0 <= xx < w and sk[yy, xx]:
-                yield yy, xx
-
-    paths = []
-    for y, x in zip(*np.nonzero(node)):
-        for ny, nx in neighbours(y, x):
-            if node[ny, nx]:
-                if (y, x) < (ny, nx):
-                    paths.append([(y, x), (ny, nx)])
-                continue
-            if visited[ny, nx]:
-                continue
-            path, prev, cur = [(y, x), (ny, nx)], (y, x), (ny, nx)
-            visited[cur] = True
-            while True:
-                nxt = None
-                for q in neighbours(*cur):
-                    if q == prev:
-                        continue
-                    if node[q]:
-                        nxt = q
-                        break
-                    if not visited[q]:
-                        nxt = q
-                if nxt is None:
-                    break
-                path.append(nxt)
-                if node[nxt]:
-                    break
-                visited[nxt] = True
-                prev, cur = cur, nxt
-            paths.append(path)
-    for y, x in zip(*np.nonzero(sk & ~node & ~visited)):  # pure loops: circles, closed outlines
-        if visited[y, x]:
-            continue
-        path, cur = [(y, x)], (y, x)
-        visited[cur] = True
-        while True:
-            nxt = next((q for q in neighbours(*cur) if not visited[q]), None)
-            if nxt is None:
-                break
-            path.append(nxt)
-            visited[nxt] = True
-            cur = nxt
-        path.append((y, x))
-        paths.append(path)
-    return [np.array([(x, y) for y, x in p], float) for p in paths if len(p) >= 2]
+    graph = SkanSkeleton(sk)
+    out = []
+    for i in range(graph.n_paths):
+        rc = graph.path_coordinates(i)  # (N, 2) as (row, col)
+        if len(rc) >= 2:
+            out.append(rc[:, ::-1].astype(float))
+    return out
 
 
 def circle_fit(pts: np.ndarray) -> tuple[np.ndarray, float, float]:
@@ -2160,7 +2184,7 @@ def vectorize(ink: np.ndarray, stroke_px: float, view: str) -> list[Prim]:
 - [ ] **Step 4: Run tests and lint**
 
 Run: `uv run pytest tests/sketch/test_vectorize.py -v` then `uv run ruff check .`
-Expected: 8 passed. Tuning notes: if the rectangle gives more than four lines, the corner pixels of the skeleton create tiny node-to-node paths; they are dropped by the length filter, and RDP `eps` merges wobble; raise `eps` a little if needed. If the sine turns into lines, lower the RDP `eps` for curves or raise `SMOOTH_TURN_DEG`.
+Expected: 8 passed. If the circle or rectangle test finds no primitive, the installed skan version drops pure loops (a skeleton with no endpoint or junction); in that case add a loop pass for the skeleton pixels skan did not cover (walk neighbours until back at the start) and keep skan for everything else. Tuning notes: if the rectangle gives more than four lines, the corner pixels of the skeleton create tiny node-to-node paths; they are dropped by the length filter, and RDP `eps` merges wobble; raise `eps` a little if needed. If the sine turns into lines, lower the RDP `eps` for curves or raise `SMOOTH_TURN_DEG`.
 
 - [ ] **Step 5: Commit**
 
@@ -3864,7 +3888,7 @@ from s2c.sketch.models import (Dimension, Entity, Issue, SketchAbstain, SketchRe
                                ViewName)
 from s2c.sketch.readers import Reader, readers_from_env
 from s2c.sketch.solve import Solved, px_to_mm, solve
-from s2c.sketch.text import TextItem, find_text_boxes, read_texts
+from s2c.sketch.text import TextItem, detect_text_boxes, read_texts
 from s2c.sketch.vectorize import Prim, vectorize
 from s2c.sketch.views import ViewRegion, split_views
 
@@ -3968,7 +3992,7 @@ def analyse(image_bytes: bytes, readers: list[Reader] | None = None) -> tuple[Sk
     H = cap.to_original
 
     readers = readers_from_env() if readers is None else readers
-    texts = read_texts(cap.sheet, find_text_boxes(cap.ink, cap.stroke_px), readers)
+    texts = read_texts(cap.sheet, detect_text_boxes(cap.sheet, cap.ink, cap.stroke_px), readers)
     lap("text")
     if isinstance(texts, SketchAbstain):
         return _empty(size, texts, timings), trace
