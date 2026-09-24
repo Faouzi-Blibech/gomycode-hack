@@ -91,7 +91,10 @@ class Pipeline:
     def build_and_verify(self, spec: PartSpec, input_mask: np.ndarray, out_dir: Path) -> BuildResult | Abstain:
         try:
             solid = self.build(spec)
-        except Exception as e:  # noqa: BLE001 -- BuildError from the geometry owner carries reason and remedy
+        except Exception as e:  # BuildError from the geometry owner carries reason and remedy
+            # Logged with the traceback for our own diagnostics; the Abstain handed back to the
+            # user never carries the exception's message, only the fixed, user-safe strings below.
+            log.exception("build stage failed")
             reason = getattr(e, "reason", "build_failed")
             remedy = getattr(e, "remedy", "The part could not be built. Check the dimensions.")
             return Abstain(stage="build", reason=reason, remedy=remedy)
