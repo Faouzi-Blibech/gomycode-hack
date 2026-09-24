@@ -36,6 +36,25 @@ def test_photo_flange_derives_bolt_circle():
     assert spec.part.bore_diameter_mm == 30
 
 
+def test_photo_l_bracket_maps_bbox_to_leg_a_and_width_then_asks_for_leg_b():
+    # a top-down photo of an L-bracket shows leg_a by width; leg_b stands up out of the photo
+    m = Measurements(
+        mm_per_px=0.1, coin=Coin(name="1 TND", pixel_diameter=250, eccentricity=0.02, confidence=0.9),
+        outer_contour_mm=[(0, 0), (50, 0), (50, 30), (0, 30)], bbox_mm=Bbox(width=50, height=30),
+        confidence=0.85,
+    )
+    out = merge(topo(part_type="l_bracket"), source_input="photo", measurements=m)
+    assert isinstance(out, Abstain) and out.reason == "missing_leg_b"
+    assert out.partial == {"leg_a": 50.0, "width": 30.0}
+    assert "leg b" in out.remedy
+    spec = merge(topo(part_type="l_bracket"), source_input="photo", measurements=m,
+                 user_values={"leg_b": 20.0, "thickness": 3.0})
+    assert isinstance(spec, PartSpec)
+    assert (spec.part.leg_a_mm, spec.part.leg_b_mm, spec.part.width_mm) == (50, 20, 30)
+    assert spec.provenance["part.leg_a_mm"] == "measured" and spec.provenance["part.width_mm"] == "measured"
+    assert spec.provenance["part.leg_b_mm"] == "user_edited"
+
+
 def test_photo_profile_extrusion_simplifies_contour():
     m = Measurements(
         mm_per_px=0.1, coin=Coin(name="1 TND", pixel_diameter=250, eccentricity=0.02, confidence=0.9),
