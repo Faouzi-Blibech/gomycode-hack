@@ -1,5 +1,8 @@
 import json
+import os
 import sys
+import time
+import zipfile
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -26,6 +29,16 @@ def test_export_returns_downloadable_files_and_a_zip(tmp_path, monkeypatch):
     assert c.get(body["files"]["stl"]).status_code == 200 and c.get(body["zip_url"]).status_code == 200
 
 
+def test_export_sweeps_builds_older_than_an_hour(tmp_path, monkeypatch):
+    c = client(tmp_path, monkeypatch)
+    stale = tmp_path / "stale-build"
+    stale.mkdir()
+    old = time.time() - 7200
+    os.utime(stale, (old, old))
+    c.post("/mv/export", json={"spec": SPEC, "settings": {"export": {"formats": ["stl"]}}})
+    assert not stale.exists()
+
+
 def test_bad_settings_and_paths_are_refused(tmp_path, monkeypatch):
     c = client(tmp_path, monkeypatch)
     assert c.post("/mv/export", json={"spec": SPEC, "settings": {"printing": {"layer_mm": 0.9}}}).status_code == 422
@@ -41,3 +54,16 @@ def test_the_cli_exports_formats(tmp_path, monkeypatch):
                                       "--format", "stl", "--format", "step", "--out", str(tmp_path)])
     mv_export.main()
     assert any(p.name == "part.stl" for p in tmp_path.rglob("*")) and list(tmp_path.glob("*.zip"))
+
+
+def test_the_cli_records_settings_in_the_manifest(tmp_path, monkeypatch):
+    from scripts import mv_export
+    monkeypatch.setattr("s2c.multiview.slice.find_slicer", lambda: None)
+    spec_path = Path(__file__).parents[1] / "examples" / "mv" / "l_bracket.json"
+    monkeypatch.setattr(sys, "argv", ["mv_export", str(spec_path), "--format", "stl",
+                                      "--quality", "fine", "--material", "PETG", "--out", str(tmp_path)])
+    mv_export.main()
+    zip_path = next(tmp_path.glob("*.zip"))
+    manifest = json.loads(zipfile.ZipFile(zip_path).read("manifest.json"))
+    assert manifest["settings"]["mesh"]["quality"] == "fine"
+    assert manifest["settings"]["printing"]["material"] == "PETG"

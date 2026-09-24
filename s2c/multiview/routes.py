@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from s2c.multiview.artifacts import ROOT as ARTIFACT_ROOT
 from s2c.multiview.artifacts import build_part as _build_part
-from s2c.multiview.artifacts import bundle, export_part
+from s2c.multiview.artifacts import bundle, export_part, sweep
 from s2c.multiview.pipeline import ImageInput, MvPipeline, Observed, default_pipeline
 from s2c.multiview.settings import StudioSettings
 from s2c.multiview.spec import MultiViewSpec, MvAbstain
@@ -140,6 +140,7 @@ class ExportBody(BaseModel):
 
 @router.post("/export")
 def export_files(body: ExportBody) -> dict:
+    sweep(ARTIFACT_ROOT)
     part = _build_part(body.spec, body.settings.geometry, ARTIFACT_ROOT)
     if isinstance(part, MvAbstain):
         return {"abstain": part.model_dump()}
