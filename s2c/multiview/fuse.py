@@ -17,7 +17,6 @@ CLEARANCE_CLASSES = {  # ISO 273 clearance holes for M2, M2.5, M3, M4, M5, M6, M
     "medium": (2.4, 2.9, 3.4, 4.5, 5.5, 6.6, 9.0, 11.0),
     "coarse": (2.6, 3.1, 3.6, 4.8, 5.8, 7.0, 10.0, 12.0),
 }
-CLEARANCE_MM = CLEARANCE_CLASSES["medium"]
 THICKNESS_MM = (1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0)
 SNAPPABLE = frozenset({"scaled", "inferred", "estimated"})
 DISAGREE = 0.05

@@ -24,7 +24,7 @@ def run(cmd: list[str], timeout_s: float, log_path: Path, cwd: Path | None = Non
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-    with log_path.open("w", encoding="utf-8", errors="replace") as out:
+    with log_path.open("wb") as out:
         proc = subprocess.Popen([str(c) for c in cmd], stdout=out, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, cwd=cwd, creationflags=flags,
                                 start_new_session=os.name != "nt")
@@ -35,9 +35,20 @@ def run(cmd: list[str], timeout_s: float, log_path: Path, cwd: Path | None = Non
             return None
 
 
+TAIL_BYTES = 65536
+
+
 def tail(log_path: Path, n: int = 20) -> str:
+    """The last `n` lines, reading only the end of the file (a build log can be huge)."""
     try:
-        lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
+        with Path(log_path).open("rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            start = max(0, size - TAIL_BYTES)
+            f.seek(start)
+            data = f.read()
     except OSError:
         return ""
-    return "\n".join(lines[-n:])
+    text = data.decode("utf-8", errors="replace")
+    if start > 0:
+        _, _, text = text.partition("\n")
+    return "\n".join(text.splitlines()[-n:])

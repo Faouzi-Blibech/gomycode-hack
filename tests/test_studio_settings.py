@@ -1,5 +1,6 @@
 import sys
 import time
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -9,6 +10,7 @@ from s2c.multiview.settings import (
     DENSITIES,
     FORMATS,
     MATERIALS,
+    AiSettings,
     ExportSettings,
     GeometrySettings,
     MeshSettings,
@@ -71,3 +73,39 @@ def test_run_kills_a_program_that_hangs(tmp_path):
     t0 = time.monotonic()
     code = run([sys.executable, "-c", "import time; time.sleep(60)"], 1, tmp_path / "log.txt")
     assert code is None and time.monotonic() - t0 < 15
+
+
+def test_tail_reads_only_the_end(tmp_path, monkeypatch):
+    log = tmp_path / "log.txt"
+    log.write_text("\n".join(f"line {i}" for i in range(200_000)) + "\n", encoding="utf-8")
+
+    def _whole_file_read(self, *args, **kwargs):
+        raise AssertionError("whole file read")
+
+    monkeypatch.setattr(Path, "read_text", _whole_file_read)
+    assert tail(log, 3) == "line 199997\nline 199998\nline 199999"
+
+
+def test_tail_short_and_missing(tmp_path):
+    log = tmp_path / "log.txt"
+    log.write_text("one\ntwo\n", encoding="utf-8")
+    assert tail(log, 20) == "one\ntwo"
+    assert tail(tmp_path / "missing.txt", 20) == ""
+    bad = tmp_path / "bad.txt"
+    bad.write_bytes(b"\xff\xfeok\n")
+    assert tail(bad, 20).endswith("ok")
+
+
+def test_run_log_is_binary(tmp_path):
+    log = tmp_path / "log.txt"
+    code = run([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff\\xfeok\\n')"], 30, log)
+    assert code == 0
+    assert log.read_bytes().endswith(b"\xff\xfeok\n")
+
+
+def test_settings_defaults():
+    ai = AiSettings()
+    assert (ai.use_reader, ai.use_qwen_image, ai.use_rescue, ai.use_triposr, ai.use_solaria, ai.randomize_seed) == \
+        (True, True, True, True, True, False)
+    geo = GeometrySettings()
+    assert (geo.snap, geo.finish, geo.finish_edges, geo.clearance) == (True, "none", "all_vertical", "medium")
