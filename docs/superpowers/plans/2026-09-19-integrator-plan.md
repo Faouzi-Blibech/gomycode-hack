@@ -4,6 +4,8 @@
 
 **Goal:** Ship the frozen contracts, the provider-agnostic vision layer, the merge step with abstention gates, the FastAPI surface, the Gradio lab UI and the mobile web app, so a sketch photo becomes a downloadable STL end to end.
 
+**Team change, 24 September:** the team is four people. Tasks 12, 13 and 18 (API, lab UI, golden harness) moved to the backend and security owner's plan, `docs/superpowers/plans/2026-09-24-backend-security-plan.md`. Tasks 1 to 11 and 19 are done and on `main`. Tasks 14 to 17 (web app) stay here and are built from Faouzi's Claude design.
+
 **Architecture:** Every stage produces a Pydantic model from `s2c/partspec/`. `s2c/pipeline.py` wires stage functions together and falls back to `s2c/fakes/` when a real module is missing, so this plan runs green before the geometry and numbers plans land. The API is stateless apart from a temp file store with a one-hour TTL.
 
 **Tech Stack:** Python 3.11, uv, Pydantic v2, openai (OpenAI-compatible client), OpenCV headless, FastAPI, Gradio, pytest. Web: Vite, React, TypeScript, three.
@@ -1963,309 +1965,17 @@ git commit -m "Wire the pipeline with fallback to fake stages"
 
 ---
 
-### Task 12: FastAPI surface
+### Task 12: FastAPI surface (moved)
 
-**Files:**
-- Create: `s2c/api.py`
-- Test: `tests/test_api.py`
-
-**Interfaces:**
-- Consumes: `Pipeline`, `FileStore`.
-- Produces: `app` with `POST /analyze`, `POST /merge`, `POST /build`, `GET /files/{file_id}`, `GET /health`. Response shapes are in the tests below and are what `web/` consumes.
-
-- [ ] **Step 1: Write the failing tests**
-
-```python
-# tests/test_api.py
-import cv2
-import numpy as np
-from fastapi.testclient import TestClient
-from s2c.api import app
-from s2c.pipeline import fake_pipeline
-from s2c.store import FileStore
-
-
-def sketch_bytes():
-    img = np.full((600, 800, 3), 255, np.uint8)
-    cv2.rectangle(img, (250, 200), (550, 400), (0, 0, 0), 3)
-    return cv2.imencode(".jpg", img)[1].tobytes()
-
-
-def client(tmp_path):
-    app.state.pipeline = fake_pipeline()
-    app.state.store = FileStore(tmp_path)
-    return TestClient(app)
-
-
-def test_health(tmp_path):
-    assert client(tmp_path).get("/health").json()["ok"] is True
-
-
-def test_analyze_then_build(tmp_path):
-    c = client(tmp_path)
-    r = c.post("/analyze", files={"image": ("s.jpg", sketch_bytes(), "image/jpeg")}, data={"input_kind": "sketch"})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["abstain"] is None
-    assert body["partspec"]["part"]["type"] == "plate"
-    assert body["silhouette_id"].endswith(".png")
-    assert body["topology"]["part_type"] == "plate"
-
-    r2 = c.post("/build", json={"partspec": body["partspec"], "silhouette_id": body["silhouette_id"]})
-    assert r2.status_code == 200, r2.text
-    b = r2.json()
-    assert b["abstain"] is None
-    assert 0 <= b["iou"] <= 1
-    assert set(b["views"]) == {"front", "back", "left", "right", "top", "bottom"}
-    stl = c.get(b["stl_url"])
-    assert stl.status_code == 200 and stl.content.startswith(b"solid")
-
-
-def test_merge_endpoint_applies_user_values(tmp_path):
-    c = client(tmp_path)
-    r = c.post("/analyze", files={"image": ("s.jpg", sketch_bytes(), "image/jpeg")}, data={"input_kind": "sketch"})
-    body = r.json()
-    r2 = c.post("/merge", json={
-        "topology": body["topology"], "annotations": body["annotations"], "measurements": None,
-        "source_input": "sketch", "user_values": {"thickness": 9.0},
-    })
-    assert r2.status_code == 200, r2.text
-    assert r2.json()["partspec"]["part"]["thickness_mm"] == 9.0
-    assert r2.json()["partspec"]["provenance"]["part.thickness_mm"] == "user_edited"
-
-
-def test_bad_file_id_is_404(tmp_path):
-    assert client(tmp_path).get("/files/../pyproject.toml").status_code == 404
-```
-
-- [ ] **Step 2: Run to confirm failure**
-
-Run: `uv run pytest tests/test_api.py -v`
-Expected: FAIL with `ModuleNotFoundError`.
-
-- [ ] **Step 3: Implement**
-
-```python
-# s2c/api.py
-"""HTTP surface. Stateless apart from the temp file store."""
-from __future__ import annotations
-
-import tempfile
-from pathlib import Path
-from typing import Any
-
-import cv2
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
-
-from s2c.partspec.models import Abstain, Annotations, Measurements, PartSpec, SourceInput, Topology
-from s2c.pipeline import default_pipeline
-from s2c.store import FileStore
-
-app = FastAPI(title="Sketch-to-CAD")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-app.state.pipeline = None
-app.state.store = None
-
-
-def _pipeline(request: Request):
-    if request.app.state.pipeline is None:
-        request.app.state.pipeline = default_pipeline()
-    return request.app.state.pipeline
-
-
-def _store(request: Request) -> FileStore:
-    if request.app.state.store is None:
-        request.app.state.store = FileStore()
-    request.app.state.store.sweep()
-    return request.app.state.store
-
-
-def _png(mask) -> bytes:
-    return cv2.imencode(".png", mask)[1].tobytes()
-
-
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-
-@app.post("/analyze")
-async def analyze(request: Request, image: UploadFile = File(...), input_kind: SourceInput = Form(...)):
-    p, store = _pipeline(request), _store(request)
-    res = p.analyze(await image.read(), input_kind)
-    return {
-        "partspec": res.partspec.model_dump() if res.partspec else None,
-        "abstain": res.abstain.model_dump() if res.abstain else None,
-        "topology": res.topology.model_dump() if res.topology else None,
-        "annotations": res.annotations.model_dump() if res.annotations else None,
-        "measurements": res.measurements.model_dump() if res.measurements else None,
-        "silhouette_id": store.put(_png(res.input_mask), ".png"),
-    }
-
-
-class MergeBody(BaseModel):
-    topology: Topology
-    annotations: Annotations | None = None
-    measurements: Measurements | None = None
-    source_input: SourceInput
-    user_values: dict[str, float] | None = None
-
-
-@app.post("/merge")
-def remerge(request: Request, body: MergeBody):
-    out = _pipeline(request).remerge(body.topology, source_input=body.source_input,
-                                     annotations=body.annotations, measurements=body.measurements,
-                                     user_values=body.user_values)
-    if isinstance(out, Abstain):
-        return {"partspec": None, "abstain": out.model_dump()}
-    return {"partspec": out.model_dump(), "abstain": None}
-
-
-class BuildBody(BaseModel):
-    partspec: PartSpec
-    silhouette_id: str
-
-
-@app.post("/build")
-def build(request: Request, body: BuildBody):
-    p, store = _pipeline(request), _store(request)
-    mask_path = store.path(body.silhouette_id)
-    if mask_path is None:
-        raise HTTPException(404, "silhouette expired, analyze again")
-    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-    with tempfile.TemporaryDirectory() as tmp:
-        out = p.build_and_verify(body.partspec, mask, Path(tmp))
-        if isinstance(out, Abstain):
-            return {"abstain": out.model_dump(), "iou": None, "views": {}, "stl_url": None, "step_url": None, "warnings": []}
-        stl_id = store.put(out.stl_path.read_bytes(), ".stl")
-        step_id = store.put(out.step_path.read_bytes(), ".step")
-    views = {k: f"/files/{store.put(_png(v), '.png')}" for k, v in out.views.items()}
-    return {"abstain": None, "iou": out.iou, "views": views, "warnings": out.warnings,
-            "stl_url": f"/files/{stl_id}", "step_url": f"/files/{step_id}"}
-
-
-@app.get("/files/{file_id}")
-def files(request: Request, file_id: str):
-    path = _store(request).path(file_id)
-    if path is None:
-        raise HTTPException(404)
-    return FileResponse(path)
-```
-
-- [ ] **Step 4: Run tests**
-
-Run: `uv run pytest tests/test_api.py -v`
-Expected: PASS. If `/files/../pyproject.toml` is normalised by the test client to `/pyproject.toml`, a 404 is still the expected result.
-
-- [ ] **Step 5: Run the server once by hand**
-
-Run: `uv run uvicorn s2c.api:app --reload --host 0.0.0.0 --port 8000` and open `http://localhost:8000/docs`. Upload a sketch to `/analyze`.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add s2c/api.py tests/test_api.py
-git commit -m "Add FastAPI surface with analyze, merge, build and file endpoints"
-```
+Owned by the backend and security owner since 24 September. Full text, unchanged, is Task 1 of `docs/superpowers/plans/2026-09-24-backend-security-plan.md`.
+Do not execute it from this plan.
 
 ---
 
-### Task 13: Gradio lab UI
+### Task 13: Gradio lab UI (moved)
 
-**Files:**
-- Create: `app_gradio.py`
-
-**Interfaces:**
-- Consumes: `default_pipeline`, `BuildResult`.
-
-- [ ] **Step 1: Write the app**
-
-```python
-# app_gradio.py
-"""Lab view: every stage output side by side. Run: uv run python app_gradio.py"""
-import json
-import tempfile
-from pathlib import Path
-
-import cv2
-import gradio as gr
-from dotenv import load_dotenv
-
-from s2c.partspec.models import Abstain, PartSpec
-from s2c.pipeline import default_pipeline
-
-load_dotenv()
-PIPE = default_pipeline()
-OUT = Path(tempfile.mkdtemp(prefix="s2c_lab_"))
-
-
-def run(image_path, input_kind, user_values_json):
-    image_bytes = Path(image_path).read_bytes()
-    user_values = json.loads(user_values_json) if user_values_json.strip() else None
-    res = PIPE.analyze(image_bytes, input_kind, user_values=user_values)
-    stage = {
-        "topology": res.topology.model_dump() if res.topology else None,
-        "annotations": res.annotations.model_dump() if res.annotations else None,
-        "measurements": res.measurements.model_dump() if res.measurements else None,
-    }
-    if res.abstain:
-        return stage, res.abstain.model_dump(), None, "abstained", None, None, []
-    built = PIPE.build_and_verify(res.partspec, res.input_mask, OUT)
-    if isinstance(built, Abstain):
-        return stage, built.model_dump(), res.partspec.model_dump(), "build abstained", None, None, []
-    views = [cv2.cvtColor(v, cv2.COLOR_GRAY2RGB) for v in built.views.values()]
-    status = f"IoU {built.iou:.2f} " + ("green" if built.iou >= 0.85 else "amber") + "\n" + "\n".join(built.warnings)
-    return stage, None, res.partspec.model_dump(), status, str(built.stl_path), str(built.step_path), views
-
-
-def rebuild(partspec_json, image_path):
-    spec = PartSpec.model_validate(partspec_json)
-    res = PIPE.analyze(Path(image_path).read_bytes(), spec.source_input)
-    built = PIPE.build_and_verify(spec, res.input_mask, OUT)
-    if isinstance(built, Abstain):
-        return built.model_dump(), "build abstained", None, None, []
-    views = [cv2.cvtColor(v, cv2.COLOR_GRAY2RGB) for v in built.views.values()]
-    return None, f"IoU {built.iou:.2f}", str(built.stl_path), str(built.step_path), views
-
-
-with gr.Blocks(title="Sketch-to-CAD lab") as demo:
-    gr.Markdown("# Sketch-to-CAD lab\nEvery stage output, side by side.")
-    with gr.Row():
-        image = gr.Image(type="filepath", label="Sketch, photo or drawing")
-        with gr.Column():
-            kind = gr.Radio(["sketch", "photo", "drawing"], value="sketch", label="Input kind")
-            user_values = gr.Textbox(label="User values JSON, e.g. {\"thickness\": 5}", value="")
-            go = gr.Button("Run pipeline", variant="primary")
-    with gr.Row():
-        stage_out = gr.JSON(label="Stage outputs")
-        abstain_out = gr.JSON(label="Abstain")
-        spec_out = gr.JSON(label="PartSpec (editable, then Rebuild)")
-    status = gr.Textbox(label="Status")
-    with gr.Row():
-        stl = gr.File(label="STL")
-        step = gr.File(label="STEP")
-    gallery = gr.Gallery(label="Six views", columns=6)
-    rebuild_btn = gr.Button("Rebuild from edited PartSpec")
-    go.click(run, [image, kind, user_values], [stage_out, abstain_out, spec_out, status, stl, step, gallery])
-    rebuild_btn.click(rebuild, [spec_out, image], [abstain_out, status, stl, step, gallery])
-
-if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
-```
-
-- [ ] **Step 2: Run it by hand**
-
-Run: `uv run python app_gradio.py`, open `http://localhost:7860`, upload the test sketch, click Run. Expected: stage JSONs, a PartSpec, an IoU status, STL and STEP downloads, six identical rectangles from the fake views. Then edit `width_mm` in the PartSpec JSON and click Rebuild. Expected: a new STL and status.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add app_gradio.py
-git commit -m "Add Gradio lab UI showing every pipeline stage"
-```
+Owned by the backend and security owner since 24 September. Full text, unchanged, is Task 3 of `docs/superpowers/plans/2026-09-24-backend-security-plan.md`.
+Do not execute it from this plan.
 
 ---
 
@@ -2756,11 +2466,15 @@ export function Review({ s }: { s: AppState }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.partspec]);
 
+  // Only numbers the user typed go back as user_values. Never echo abstain.partial: merge would
+  // re-stamp measured and written values as user_edited, which falsifies their provenance.
+  const typed = useRef<Record<string, number>>({});
+
   async function fillMissing(values: Record<string, number>) {
     if (!s.analysis) return;
-    const prev = s.analysis.abstain?.partial ?? {};
+    typed.current = { ...typed.current, ...values };
     const res = await remerge({ topology: s.analysis.topology, annotations: s.analysis.annotations,
-      measurements: s.analysis.measurements, source_input: s.kind, user_values: { ...prev, ...values } });
+      measurements: s.analysis.measurements, source_input: s.kind, user_values: typed.current });
     s.setAnalysis({ ...s.analysis, partspec: res.partspec, abstain: res.abstain });
     s.setPartspec(res.partspec);
   }
@@ -2861,87 +2575,10 @@ git commit -m "Add export screen with downloads and six views"
 
 ---
 
-### Task 18: Golden-set test harness
+### Task 18: Golden-set test harness (moved)
 
-**Files:**
-- Create: `tests/test_golden.py`, `tests/golden/README.md`
-
-**Interfaces:**
-- Consumes: `default_pipeline`, golden folders `tests/golden/<name>/image.jpg` + `expected.json` (an `expected.json` holds `{"input_kind": "sketch", "part": {...}, "features": [...]}` with the same field names as PartSpec). The geometry owner fills the folders.
-
-- [ ] **Step 1: Write the harness**
-
-```python
-# tests/test_golden.py
-"""Runs the full pipeline on every golden folder. Skips when no VLM key is set (CI) unless GOLDEN_FAKE=1."""
-import json
-import os
-from pathlib import Path
-
-import pytest
-
-from s2c.pipeline import default_pipeline, fake_pipeline
-
-GOLDEN = Path(__file__).parent / "golden"
-CASES = sorted(p for p in GOLDEN.iterdir() if (p / "expected.json").exists()) if GOLDEN.exists() else []
-
-
-def within(actual: float, expected: float) -> bool:
-    return abs(actual - expected) <= max(1.0, 0.05 * abs(expected))
-
-
-@pytest.fixture(scope="module")
-def pipe():
-    if os.environ.get("GOLDEN_FAKE") == "1":
-        return fake_pipeline()
-    if not os.environ.get("VLM_API_KEY"):
-        pytest.skip("set VLM_API_KEY (or GOLDEN_FAKE=1) to run the golden set")
-    return default_pipeline()
-
-
-@pytest.mark.parametrize("case", CASES, ids=[c.name for c in CASES])
-def test_golden_case(case: Path, pipe, tmp_path):
-    expected = json.loads((case / "expected.json").read_text())
-    image = next(p for p in case.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
-    res = pipe.analyze(image.read_bytes(), expected["input_kind"], user_values=expected.get("user_values"))
-    assert res.abstain is None, res.abstain
-    part = res.partspec.part.model_dump()
-    for key, val in expected["part"].items():
-        if isinstance(val, (int, float)) and not isinstance(val, bool):
-            assert within(part[key], val), f"{key}: got {part[key]}, expected {val}"
-        else:
-            assert part[key] == val
-    assert len(res.partspec.features) == len(expected.get("features", []))
-    built = pipe.build_and_verify(res.partspec, res.input_mask, tmp_path)
-    assert built.iou >= 0.85, f"IoU {built.iou:.2f}"
-```
-
-```markdown
-<!-- tests/golden/README.md -->
-One folder per case: `image.jpg` and `expected.json`.
-
-expected.json:
-{
-  "input_kind": "sketch",
-  "user_values": {"thickness": 5.0},
-  "part": {"type": "plate", "width_mm": 60.0, "height_mm": 40.0, "thickness_mm": 5.0, "corner_radius_mm": 0.0},
-  "features": [{"type": "hole", "x_mm": 10.0, "y_mm": 10.0, "diameter_mm": 6.0}]
-}
-
-Run: `uv run pytest tests/test_golden.py -v` with a `.env`, or `GOLDEN_FAKE=1 uv run pytest tests/test_golden.py` to check the harness.
-```
-
-- [ ] **Step 2: Run the harness with fakes**
-
-Run: `GOLDEN_FAKE=1 uv run pytest tests/test_golden.py -v` (PowerShell: `$env:GOLDEN_FAKE=1; uv run pytest tests/test_golden.py -v`)
-Expected: no cases yet, so pytest reports "no tests ran" or the parametrised test is empty. Once the geometry owner adds folders, cases appear.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add tests/test_golden.py tests/golden/README.md
-git commit -m "Add golden-set harness with tolerance and IoU checks"
-```
+Owned by the backend and security owner since 24 September. Full text, unchanged, is Task 4 of `docs/superpowers/plans/2026-09-24-backend-security-plan.md`.
+Do not execute it from this plan.
 
 ---
 
