@@ -101,10 +101,10 @@ Accuracy numbers, updated as tests land:
 
 | Metric | Value |
 | --- | --- |
-| Golden sketches passing | pending |
+| Golden sketches passing | pending, golden set not yet built |
 | Coin scale error | pending |
 | OCR value accuracy | pending |
-| Median sketch-to-STL latency | pending |
+| Median sketch-to-STL latency | pending full-pipeline measurement; one measured vision-model call (`gemma3:4b` via Ollama) took about 17.8 s, logged in `logs/vlm.jsonl` — this is a single sample of model latency only, not a pipeline median |
 
 ## Responsible AI and data
 
@@ -119,4 +119,4 @@ Three people, three owners. The integrator owns the contracts, model layer, merg
 
 ## Status
 
-Design and plans are complete. See `docs/superpowers/plans/` for the task lists and `docs/superpowers/specs/` for the full design.
+Design and plans are complete. Real code exists today for the contracts (`s2c/partspec/`), the temp file store (`s2c/store.py`), the vision client and topology extraction (`s2c/vision/`), the sketch-path merge with its abstention gates (`s2c/merge.py`), and silhouette handling (`s2c/silhouette.py`). The vision stage is verified end to end against a local Ollama model; see `docs/models.md` for the working configuration and the one to avoid. Builder, views, OCR, metrology, the FastAPI surface and both UIs are still served by their fakes in `s2c/fakes/`, so the pipeline runs but does not yet produce real geometry or read real dimensions. CI (`.github/workflows/ci.yml`) runs `ruff check` and `pytest` on every push and pull request against Python 3.11. See `docs/superpowers/plans/` for the task lists and `docs/superpowers/specs/` for the full design.
