@@ -3,6 +3,8 @@ views in a third-angle layout, overall dimensions, hole diameters and a title bl
 PDF are rendered from the DXF. Spec 2026-09-23-studio section 6."""
 from __future__ import annotations
 
+import os
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,7 +19,8 @@ from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
 from OCP.HLRAlgo import HLRAlgo_Projector
 from OCP.HLRBRep import HLRBRep_Algo, HLRBRep_HLRToShape
 
-from s2c.multiview.spec import FaceHole, MultiViewSpec
+from s2c.multiview.settings import EDGE_LABELS
+from s2c.multiview.spec import CANONICAL_OF, FaceHole, Fillet, MultiViewSpec, to_canonical
 
 DRAWING_FORMATS = ("dxf", "svg", "pdf")
 DRAWING_FILES = {"dxf": "drawing.dxf", "svg": "drawing.svg", "pdf": "drawing.pdf"}
@@ -88,8 +91,18 @@ def drawing_document(solid, spec: MultiViewSpec) -> ezdxf.document.Drawing:
             cx, cy = place[f.face][0] + f.a_mm, place[f.face][1] + f.b_mm
             msp.add_diameter_dim(center=(cx, cy), radius=f.diameter_mm / 2, angle=45, dimstyle="EZDXF",
                                  override=DIM_STYLE, dxfattribs={"layer": "DIMENSIONS"}).render()
+        elif isinstance(f, FaceHole):  # far side: dimension it, mirrored, in the opposite face's view
+            canonical = CANONICAL_OF[f.face]
+            a2, b2 = to_canonical(f.face, [(f.a_mm, f.b_mm)], spec.envelope)[0]
+            cx, cy = place[canonical][0] + a2, place[canonical][1] + b2
+            msp.add_diameter_dim(center=(cx, cy), radius=f.diameter_mm / 2, angle=45, dimstyle="EZDXF",
+                                 override=DIM_STYLE, text=f"⌀<> ({f.face})",  # ezdxf's own diameter prefix:
+                                 dxfattribs={"layer": "DIMENSIONS"}).render()      # matching it avoids a doubled symbol
         else:
             notes.append(f"Feature {k + 1} on the {f.face} face")
+    for finish in spec.finishes:
+        kind = "Fillet" if isinstance(finish, Fillet) else "Chamfer"
+        notes.append(f"{kind} R{finish.radius_mm:g} on {EDGE_LABELS[finish.edges]}")
     lines = ["Sketch-to-CAD", f"Envelope {w:g} x {h:g} x {d:g} mm", "Third-angle projection, units mm",
              f"Date {datetime.now(tz=UTC).date().isoformat()}", *notes]
     x0, y0 = w + gap, h + gap + d
@@ -113,6 +126,20 @@ def _pdf(doc, path: Path) -> None:
     fig.savefig(str(path), format="pdf")
 
 
+def _atomic_write(path: Path, write) -> None:
+    """write(tmp) fills a temp file next to `path`; only a fully-written file ever appears at `path`, so a
+    concurrent reader checking existence (artifacts.export_part) never sees a half-written drawing."""
+    fd, name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        write(tmp)
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def write_drawings(solid, spec: MultiViewSpec, out_dir: Path, formats) -> dict[str, Path]:
     wanted = [f for f in DRAWING_FORMATS if f in formats]
     if not wanted:
@@ -121,10 +148,8 @@ def write_drawings(solid, spec: MultiViewSpec, out_dir: Path, formats) -> dict[s
     out_dir.mkdir(parents=True, exist_ok=True)
     doc = drawing_document(solid, spec)
     files = {f: out_dir / DRAWING_FILES[f] for f in wanted}
-    if "dxf" in files:
-        doc.saveas(files["dxf"])
-    if "svg" in files:
-        files["svg"].write_text(_svg(doc), encoding="utf-8")
-    if "pdf" in files:
-        _pdf(doc, files["pdf"])
+    writers = {"dxf": lambda tmp: doc.saveas(tmp), "svg": lambda tmp: tmp.write_text(_svg(doc), encoding="utf-8"),
+               "pdf": lambda tmp: _pdf(doc, tmp)}
+    for f in wanted:
+        _atomic_write(files[f], writers[f])
     return files
