@@ -140,3 +140,25 @@ def test_a_failing_depth_provider_only_warns():
     data = cv2.imencode(".png", plate_photo())[1].tobytes()
     observed = MvPipeline(depth=down).observe([ImageInput(data, "front", "photo")])
     assert "front: depth unavailable" in observed.warnings
+
+
+def test_depth_failure_in_apply_is_a_warning():
+    from tests.test_mv_depth import plate_photo
+
+    def wrong_shape(img):
+        return np.zeros((5, 5, 3), np.float32)
+
+    data = cv2.imencode(".png", plate_photo())[1].tobytes()
+    observed = MvPipeline(depth=wrong_shape).observe([ImageInput(data, "front", "photo")])
+    assert not isinstance(observed, MvAbstain)
+    assert "front: depth unavailable" in observed.warnings
+
+
+def test_default_pipeline_warns_when_unconfigured(monkeypatch, caplog):
+    for key in ("QWEN_IMAGE_BACKEND", "QWEN_IMAGE_SPACE", "QWEN_IMAGE_BASE_URL", "QWEN_IMAGE_MODEL",
+               "VLM_API_KEY", "SOLARIA_SPACE"):
+        monkeypatch.delenv(key, raising=False)
+    with caplog.at_level("WARNING"):
+        pipeline.default_pipeline()
+    assert sum("Qwen-Image" in r.message for r in caplog.records) == 1
+    assert sum("Solaria" in r.message for r in caplog.records) == 1

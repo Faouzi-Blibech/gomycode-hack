@@ -1,12 +1,13 @@
 import time
+import tracemalloc
 
 import cv2
 import numpy as np
 import pytest
 
-from s2c.multiview.depth import apply_depth, read_depth, solaria_depth
+from s2c.multiview.depth import apply_depth, hole_depths, read_depth, solaria_depth
 from s2c.multiview.fuse import Observation, features_from
-from s2c.multiview.outline import extract
+from s2c.multiview.outline import PixelCircle, PixelOutline, extract
 from s2c.multiview.spec import Envelope
 from tests.test_mv_qwen_image import FakeJob
 
@@ -45,6 +46,27 @@ def scene(blind_ratio=0.4, table=10.0, face=0.0):
 
 def plate(**kw):
     return Observation(face="top", kind="photo", outline=extract(plate_photo()), **kw)
+
+
+def _peak_bytes(depth, outline):
+    tracemalloc.start()
+    try:
+        hole_depths(depth, outline)
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+def test_depth_masks_are_small():
+    """Per-circle stats must come from a bounding-box crop, not a full-frame array kept per circle."""
+    depth = np.zeros((1200, 1600), np.float32)
+
+    def outline_with(n):
+        return PixelOutline(outer=[(0, 0), (1599, 0), (1599, 1199), (0, 1199)], bbox=(0, 0, 1600, 1200),
+                            shape=(1200, 1600), circles=[PixelCircle(80 + 140 * i, 300, 40) for i in range(n)])
+
+    one, ten = _peak_bytes(depth, outline_with(1)), _peak_bytes(depth, outline_with(10))
+    assert ten - one < 20 * 1024 * 1024
 
 
 def test_the_point_cloud_turns_back_into_a_depth_map(tmp_path):

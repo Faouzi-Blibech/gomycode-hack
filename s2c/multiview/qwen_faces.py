@@ -50,7 +50,7 @@ def outline_from_image(img: np.ndarray, face: str, env: Envelope) -> Outline | N
     outer = mm(found.outer)
     if len(set(outer)) < 3:
         return None
-    return Outline(outer=outer, inner=[mm(loop) for loop in found.inner], source="inferred", confidence=CONFIDENCE)
+    return Outline(outer=outer, inner=[], source="inferred", confidence=CONFIDENCE)
 
 
 def grid_mask(outline: Outline, a_len: float, b_len: float, n: int = VOXELS) -> np.ndarray:

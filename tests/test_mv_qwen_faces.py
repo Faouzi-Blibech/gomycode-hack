@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 from s2c.multiview.complete import complete
-from s2c.multiview.qwen_faces import consistent, face_prompt
+from s2c.multiview.qwen_faces import consistent, face_prompt, outline_from_image
 from s2c.multiview.qwen_image import ImageGenError
 from s2c.multiview.raster import iou, outline_mask
 from s2c.multiview.spec import Envelope, Outline
@@ -107,6 +107,25 @@ def test_the_answer_is_cached_so_an_edit_never_calls_qwen_again():
     front = {"front": ol([(a * 1.2, b) for a, b in FRONT_L])}
     result, _, _ = complete(front, wider, "front", None, None, None, gen=gen, refs=[], qwen_cache=cache)
     assert len(gen.calls) == 2 and max(a for a, _ in result["top"].outer) == 60.0
+
+
+def test_drawn_face_keeps_outer_only():
+    """Holes are editable features on photographed faces only; a drawn face's non-circular opening is ignored."""
+    img = silhouette(rect(50, 20), 50, 20)
+    cv2.rectangle(img, (300, 150), (350, 200), (255, 255, 255), -1)
+    out = outline_from_image(img, "top", ENV)
+    assert out is not None and out.inner == []
+
+
+def test_no_rejected_warning_without_a_call():
+    filled = {}
+    _, warnings, _ = complete(front_only(), ENV, "front", None, IMAGE, None, gen=None, refs=[("front", IMAGE)],
+                              filled_by=filled)
+    assert not any("rejected" in w for w in warnings)
+    filled = {}
+    _, warnings, _ = complete(front_only(), ENV, "front", None, IMAGE, None,
+                              gen=fake_gen(silhouette(TOP_TAPER, 50, 20)), refs=[], filled_by=filled)
+    assert not any("rejected" in w for w in warnings)
 
 
 def test_a_rejected_face_skips_qwen():

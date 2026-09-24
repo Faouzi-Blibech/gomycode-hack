@@ -99,8 +99,8 @@ def complete(outlines: dict[str, Outline], env: Envelope, target_face: str, targ
         drawn = qwen_face(result, env, face, observed, list(refs), gen, qwen_cache, seed=seed, attempts=attempts)
         if drawn is not None:
             result[face], filled_by[face] = drawn, "qwen-image"
-        elif gen is not None or any(key[0] == face for key in qwen_cache):
-            tried_qwen.append(face)
+        elif any(v is not None for k, v in qwen_cache.items() if k[0] == face):
+            tried_qwen.append(face)  # Qwen returned an image for this face and it was rejected, not just never called
     wanted = [f for f in missing if f not in rejected and f not in result]
     if wanted and mesh is None and provider is not None and image is not None:
         try:

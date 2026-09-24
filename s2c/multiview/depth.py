@@ -84,16 +84,22 @@ def _median(depth: np.ndarray, where: np.ndarray) -> float | None:
     return float(np.median(values)) if values.size else None
 
 
+def _crop_bounds(c, h: int, w: int) -> tuple[int, int, int, int]:
+    pad = int(np.ceil(1.5 * c.d / 2)) + 1
+    y0, y1 = max(round(c.cy) - pad, 0), min(round(c.cy) + pad + 1, h)
+    x0, x1 = max(round(c.cx) - pad, 0), min(round(c.cx) + pad + 1, w)
+    return y0, y1, x0, x1
+
+
 def hole_depths(depth: np.ndarray, outline: PixelOutline, exclude=()) -> tuple[dict[int, float | None], list[str]]:
     """Per circle: None when it goes through, else its depth as a fraction of the axis length. A mark, or a part
-    too flat to measure, gets no entry and a warning. The part lies flat, so the table is one axis length down."""
+    too flat to measure, gets no entry and a warning. The part lies flat, so the table is one axis length down.
+    Ring and hole stats are read from each circle's own bounding-box crop, not a full-frame array per circle."""
     h, w = depth.shape
     filled = polygon_mask(outline.outer, (), (h, w))
-    part = polygon_mask(outline.outer, outline.inner, (h, w)) > 127
-    yy, xx = np.mgrid[0:h, 0:w]
-    dist2 = [(xx - c.cx) ** 2 + (yy - c.cy) ** 2 for c in outline.circles]
-    for c, d2 in zip(outline.circles, dist2):
-        part &= d2 > (c.d / 2) ** 2
+    part = polygon_mask(outline.outer, outline.inner, (h, w))
+    for c in outline.circles:
+        cv2.circle(part, (round(c.cx), round(c.cy)), round(c.d / 2), 0, -1)
     diag = float(np.hypot(outline.bbox[2], outline.bbox[3]))
     away = cv2.distanceTransform(255 - filled, cv2.DIST_L2, 5)
     table = (away > NEAR * diag) & (away <= FAR * diag)
@@ -103,10 +109,14 @@ def hole_depths(depth: np.ndarray, outline: PixelOutline, exclude=()) -> tuple[d
     span = float(np.percentile(finite, 98) - np.percentile(finite, 2)) if finite.size else 0.0
     d_table = _median(depth, table)
     found, warnings = {}, []
-    for i, (c, d2) in enumerate(zip(outline.circles, dist2)):
+    for i, c in enumerate(outline.circles):
         r = c.d / 2
-        d_face = _median(depth, part & (d2 >= r * r) & (d2 <= (1.5 * r) ** 2))
-        d_hole = _median(depth, d2 <= (0.7 * r) ** 2)
+        y0, y1, x0, x1 = _crop_bounds(c, h, w)
+        d_crop, part_crop = depth[y0:y1, x0:x1], part[y0:y1, x0:x1] > 127
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        d2 = (xx - c.cx) ** 2 + (yy - c.cy) ** 2
+        d_face = _median(d_crop, part_crop & (d2 >= r * r) & (d2 <= (1.5 * r) ** 2))
+        d_hole = _median(d_crop, d2 <= (0.7 * r) ** 2)
         if d_table is None or d_face is None or d_hole is None or abs(d_table - d_face) <= FLAT * span:
             warnings.append("depth: part too flat to measure, check hole depths")
             continue

@@ -134,6 +134,41 @@ def test_a_slow_space_times_out_quickly(tmp_path):
     assert jobs[0].cancelled  # the Space job is stopped, not left running
 
 
+def test_dashscope_total_budget(tmp_path):
+    """POST (50 s) plus two 30 s polls overruns the 90 s budget; the download endpoint is never reached."""
+    fake_now = [0.0]
+    downloads = []
+
+    def handler(req):
+        if req.url.path.endswith("/generation"):
+            fake_now[0] += 50
+            return httpx.Response(200, json={"output": {"task_id": "t1", "task_status": "RUNNING"}})
+        if req.url.path.endswith("/tasks/t1"):
+            fake_now[0] += 30
+            return httpx.Response(200, json={"output": {"task_id": "t1", "task_status": "RUNNING"}})
+        downloads.append(req)
+        return httpx.Response(200, content=PNG)
+
+    gen = Q.dashscope_gen(BASE, "m", "k", client(handler, []), poll_s=0, clock=lambda: fake_now[0],
+                          log_path=tmp_path / "l")
+    with pytest.raises(Q.ImageGenError, match="timed out"):
+        gen([REF], "p", 7, "mv_face")
+    assert downloads == []
+
+
+def test_dashscope_succeeded_without_image(tmp_path):
+    def handler(req):
+        if req.url.path.endswith("/generation"):
+            return httpx.Response(200, json={"output": {"task_id": "t1", "task_status": "RUNNING"}})
+        if req.url.path.endswith("/tasks/t1"):
+            return httpx.Response(200, json={"output": {"task_id": "t1", "task_status": "SUCCEEDED"}})
+        return httpx.Response(200, content=PNG)
+
+    gen = Q.dashscope_gen(BASE, "m", "k", client(handler, []), poll_s=0, log_path=tmp_path / "l")
+    with pytest.raises(Q.ImageGenError, match="no image"):
+        gen([REF], "p", 7, "mv_face")
+
+
 def test_the_backend_comes_from_the_environment(monkeypatch):
     for key in ("QWEN_IMAGE_BACKEND", "QWEN_IMAGE_SPACE", "QWEN_IMAGE_BASE_URL", "QWEN_IMAGE_MODEL", "VLM_API_KEY"):
         monkeypatch.delenv(key, raising=False)

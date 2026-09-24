@@ -170,11 +170,10 @@ class MvPipeline:
         for face, k in best.items():
             try:
                 depth = self.depth(observed.images[k])
+                warnings += apply_depth(observed.observations[k], depth, excluded[k])
             except Exception as e:
                 log.warning("Solaria failed on %s: %s", face, e)
                 warnings.append(f"{face}: depth unavailable")
-                continue
-            warnings += apply_depth(observed.observations[k], depth, excluded[k])
         return warnings
 
     @staticmethod
@@ -251,6 +250,12 @@ def default_pipeline() -> MvPipeline:
         log.warning("TripoSR unavailable: %s", e)
     read_chat = env_chat(stage="mv_read")
     space = os.environ.get("SOLARIA_SPACE")
+    image_gen = default_gen()
+    if image_gen is None:
+        log.warning("Qwen-Image unavailable: set QWEN_IMAGE_SPACE, or QWEN_IMAGE_BACKEND=dashscope with its "
+                    "settings; missing faces fall back to TripoSR or an assumed rectangle")
+    if not space:
+        log.warning("Solaria unavailable: set SOLARIA_SPACE; hole depth stays with the vision model's labels")
     return MvPipeline(chat=env_chat(), reader=reader, mesh_provider=provider,
-                      batch_reader=qwen_batch_reader(read_chat) if read_chat else None, image_gen=default_gen(),
+                      batch_reader=qwen_batch_reader(read_chat) if read_chat else None, image_gen=image_gen,
                       depth=solaria_depth(space, os.environ.get("HF_TOKEN")) if space else None)

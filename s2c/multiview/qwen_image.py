@@ -63,32 +63,41 @@ def _image_url(output: dict) -> str | None:
 
 
 def dashscope_gen(base_url: str, model: str, key: str, client: httpx.Client | None = None, poll_s: float = 2.0,
-                  timeout_s: float = DASHSCOPE_TIMEOUT_S, log_path="logs/vlm.jsonl") -> ImageGen:
+                  timeout_s: float = DASHSCOPE_TIMEOUT_S, log_path="logs/vlm.jsonl",
+                  clock: Callable[[], float] = time.monotonic) -> ImageGen:
     http = client or httpx.Client(timeout=30)
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
     def call(refs: list[np.ndarray], prompt: str, seed: int) -> np.ndarray:
-        start = time.monotonic()
+        deadline = clock() + timeout_s
+
+        def left() -> float:
+            # one budget shared by the POST, every poll and the download; each request's timeout is what remains
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise ImageGenError("timed out")
+            return remaining
+
         content = [{"text": prompt}]
         content += [{"image": f"data:image/png;base64,{_png_b64(_ref(r))}"} for r in refs[:MAX_REFS]]
         payload = {"model": model, "input": {"messages": [{"role": "user", "content": content}]},
                    "parameters": {"prompt_extend": False, "watermark": False, "seed": int(seed)}}
-        r = http.post(f"{base_url}/services/aigc/multimodal-generation/generation", json=payload, headers=headers)
+        r = http.post(f"{base_url}/services/aigc/multimodal-generation/generation", json=payload, headers=headers,
+                      timeout=left())
         r.raise_for_status()
         out = r.json().get("output") or {}
-        while _image_url(out) is None and out.get("task_id"):
-            if out.get("task_status") in ("FAILED", "CANCELED", "UNKNOWN"):
-                raise ImageGenError(f"task {out['task_status']}: {out.get('message', '')}")
-            if time.monotonic() - start > timeout_s:
-                raise ImageGenError("timed out")
-            time.sleep(poll_s)
-            r = http.get(f"{base_url}/tasks/{out['task_id']}", headers=headers)
+        while _image_url(out) is None:
+            status = out.get("task_status")
+            if status in ("FAILED", "CANCELED", "UNKNOWN"):
+                raise ImageGenError(f"task {status}: {out.get('message', '')}")
+            if status == "SUCCEEDED" or not out.get("task_id"):
+                raise ImageGenError("no image in the reply")
+            time.sleep(min(poll_s, left()))
+            r = http.get(f"{base_url}/tasks/{out['task_id']}", headers=headers, timeout=left())
             r.raise_for_status()
             out = r.json().get("output") or {}
         url = _image_url(out)
-        if url is None:
-            raise ImageGenError("no image in the reply")
-        got = http.get(url)
+        got = http.get(url, timeout=left())
         got.raise_for_status()
         return _decode(got.content)
 
