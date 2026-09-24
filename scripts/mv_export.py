@@ -6,29 +6,34 @@ import argparse
 import shutil
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from s2c.multiview.artifacts import build_part, bundle, export_part, sweep
-from s2c.multiview.settings import FORMATS, ExportSettings, MeshSettings, PrintSettings
+from s2c.multiview.settings import FORMATS, MATERIALS, ExportSettings, MeshSettings, PrintSettings
 from s2c.multiview.spec import MultiViewSpec, MvAbstain
 
 
-def main() -> None:
-    sweep()
+def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("spec")
     ap.add_argument("--format", action="append", choices=list(FORMATS), help="repeat for several")
     ap.add_argument("--quality", choices=["draft", "normal", "fine"], default="normal")
-    ap.add_argument("--material", default="PLA")
+    ap.add_argument("--material", choices=list(MATERIALS), default="PLA")
     ap.add_argument("--layer", type=float, default=0.2)
     ap.add_argument("--infill", type=int, default=20)
     ap.add_argument("--supports", choices=["off", "buildplate", "everywhere"], default="buildplate")
     ap.add_argument("--scale", type=float, default=100.0)
     ap.add_argument("--out", default="tmp/export")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+    sweep()  # after parse_args: --help (or a bad argument) must not touch old builds
     spec = MultiViewSpec.model_validate_json(Path(args.spec).read_text())
     formats = ExportSettings(formats=args.format or ExportSettings().formats).formats
     mesh = MeshSettings(quality=args.quality)
-    printing = PrintSettings(material=args.material, layer_mm=args.layer, infill_pct=args.infill,
-                              supports=args.supports, scale_pct=args.scale)
+    try:
+        printing = PrintSettings(material=args.material, layer_mm=args.layer, infill_pct=args.infill,
+                                  supports=args.supports, scale_pct=args.scale)
+    except ValidationError as e:
+        ap.error(str(e))
     part = build_part(spec)
     if isinstance(part, MvAbstain):
         raise SystemExit(f"{part.stage}: {part.reason}. {part.remedy}")

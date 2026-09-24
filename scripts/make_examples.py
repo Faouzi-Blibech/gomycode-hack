@@ -16,6 +16,7 @@ def canvas():
     per-pixel noise this used to add made each PNG about 1.9 MB; this keeps them near 40 KB."""
     h, w = 1000, 1400
     yy, xx = np.mgrid[0:h, 0:w]
+    # each half-axis maxes at 0.5, so the parenthesis maxes at 0.5: the corner is only 6 levels below the centre
     shade = 250 - 12 * (((xx - w / 2) / w) ** 2 + ((yy - h / 2) / h) ** 2)
     return np.repeat(np.round(shade).astype(np.uint8)[:, :, None], 3, axis=2)
 

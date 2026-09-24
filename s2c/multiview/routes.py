@@ -26,7 +26,7 @@ router = APIRouter(prefix="/mv", tags=["multiview"])
 STORE_ROOT = Path("tmp/mv")
 TTL_S = 3600
 _ID = re.compile(r"^[0-9a-f]{32}$")
-_NAME = re.compile(r"^[\w.-]+$")
+_NAME = re.compile(r"^(?!\.+$)[\w.-]+$")  # a segment of only dots (e.g. "..") is never a real file name
 _requests: dict[str, tuple[float, Observed]] = {}
 
 

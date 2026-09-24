@@ -5,10 +5,12 @@ import time
 import zipfile
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from s2c.multiview import artifacts, routes
+from s2c.multiview.spec import MvAbstain
 
 SPEC = json.loads((Path(__file__).parents[1] / "examples" / "mv" / "l_bracket.json").read_text())
 
@@ -67,3 +69,51 @@ def test_the_cli_records_settings_in_the_manifest(tmp_path, monkeypatch):
     manifest = json.loads(zipfile.ZipFile(zip_path).read("manifest.json"))
     assert manifest["settings"]["mesh"]["quality"] == "fine"
     assert manifest["settings"]["printing"]["material"] == "PETG"
+
+
+def test_artifact_route_rejects_dotdot(tmp_path, monkeypatch):
+    c = client(tmp_path, monkeypatch)
+    assert routes._NAME.fullmatch("..") is None
+    key = "0" * 20
+    for url in (f"/mv/artifacts/{key}/..%2Fx", f"/mv/artifacts/{key}/a/../b"):
+        status = c.get(url).status_code
+        assert status != 200
+        assert status in (400, 404)
+
+
+def test_export_abstain(tmp_path, monkeypatch):
+    c = client(tmp_path, monkeypatch)
+    # /export takes a spec, not an image upload; the abstain branch is the builder's, reached the same way
+    # tests/test_studio_ui.py exercises it: monkeypatch the build so it abstains.
+    monkeypatch.setattr(routes, "_build_part",
+                         lambda spec, geometry, root: MvAbstain(stage="build", reason="fillet_failed",
+                                                                 remedy="Reduce the fillet radius."))
+    r = c.post("/mv/export", json={"spec": SPEC})
+    assert r.status_code == 200
+    abstain = r.json()["abstain"]
+    assert abstain["stage"] == "build"
+    assert abstain["reason"] == "fillet_failed"
+    assert abstain["remedy"] == "Reduce the fillet radius."
+
+
+def test_cli_bad_material(tmp_path, capsys):
+    from scripts import mv_export
+    spec_path = Path(__file__).parents[1] / "examples" / "mv" / "l_bracket.json"
+    with pytest.raises(SystemExit) as exc:
+        mv_export.main(["--material", "WOOD", str(spec_path), "--out", str(tmp_path)])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "PLA" in err and "PETG" in err
+
+
+def test_cli_help_does_not_sweep(monkeypatch):
+    from scripts import mv_export
+
+    def boom():
+        raise AssertionError("swept before --help was handled")
+
+    monkeypatch.setattr(mv_export, "sweep", boom)
+    with pytest.raises(SystemExit) as exc:
+        mv_export.main(["--help"])
+    assert exc.value.code == 0
