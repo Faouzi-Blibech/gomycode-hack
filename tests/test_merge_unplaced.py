@@ -116,6 +116,42 @@ def test_inconsistent_dimensions_partial_is_numbers_only():
     assert all(isinstance(v, float) for v in out.partial.values()), out.partial
 
 
+# A written radius on a diameter field, or diameter on a radius field, is converted: plain arithmetic
+# on a user-written number, so it stays user_written, with a warning naming the conversion.
+CONVERSIONS = {
+    "R10 on outer_diameter": (
+        {"part_type": "spacer"}, [ann(10.0, "radius", "outer_diameter"), ann(30.0, linked_to="length")],
+        lambda s: s.part.outer_diameter_mm, 20.0, "part.outer_diameter_mm",
+        "outer diameter 20 mm taken from written R10, confirm it"),
+    "diameter 10 on corner_radius": (
+        {}, [WIDTH, HEIGHT, THICK, ann(10.0, "diameter", "corner_radius")],
+        lambda s: s.part.corner_radius_mm, 5.0, "part.corner_radius_mm",
+        "corner radius 5 mm taken from written Ø10, confirm it"),
+    "R3 on hole_diameter": (
+        {"holes": ONE_HOLE}, [WIDTH, HEIGHT, THICK, ann(3.0, "radius", "hole_diameter", hole_index=0)],
+        lambda s: s.features[0].diameter_mm, 6.0, "features[0].diameter_mm",
+        "hole 1: hole diameter 6 mm taken from written R3, confirm it"),
+}
+
+
+@pytest.mark.parametrize("case", list(CONVERSIONS.values()), ids=list(CONVERSIONS))
+def test_radius_and_diameter_are_converted_to_the_field_kind(case):
+    topo_kw, items, read, expected, path, warning = case
+    spec = merge(topo(**topo_kw), source_input="sketch", annotations=Annotations(items=items, confidence=0.9))
+    assert isinstance(spec, PartSpec)
+    assert read(spec) == expected
+    assert spec.provenance[path] == "user_written"
+    assert warning in spec.warnings
+
+
+def test_radius_and_diameter_that_agree_are_not_reported_as_duplicates():
+    a = Annotations(items=[ann(20.0, "diameter", "outer_diameter"), ann(10.0, "radius", "outer_diameter", conf=0.5),
+                           ann(30.0, linked_to="length")], confidence=0.9)
+    spec = merge(topo(part_type="spacer"), source_input="sketch", annotations=a)
+    assert spec.part.outer_diameter_mm == 20.0
+    assert not warned(spec.warnings, "not used")
+
+
 def test_radius_on_a_part_without_a_radius_is_warned_not_dropped():  # C1
     a = Annotations(items=[ann(20.0, "diameter", "outer_diameter"), ann(30.0, linked_to="length"),
                            ann(3.0, "radius")], confidence=0.9)

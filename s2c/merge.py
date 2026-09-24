@@ -54,6 +54,10 @@ SLOT_KEYS = ("slot_length", "slot_width")
 HOLE_TYPES = ("plate", "l_bracket")  # the only part types merge places holes on
 NAMES = {"plate": "a plate", "l_bracket": "an L-bracket", "flange": "a flange", "spacer": "a spacer",
          "profile_extrusion": "a profile extrusion"}
+# link targets whose field holds a diameter or a radius (from the *_diameter_mm / *_radius_mm model
+# fields they fill); a written R on a diameter field is doubled, a written diameter on a radius halved
+DIAMETER_KEYS = ("outer_diameter", "inner_diameter", "bolt_circle_diameter", "bolt_hole_diameter", "hole_diameter")
+RADIUS_KEYS = ("corner_radius",)
 
 Values = dict[str, tuple[float, Provenance]]
 Written = dict[str, Annotation]  # annotation key -> the annotation that fills it
@@ -100,6 +104,7 @@ def merge(
     kind = topology.part_type
     unplaced = _Unplaced()
     values: Values = {}
+    written: Written = {}
     written_holes: WrittenHoles = {}
     confidences = [topology.confidence]
 
@@ -110,11 +115,11 @@ def merge(
         written, written_holes = _values_from_annotations(annotations, kind, unplaced)
         for key, a in written.items():
             if key not in values:
-                values[key] = (a.value_mm, "user_written")
-            elif a.value_mm != values[key][0]:  # measured wins over written, but never silently
+                values[key] = (_mm(a, key), "user_written")
+            elif _mm(a, key) != values[key][0]:  # measured wins over written, but never silently
                 unplaced.written(a, f"the measured {key} of {values[key][0]:g} mm takes precedence")
         confidences.append(annotations.confidence)
-    hole_values = _usable_hole_values(kind, topology, written_holes, measurements, unplaced)
+    usable_holes = _usable_hole_values(kind, topology, written_holes, measurements, unplaced)
     for key, v in (user_values or {}).items():
         if key in FIELD_MAP[kind]:
             values[key] = (float(v), "user_edited")
@@ -131,13 +136,15 @@ def merge(
         )
 
     part, provenance = _assemble_part(kind, values, measurements, topology)
+    hole_values = {i: {k: _mm(a, k) for k, a in keyed.items()} for i, keyed in usable_holes.items()}
     features, feat_prov, feat_warn = _assemble_holes(kind, topology, values, hole_values, measurements)
     provenance.update(feat_prov)
+    conversions = _conversion_notes(written, values, usable_holes)
 
     try:
         return PartSpec(
-            source_input=source_input, part=part, features=features, finishes=[],
-            provenance=provenance, confidence=min(confidences), warnings=unplaced.warnings + feat_warn,
+            source_input=source_input, part=part, features=features, finishes=[], provenance=provenance,
+            confidence=min(confidences), warnings=unplaced.warnings + conversions + feat_warn,
         )
     except ValidationError as e:
         return Abstain(stage="merge", reason="inconsistent_dimensions",
@@ -149,6 +156,30 @@ def _partial(values: Values) -> dict[str, float]:
     """What was recovered, as a value map of numbers only. Unplaced-value warnings are not carried
     on an Abstain: answering it re-runs merge with the same inputs and the PartSpec warns."""
     return {k: v for k, (v, _) in values.items()}
+
+
+def _mm(a: Annotation, key: str) -> float:
+    """The written value in the unit its field expects: R10 on a diameter is 20, Ø10 on a radius is 5.
+    Plain arithmetic on a user-written number, so it stays user_written."""
+    if a.kind == "radius" and key in DIAMETER_KEYS:
+        return a.value_mm * 2
+    if a.kind == "diameter" and key in RADIUS_KEYS:
+        return a.value_mm / 2
+    return a.value_mm
+
+
+def _conversion_notes(written: Written, values: Values, holes: WrittenHoles) -> list[str]:
+    """One warning per converted value that reached the spec, so the user confirms it."""
+    used = [(k, a) for k, a in written.items() if values[k][1] == "user_written"]  # not measured or edited
+    used += [(k, a) for keyed in holes.values() for k, a in keyed.items()]
+    notes = []
+    for key, a in used:
+        if _mm(a, key) != a.value_mm:
+            hole = f"hole {a.hole_index + 1}: " if key in HOLE_KEYS and a.hole_index is not None else ""
+            symbol = "R" if a.kind == "radius" else "Ø"
+            notes.append(f"{hole}{key.replace('_', ' ')} {_mm(a, key):g} mm taken from written "
+                         f"{symbol}{a.value_mm:g}, confirm it")
+    return notes
 
 
 def _values_from_annotations(ann: Annotations, kind: str,
@@ -186,8 +217,8 @@ def _first_wins(filled: dict[str, Annotation], key: str, a: Annotation, unplaced
     """Annotations arrive most confident first; a later, different value for the same key is reported."""
     if key not in filled:
         filled[key] = a
-    elif filled[key].value_mm != a.value_mm:
-        unplaced.written(a, f"a {key} of {filled[key].value_mm:g} mm is used instead")
+    elif _mm(filled[key], key) != _mm(a, key):
+        unplaced.written(a, f"a {key} of {_mm(filled[key], key):g} mm is used instead")
 
 
 def _fill_largest_first(keys: list[str], items: list[Annotation], written: Written) -> list[Annotation]:
@@ -199,16 +230,16 @@ def _fill_largest_first(keys: list[str], items: list[Annotation], written: Writt
 
 
 def _usable_hole_values(kind: str, topology: Topology, holes: WrittenHoles, m: Measurements | None,
-                        unplaced: _Unplaced) -> dict[int | None, dict[str, float]]:
+                        unplaced: _Unplaced) -> WrittenHoles:
     """The written hole values _assemble_holes will place. Every other one goes to the collector."""
-    usable: dict[int | None, dict[str, float]] = {}
+    usable: WrittenHoles = {}
     for index, keyed in holes.items():
         for key, a in keyed.items():
             why = _why_hole_value_unused(kind, topology, holes, m, index, key)
             if why:
                 unplaced.written(a, why)
             else:
-                usable.setdefault(index, {})[key] = a.value_mm
+                usable.setdefault(index, {})[key] = a
     return usable
 
 
