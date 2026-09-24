@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from s2c.partspec.models import (
     Abstain,
+    Annotation,
     Annotations,
     Measurements,
     PartSpec,
@@ -46,7 +47,25 @@ DIAMETER_ORDER: dict[str, list[str]] = {
     "flange": ["outer_diameter", "bolt_circle_diameter", "inner_diameter", "bolt_hole_diameter"],
 }
 
+# known link targets merge cannot build yet: they go to the collector, never to positional assignment
+SLOT_KEYS = ("slot_length", "slot_width")
+
 Values = dict[str, tuple[float, Provenance]]
+
+
+class _Unplaced:
+    """The one collector for values merge read but cannot use. Each becomes one warning, so a
+    written or measured number never disappears silently or turns into a different measurement."""
+
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def written(self, a: Annotation, why: str) -> None:
+        link = "unlinked" if a.linked_to == "unknown" else a.linked_to
+        self._add(f"written {link} ({a.kind})", a.value_mm, why)
+
+    def _add(self, what: str, value_mm: float, why: str) -> None:
+        self.warnings.append(f"{what} {value_mm:g} mm not used: {why}")
 
 
 def merge(
@@ -65,16 +84,16 @@ def merge(
                        remedy="Free-form outlines need a top-down photo with a coin for scale.")
 
     kind = topology.part_type
+    unplaced = _Unplaced()
     values: Values = {}
     hole_values: dict[int | None, dict[str, float]] = {}
-    warnings: list[str] = []
     confidences = [topology.confidence]
 
     if measurements is not None:
         values.update(_values_from_measurements(measurements, kind))
         confidences.append(measurements.confidence)
     if annotations is not None:
-        ann_values, hole_values = _values_from_annotations(annotations, kind)
+        ann_values, hole_values = _values_from_annotations(annotations, kind, unplaced)
         for k, v in ann_values.items():
             values.setdefault(k, v)
         confidences.append(annotations.confidence)
@@ -87,26 +106,34 @@ def merge(
         return Abstain(
             stage="merge", reason=f"missing_{field}",
             remedy=f"We could not read the {field.replace('_', ' ')}. Enter it below.",
-            partial={k: v for k, (v, _) in values.items()},
+            partial=_partial(values, unplaced),
         )
 
     part, provenance = _assemble_part(kind, values, measurements, topology)
     features, feat_prov, feat_warn = _assemble_holes(kind, topology, values, hole_values, measurements)
     provenance.update(feat_prov)
-    warnings += feat_warn
 
     try:
         return PartSpec(
             source_input=source_input, part=part, features=features, finishes=[],
-            provenance=provenance, confidence=min(confidences), warnings=warnings,
+            provenance=provenance, confidence=min(confidences), warnings=unplaced.warnings + feat_warn,
         )
     except ValidationError as e:
         return Abstain(stage="merge", reason="inconsistent_dimensions",
                        remedy=f"The dimensions do not fit together: {e.errors()[0]['msg']}.",
-                       partial={k: v for k, (v, _) in values.items()})
+                       partial=_partial(values, unplaced))
 
 
-def _values_from_annotations(ann: Annotations, kind: str) -> tuple[Values, dict]:
+def _partial(values: Values, unplaced: _Unplaced) -> dict:
+    """What was recovered, for the UI. Abstain has no warnings field, so the unplaced-value
+    warnings ride in `partial` under "warnings", only when there are any."""
+    partial: dict = {k: v for k, (v, _) in values.items()}
+    if unplaced.warnings:
+        partial["warnings"] = list(unplaced.warnings)
+    return partial
+
+
+def _values_from_annotations(ann: Annotations, kind: str, unplaced: _Unplaced) -> tuple[Values, dict]:
     values: Values = {}
     hole_values: dict[int | None, dict[str, float]] = {}
     unknown_linear: list[float] = []
@@ -114,6 +141,8 @@ def _values_from_annotations(ann: Annotations, kind: str) -> tuple[Values, dict]
     for a in sorted(ann.items, key=lambda a: -a.confidence):
         if a.linked_to in ("hole_diameter", "hole_x", "hole_y"):
             hole_values.setdefault(a.hole_index, {}).setdefault(a.linked_to, a.value_mm)
+        elif a.linked_to in SLOT_KEYS:  # a slot dimension is never a part dimension
+            unplaced.written(a, "merge does not build slots yet")
         elif a.linked_to != "unknown" and a.linked_to in FIELD_MAP[kind]:
             values.setdefault(a.linked_to, (a.value_mm, "user_written"))
         else:  # unknown, or linked to a field this part type does not have: never drop a value
