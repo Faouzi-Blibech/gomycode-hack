@@ -8,6 +8,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import uuid4
 
 import cadquery as cq
 
@@ -146,13 +147,17 @@ def slice_solid(solid: cq.Workplane, out_dir: Path, profile_path: Path | None = 
     if slicer is None:
         return SliceResult(stl, None, None, None, ["G-code unavailable: slicer not installed"])
     gcode = out_dir / "part.gcode"
+    tmp = out_dir / f"part.{uuid4().hex[:8]}.tmp.gcode"
     cx, cy = profile.center
     cmd = [str(slicer), "--export-gcode", "--load", str(profile.path), *(overrides or []),
            "--center", f"{cx:g},{cy:g}", "--threads", str(SLICE_THREADS), "--datadir", str(DATADIR),
-           "--output", str(gcode), str(stl)]
+           "--output", str(tmp), str(stl)]
     log_path = out_dir / "slicer.log"
     code = run(cmd, SLICE_TIMEOUT_S, log_path)
-    if code != 0 or not gcode.exists():
+    if code == 0 and tmp.exists() and tmp.stat().st_size > 0:
+        os.replace(tmp, gcode)
+    else:
+        tmp.unlink(missing_ok=True)
         why = "timed out" if code is None else f"exit code {code}"
         log.warning("slicer failed (%s): %s", why, tail(log_path))
         return MvAbstain(stage="slice", reason="slicer_failed",

@@ -1,10 +1,12 @@
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cadquery as cq
 import pytest
 import trimesh
 
+from s2c.multiview import exporters
 from s2c.multiview.build import build, volume
 from s2c.multiview.exporters import FILE_NAMES, MESH_FORMATS, export_mesh_formats, mesh_of
 from s2c.multiview.spec import MultiViewSpec
@@ -64,3 +66,49 @@ def test_quality_is_honoured_even_after_a_finer_mesh(part):
 def test_an_unknown_format_is_refused(part, tmp_path):
     with pytest.raises(ValueError):
         export_mesh_formats(part, tmp_path, ["xyz"])
+
+
+def test_all_occt_writes_hold_the_lock(part, tmp_path, monkeypatch):
+    locked = []
+    real_export, real_export_stl = cq.exporters.export, cq.Shape.exportStl
+
+    def fake_export(*args, **kwargs):
+        locked.append(exporters._OCCT_LOCK.locked())
+        return real_export(*args, **kwargs)
+
+    def fake_export_stl(self, *args, **kwargs):
+        locked.append(exporters._OCCT_LOCK.locked())
+        return real_export_stl(self, *args, **kwargs)
+
+    monkeypatch.setattr(cq.exporters, "export", fake_export)
+    monkeypatch.setattr(cq.Shape, "exportStl", fake_export_stl)
+    export_mesh_formats(part, tmp_path, ["stl", "step", "3mf", "brep"])
+    assert locked and all(locked)
+
+
+def test_failed_write_leaves_no_file(tmp_path, monkeypatch):
+    box = cq.Workplane("XY").box(10, 10, 10)
+
+    def bad_writer(solid, path, quality="normal"):
+        Path(path).write_bytes(b"0123456789")
+        raise RuntimeError("boom")
+
+    monkeypatch.setitem(exporters.WRITERS, "obj", bad_writer)
+    with pytest.raises(RuntimeError):
+        export_mesh_formats(box, tmp_path, ["obj"])
+    assert not (tmp_path / "part.obj").exists()
+    assert not list(tmp_path.glob("*.tmp*"))
+
+
+def test_concurrent_exports(tmp_path):
+    box = cq.Workplane("XY").box(10, 10, 10)
+
+    def do_export(i):
+        return export_mesh_formats(box, tmp_path / f"t{i}", ["stl", "step", "3mf", "glb"])
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(do_export, range(4)))
+    for files in results:
+        mesh = trimesh.load(str(files["stl"]), force="mesh")
+        assert mesh.volume == pytest.approx(1000.0, rel=0.01)
+        assert files["step"].read_text(encoding="utf-8", errors="replace").startswith("ISO-10303-21")

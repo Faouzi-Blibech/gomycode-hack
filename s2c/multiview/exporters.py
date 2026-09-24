@@ -3,9 +3,11 @@ Meshes use absolute tolerances on a copy of the shape: OCCT keeps a triangulatio
 otherwise reuse a finer one, and CadQuery's default tolerance is relative to the part size."""
 from __future__ import annotations
 
+import os
 import tempfile
 import threading
 from pathlib import Path
+from uuid import uuid4
 
 import cadquery as cq
 import trimesh
@@ -16,7 +18,7 @@ MESH_FORMATS = ("stl", "step", "3mf", "obj", "glb", "ply", "brep")
 FILE_NAMES = {"stl": "part.stl", "step": "part.step", "3mf": "part.3mf", "obj": "part.obj", "glb": "part.glb",
               "ply": "part.ply", "brep": "part.brep"}
 PART_COLOUR = (79, 70, 229, 255)  # indigo 600, the Studio's primary colour
-_STEP_LOCK = threading.Lock()  # OCCT's STEP writer settings are process-wide
+_OCCT_LOCK = threading.Lock()  # OCCT writer and mesher state is process-wide
 
 
 def _workplane(solid) -> cq.Workplane:
@@ -29,7 +31,9 @@ def _copy(solid) -> cq.Workplane:
 
 def write_stl(solid, path: Path, quality: str = "normal") -> Path:
     tol, ang = MESH_TOLERANCES[quality]
-    _copy(solid).val().exportStl(str(path), tolerance=tol, angularTolerance=ang, ascii=False, relative=False)
+    shape = _copy(solid).val()
+    with _OCCT_LOCK:
+        shape.exportStl(str(path), tolerance=tol, angularTolerance=ang, ascii=False, relative=False)
     return Path(path)
 
 
@@ -41,19 +45,24 @@ def mesh_of(solid, quality: str = "normal") -> trimesh.Trimesh:
 
 
 def write_step(solid, path: Path, quality: str = "normal") -> Path:
-    with _STEP_LOCK:
+    """B-rep formats are exact; `quality` is unused but kept so `WRITERS` shares one signature."""
+    with _OCCT_LOCK:
         cq.exporters.export(_workplane(solid), str(path), exportType="STEP")
     return Path(path)
 
 
 def write_3mf(solid, path: Path, quality: str = "normal") -> Path:
     tol, ang = MESH_TOLERANCES[quality]
-    cq.exporters.export(_copy(solid), str(path), exportType="3MF", tolerance=tol, angularTolerance=ang)
+    wp = _copy(solid)
+    with _OCCT_LOCK:
+        cq.exporters.export(wp, str(path), exportType="3MF", tolerance=tol, angularTolerance=ang)
     return Path(path)
 
 
 def write_brep(solid, path: Path, quality: str = "normal") -> Path:
-    cq.exporters.export(_workplane(solid), str(path), exportType="BREP")
+    """B-rep formats are exact; `quality` is unused but kept so `WRITERS` shares one signature."""
+    with _OCCT_LOCK:
+        cq.exporters.export(_workplane(solid), str(path), exportType="BREP")
     return Path(path)
 
 
@@ -77,9 +86,22 @@ WRITERS = {"stl": write_stl, "step": write_step, "3mf": write_3mf, "obj": write_
 
 
 def export_mesh_formats(solid, out_dir: Path, formats, quality: str = "normal") -> dict[str, Path]:
+    """Each file is written to a private temp name and moved onto its final name only once complete, so a
+    crash or timeout mid-write never leaves a truncated file for a later request to serve."""
     unknown = [f for f in formats if f not in WRITERS]
     if unknown:
         raise ValueError(f"unknown mesh formats {unknown}; choose from {list(WRITERS)}")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    return {f: WRITERS[f](solid, out_dir / FILE_NAMES[f], quality) for f in formats}
+    result = {}
+    for f in formats:
+        path = out_dir / FILE_NAMES[f]
+        tmp = path.with_name(f"{path.stem}.{uuid4().hex[:8]}.tmp{path.suffix}")
+        try:
+            WRITERS[f](solid, tmp, quality)
+            os.replace(tmp, path)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+        result[f] = path
+    return result

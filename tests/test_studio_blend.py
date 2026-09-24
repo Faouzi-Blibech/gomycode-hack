@@ -1,11 +1,12 @@
 import os
 import sys
 import zipfile
+from pathlib import Path
 
 import pytest
 
 from s2c.multiview import blend
-from s2c.multiview.blend import KIT_NAME, KIT_WARNING, blender_runner, write_blend
+from s2c.multiview.blend import KIT_NAME, KIT_WARNING, SCRIPT, blender_runner, write_blend
 
 
 @pytest.fixture
@@ -50,6 +51,45 @@ def test_the_runner_comes_from_the_environment(tmp_path, monkeypatch):
     exe.write_text("")
     monkeypatch.setenv("BLENDER_PATH", str(exe))
     assert blender_runner() == [str(exe), "-b", "--factory-startup", "--python"]
+
+
+def test_cached_blend_is_checked(obj, tmp_path, monkeypatch):
+    monkeypatch.setattr(blend, "blender_runner", lambda: None)
+    for i, bad in enumerate((b"", b"garbage")):
+        out = tmp_path / f"bad{i}"
+        out.mkdir()
+        (out / "part.blend").write_bytes(bad)
+        path, warnings = write_blend(obj, out)
+        assert path.name == KIT_NAME and warnings == [KIT_WARNING]
+        assert not (out / "part.blend").exists()
+    for i, good in enumerate((b"BLENDER-v402", b"\x28\xb5\x2f\xfd\x00\x01")):
+        out = tmp_path / f"good{i}"
+        out.mkdir()
+        target = out / "part.blend"
+        target.write_bytes(good)
+        path, warnings = write_blend(obj, out)
+        assert path == target and warnings == [] and path.read_bytes() == good
+
+
+def test_real_blend_removes_stale_kit(obj, tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    out.mkdir()
+    kit = out / KIT_NAME
+    kit.write_bytes(b"stale")
+    monkeypatch.setattr(blend, "blender_runner", lambda: ["python"])
+
+    def fake_run(cmd, timeout_s, log_path, cwd=None):
+        Path(cmd[cmd.index("--") + 2]).write_bytes(b"BLENDER-v402")
+        return 0
+
+    monkeypatch.setattr(blend, "run", fake_run)
+    path, warnings = write_blend(obj, out)
+    assert path.name == "part.blend" and warnings == []
+    assert not kit.exists()
+
+
+def test_script_usage_line():
+    assert "--factory-startup" in SCRIPT.splitlines()[1]
 
 
 @pytest.mark.blender

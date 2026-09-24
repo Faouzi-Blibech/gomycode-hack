@@ -16,7 +16,7 @@ KIT_WARNING = "Blender not configured: the download holds part.obj and open_in_b
 VENDOR_PYTHON = Path(__file__).resolve().parents[2] / "vendor" / "bpy-env" / (
     "Scripts/python.exe" if os.name == "nt" else "bin/python")
 SCRIPT = '''"""Import part.obj into an empty Blender scene in millimetres and save it as a .blend.
-Run: blender -b --python open_in_blender.py -- part.obj part.blend"""
+Run: blender -b --factory-startup --python open_in_blender.py -- part.obj part.blend"""
 import sys
 
 import bpy
@@ -47,6 +47,14 @@ def blender_runner() -> list[str] | None:
     return None
 
 
+def _valid_blend(path: Path) -> bool:
+    """Non-empty and starting with a real .blend magic: plain, gzip- or zstd-compressed."""
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    head = path.read_bytes()[:8]
+    return head.startswith((b"BLENDER", b"\x28\xb5\x2f\xfd", b"\x1f\x8b"))
+
+
 def _kit(obj_path: Path, out_dir: Path, warnings: list[str]) -> tuple[Path, list[str]]:
     kit = out_dir / KIT_NAME
     if not kit.exists():
@@ -63,7 +71,9 @@ def write_blend(obj_path: Path, out_dir: Path) -> tuple[Path, list[str]]:
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / "part.blend"
     if target.exists():
-        return target, []
+        if _valid_blend(target):
+            return target, []
+        target.unlink()
     runner = blender_runner()
     if runner is None:
         return _kit(obj_path, out_dir, [])
@@ -71,7 +81,8 @@ def write_blend(obj_path: Path, out_dir: Path) -> tuple[Path, list[str]]:
     script.write_text(SCRIPT, encoding="utf-8")
     log = out_dir / "blender.log"
     code = run([*runner, str(script), "--", str(obj_path), str(target)], BLEND_TIMEOUT_S, log)
-    if code == 0 and target.exists():
+    if code == 0 and _valid_blend(target):
+        (out_dir / KIT_NAME).unlink(missing_ok=True)  # a stale kit from an earlier failed run
         return target, []
     reason = "timed out" if code is None else f"exit code {code}"
     print(tail(log), file=sys.stderr)

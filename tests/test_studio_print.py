@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 import trimesh
 
@@ -72,6 +74,16 @@ def test_a_hung_slicer_is_a_clean_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(slicing, "run", lambda cmd, timeout_s, log_path, cwd=None: None)
     res = slice_solid(build(make_spec((60.0, 40.0, 5.0))), tmp_path, slicer=tmp_path / "s.exe")
     assert isinstance(res, MvAbstain) and res.reason == "slicer_failed"
+
+
+def test_timed_out_slice_leaves_no_gcode(tmp_path, monkeypatch):
+    def fake_run(cmd, timeout_s, log_path, cwd=None):
+        Path(cmd[cmd.index("--output") + 1]).write_bytes(b"; partial")
+
+    monkeypatch.setattr(slicing, "run", fake_run)
+    res = slice_solid(build(make_spec((60.0, 40.0, 5.0))), tmp_path, slicer=tmp_path / "s.exe")
+    assert isinstance(res, MvAbstain) and res.reason == "slicer_failed"
+    assert not (tmp_path / "part.gcode").exists()
 
 
 @pytest.mark.slicer
