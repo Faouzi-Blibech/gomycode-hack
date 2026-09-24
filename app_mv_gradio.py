@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 from s2c.multiview.pipeline import ImageInput, MvPipeline, Observed, default_pipeline
 from s2c.multiview.raster import outline_mask
-from s2c.multiview.spec import CANONICAL_FACES, FACES, MultiViewSpec, MvAbstain, face_size
+from s2c.multiview.spec import CANONICAL_FACES, CANONICAL_OF, FACES, MultiViewSpec, MvAbstain, face_size
 
 OUT_ROOT = Path("tmp/mv_gradio")
 TTL_S = 3600  # built files and Gradio's upload cache live one hour, as docs/disclosure.md says
@@ -28,8 +28,10 @@ BADGES = {"observed": "observed", "mirrored": "mirrored from the opposite face",
           "triposr": "predicted by TripoSR", "assumed": "assumed rectangle"}
 NOTICE = ("Photos of real parts: shoot top-down, with the part lying flat on a plain surface. "
           "Images are sent to DashScope and Hugging Face Spaces to read the handwriting and predict missing faces.")
-OUTPUTS = ("faces", "reads", "values", "warnings", "message", "model", "views", "files", "stats", "state")
+OUTPUTS = ("faces", "reads", "values", "warnings", "message", "model", "views", "files", "stats", "state", "rejected")
 _FEATURE = re.compile(r"(\w+)\[(\d+)\]\.(\w+)")
+# the raw face tag that mirrors into each canonical face, e.g. a "back" photo mirrors into "front"
+OPPOSITE_OF = {canon: face for face, canon in CANONICAL_OF.items() if face != canon}
 
 
 def sweep_outputs(root: Path = OUT_ROOT, ttl_s: float = TTL_S) -> None:
@@ -52,7 +54,7 @@ def tag_rows(paths) -> list[list[str]]:
 
 def _pack(state: dict, **parts) -> tuple:
     out = {"faces": [], "reads": [], "values": [], "warnings": "", "message": "", "model": None, "views": [],
-           "files": [], "stats": "", "state": state}
+           "files": [], "stats": "", "state": state, "rejected": gr.update()}
     out.update(parts)
     return tuple(out[k] for k in OUTPUTS)
 
@@ -75,12 +77,14 @@ def _value(spec: MultiViewSpec, path: str) -> float:
 
 
 def value_rows(spec: MultiViewSpec | None, abstain: MvAbstain | None, edits: dict) -> list[list]:
-    """Envelope first, then every numeric feature value, with its source. Outlines are not edited here."""
+    """Envelope first, then every numeric feature value, with its source. Outlines are not edited here.
+    A missing axis shows no value: a suggestion is a hint for the message, never a pre-filled box the user could
+    leave untouched and have it count as theirs (CLAUDE.md rule 2)."""
     if spec is not None:
         return [[p, _value(spec, p), f"{s} (check)" if s in AMBER else s]
                 for p, s in spec.provenance.items() if not p.startswith("views.")]
     partial = (abstain.partial if abstain else None) or {}
-    known, suggested = partial.get("known", {}), partial.get("suggested", {})
+    known = partial.get("known", {})
     rows = []
     for axis in "xyz":
         path = f"envelope.{axis}_mm"
@@ -89,18 +93,23 @@ def value_rows(spec: MultiViewSpec | None, abstain: MvAbstain | None, edits: dic
         elif path in known:
             rows.append([path, known[path], "found"])
         else:
-            rows.append([path, suggested.get(path, ""), MISSING])
+            rows.append([path, "", MISSING])
     return rows
 
 
-def parse_edits(rows, shown: dict) -> tuple[dict[str, float], list[str]]:
-    """Values the user changed or confirmed. Every bad entry is reported; none raises."""
-    edits, errors = {}, []
+def parse_edits(rows, shown: dict) -> tuple[dict[str, float | None], list[str]]:
+    """Values the user changed, keyed by path. A cleared box maps to None, telling the caller to drop any earlier
+    edit and revert to the measured or suggested value. Every bad entry is reported; none raises."""
+    edits: dict[str, float | None] = {}
+    errors: list[str] = []
     for row in rows or []:
         if len(row) < 2 or str(row[0]).strip() not in shown:
             continue
         path, text = str(row[0]).strip(), str(row[1]).strip()
+        old, _source = shown[path]
         if text in ("", "None", "nan"):
+            if old not in ("", None):
+                edits[path] = None
             continue
         try:
             value = float(text.replace(",", "."))
@@ -110,8 +119,7 @@ def parse_edits(rows, shown: dict) -> tuple[dict[str, float], list[str]]:
         if not (value > 0 and math.isfinite(value)):
             errors.append(f"{path}: must be more than 0")
             continue
-        old, source = shown[path]
-        if source == MISSING or old in ("", None) or abs(value - float(old)) > 1e-9:
+        if old in ("", None) or abs(value - float(old)) > 1e-9:
             edits[path] = value
     return edits, errors
 
@@ -124,9 +132,17 @@ def face_gallery(observed: Observed, spec: MultiViewSpec | None) -> list[tuple[n
         ol = getattr(spec.views, face)
         mask = outline_mask(ol.outer, ol.inner, *face_size(face, spec.envelope), px=256)
         badge = BADGES.get(observed.filled_by.get(face, ol.source), ol.source)
-        merged = next((w.split(": ", 1)[1] for w in spec.warnings if w.startswith(f"{face}: merged")), "")
+        # the merge warning is tagged with whichever raw face was photographed: this face, or its opposite
+        tags = (f"{face}: merged", f"{OPPOSITE_OF[face]}: merged")
+        merged = next((w.split(": ", 1)[1] for w in spec.warnings if w.startswith(tags)), "")
         items.append((255 - mask, f"{face}: {badge}" + (f", {merged}" if merged else "")))
     return items
+
+
+def ai_faces(observed: Observed) -> list[str]:
+    """Canonical faces nobody photographed and that were drawn by Qwen-Image or predicted by TripoSR: the only
+    ones worth rejecting. An observed, mirrored or already-assumed face has nothing left to fall back to."""
+    return [f for f in CANONICAL_FACES if observed.filled_by.get(f) in ("qwen-image", "triposr")]
 
 
 def read_rows(observed: Observed) -> list[list]:
@@ -172,8 +188,13 @@ class Handlers:
             return _pack(state, message="Analyze images first.")
         edits, errors = parse_edits(rows, state["shown"])
         if errors:
-            return _pack(state, values=rows, message=_bullets(errors))
-        state["edits"].update(edits)
+            res = self.pipe.fuse(observed, dict(state["edits"]), rejected=tuple(rejected or ()))
+            return _pack(state, **{**self._review(observed, res, state), "message": _bullets(errors)})
+        for path, value in edits.items():
+            if value is None:
+                state["edits"].pop(path, None)
+            else:
+                state["edits"][path] = value
         res = self.pipe.fuse(observed, dict(state["edits"]), rejected=tuple(rejected or ()))
         review = self._review(observed, res, state)
         if isinstance(res, MvAbstain):
@@ -199,7 +220,8 @@ class Handlers:
         warnings = spec.warnings if spec is not None else observed.warnings
         message = _abstain(abstain) if abstain else "Review the faces and values, edit any number, then Rebuild."
         return {"faces": face_gallery(observed, spec), "reads": read_rows(observed), "values": rows,
-                "warnings": _bullets(warnings), "message": message}
+                "warnings": _bullets(warnings), "message": message,
+                "rejected": gr.update(choices=ai_faces(observed), value=[])}
 
 
 def build_app(pipe: MvPipeline) -> gr.Blocks:
@@ -221,7 +243,7 @@ def build_app(pipe: MvPipeline) -> gr.Blocks:
                                  label="Handwriting read")
         values = gr.Dataframe(headers=["field", "value (mm)", "source"], type="array", interactive=True,
                               label="Values: edit the value column")
-        rejected = gr.CheckboxGroup(list(CANONICAL_FACES), label="Reject an AI-drawn face and use a rectangle")
+        rejected = gr.CheckboxGroup([], label="Reject an AI-drawn face and use a rectangle")
         warnings = gr.Markdown()
         rebuild = gr.Button("Rebuild", variant="primary")
         with gr.Row():
@@ -229,7 +251,7 @@ def build_app(pipe: MvPipeline) -> gr.Blocks:
             views = gr.Gallery(label="Rendered views", columns=3, height=320)
         stats = gr.Markdown()
         downloads = gr.File(label="STL, STEP, G-code", file_count="multiple")
-        outputs = [faces, reads, values, warnings, message, model, views, downloads, stats, state]
+        outputs = [faces, reads, values, warnings, message, model, views, downloads, stats, state, rejected]
         files.change(tag_rows, files, tags)
         analyze.click(handlers.analyze, [files, tags, reference], outputs)
         rebuild.click(handlers.rebuild, [values, rejected, state], outputs)
