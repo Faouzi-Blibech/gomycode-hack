@@ -64,6 +64,19 @@ One OpenAI-compatible client. Configure with `VLM_BASE_URL`, `VLM_MODEL`, `VLM_A
 - Never commit API keys. `.env` is ignored; `.env.example` lists the variables.
 - No secrets, images of people, or personal data in `tests/`.
 
+## Current state (2026-09-25)
+
+- **Branches.** `geometry/multiview-gcode` → `geometry/qwen-solaria` → `geometry/studio-ui` are pushed to origin and not merged. `main` holds only docs.
+- **What exists.**
+  - The multi-view path (`s2c/multiview/`, `s2c/studio/`, `app_mv_studio.py`) is built and tested.
+  - The single-view modules described above (`partspec/`, `metrology.py`, `merge.py`, `builder.py`, `views.py`, `s2c/api.py`, `web/`) are not on any branch yet.
+- **Open rule conflicts, waiting for the team decision.**
+  - The multi-view path goes beyond rule 3.
+  - Rule 2: the vision model's hole-depth estimates still reach geometry (`label.py`, `fuse.py`).
+  - The Responsible AI lines below are not yet all true in code.
+  - All three are P0 items in `docs/superpowers/reviews/2026-09-24-project-review.md`.
+- **Work before the demo.** The P0 checklist in that review. Do not start its cut-list items before 2026-09-27.
+
 ## Responsible AI positions (say these in the demo)
 
 - Images live only for the request, plus one silhouette in a temp dir for one hour.

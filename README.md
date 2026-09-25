@@ -139,4 +139,14 @@ Three people, three owners. The integrator owns the contracts, model layer, merg
 
 ## Status
 
-Design and plans are complete. See `docs/superpowers/plans/` for the task lists and `docs/superpowers/specs/` for the full design.
+Updated 2026-09-25, two days before the demo:
+
+- **Branches.** `geometry/multiview-gcode` → `geometry/qwen-solaria` → `geometry/studio-ui` are on GitHub and not merged; `main` still holds only the docs.
+- **Built and tested.**
+  - The multi-view path and the Studio: capture, review, model and export in 12 formats.
+  - About 290 automated tests.
+  - An end-to-end run on the bundled example: 50 × 30 × 20 mm, export and G-code.
+- **Not built yet.** The single-view modules (`partspec/`, `metrology.py`, `merge.py`, `builder.py`, `views.py`, `s2c/api.py`) and the `web/` app are not on any branch.
+- **Not measured yet.** Accuracy on real phone photos. The golden set is empty, and the table above still says "pending".
+- **What to do next.** The P0 checklist, the decisions the team has to take, and the cut list are in `docs/superpowers/reviews/2026-09-24-project-review.md`.
+- **Design and history.** Designs are in `docs/superpowers/specs/`; the task lists of past work are in `docs/superpowers/plans/`.
