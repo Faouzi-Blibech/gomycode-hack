@@ -1,11 +1,14 @@
+from dataclasses import replace
+
 import cv2
 import numpy as np
 import pytest
 
+import s2c.multiview.merge_views as mv
 from s2c.multiview.fuse import Observation
 from s2c.multiview.merge_views import PAD, merge_same_face
 from s2c.multiview.ocr import Linked, Reading
-from s2c.multiview.outline import extract
+from s2c.multiview.outline import PixelCircle, extract
 from s2c.multiview.raster import iou, polygon_mask
 
 HOLES = [(100, 100), (450, 300)]  # centres in plate pixels, radius 30; not symmetric under a half turn
@@ -165,26 +168,23 @@ def test_opening_near_edge_survives_merge():
     assert any(w.startswith("top: merged 3 photos") for w in warnings)
 
 
-def test_voted_circular_opening_is_kept():
-    """An opening that each photo reads as a slightly-chamfered square (circularity just under 0.85) can look
-    circular once the votes are combined at the small merge grid; it must end up as a circle, not vanish."""
-    def chamfered_square(cx, cy, h, c):
-        pts = [(cx - h + c, cy - h), (cx + h - c, cy - h), (cx + h, cy - h + c), (cx + h, cy + h - c),
-               (cx + h - c, cy + h), (cx - h + c, cy + h), (cx - h, cy + h - c), (cx - h, cy - h + c)]
-        return np.array(pts, np.int32)
+def test_voted_circular_opening_is_kept(monkeypatch):
+    """A circle the vote-level extract() call finds, that no per-photo cluster covers, must survive into the
+    merged outline instead of being thrown away by an unconditional `circles=circles` replace; a circle that
+    IS already covered by a per-photo cluster must not be duplicated. Fakes the vote-level extract() result
+    directly rather than relying on a real opening's circularity landing on a particular side of 0.85, which
+    would be one OpenCV/numpy build away from flipping."""
+    imgs = [photo(seed=k) for k in range(3)]
+    observations = [obs(img, 0.9 + 0.01 * (2 - k)) for k, img in enumerate(imgs)]
+    covered = (PAD + HOLES[0][0] * SX, PAD + HOLES[0][1] * SY)  # lands on the real photo-1 hole cluster
+    new = (200.0, 320.0)  # far from both real clusters
 
-    hole = chamfered_square(700, 450, 18, 0.15 * 18)
-    imgs = []
-    for k, angle in enumerate((0, 2, -2)):
-        img = np.full((1200, 1600, 3), 200, np.uint8)
-        cv2.rectangle(img, (100, 150), (100 + 1400, 150 + 900), (40, 40, 40), -1)
-        cv2.fillPoly(img, [hole + [100, 150]], (200, 200, 200))
-        m = cv2.getRotationMatrix2D((800, 600), angle, 1.0)
-        img = cv2.warpAffine(img, m, (1600, 1200), borderValue=(200, 200, 200))
-        noise = np.random.default_rng(k).normal(0, 6, img.shape)
-        imgs.append(np.clip(img + noise, 0, 255).astype(np.uint8))
-    observations = [obs(img, 0.9 + 0.03 * (2 - k)) for k, img in enumerate(imgs)]
-    assert all(len(o.outline.circles) == 0 and len(o.outline.inner) == 1 for o in observations)
+    def fake_extract(image_bgr, *args, **kwargs):
+        real = extract(image_bgr, *args, **kwargs)
+        return replace(real, circles=[PixelCircle(*covered, 30.0), PixelCircle(*new, 20.0)])
+
+    monkeypatch.setattr(mv, "extract", fake_extract)
     (merged,), _, _ = merge_same_face(observations, imgs)
-    assert len(merged.outline.circles) == 1
-    assert len(merged.outline.inner) == 0
+    got = [(round(c.cx), round(c.cy)) for c in merged.outline.circles]
+    assert got.count((round(new[0]), round(new[1]))) == 1
+    assert len(merged.outline.circles) == 3  # 2 real per-photo clusters, plus the new one; `covered` not duplicated

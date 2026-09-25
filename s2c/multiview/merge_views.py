@@ -103,7 +103,8 @@ def _fit(o: Observation, solid: np.ndarray, to_grid: np.ndarray, ref_grid: np.nd
     return best
 
 
-def _merge_circles(face: str, group, transforms, diag: float) -> tuple[list[PixelCircle], dict, list[str]]:
+def _merge_circles(face: str, group, transforms,
+                    diag: float) -> tuple[list[PixelCircle], dict[tuple[int, int], int], list[str]]:
     """Clusters of circle centres; a cluster seen on at least half of the photos becomes one median circle."""
     clusters: list[list[tuple[int, int, float, float, float]]] = []
     for k, (o, t) in enumerate(zip(group, transforms)):
