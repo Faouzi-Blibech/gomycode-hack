@@ -1,10 +1,12 @@
 from pathlib import Path
 
+import cadquery as cq
 import pytest
 import trimesh
 
+from s2c.multiview import exporters
 from s2c.multiview import slice as slicing
-from s2c.multiview.build import build
+from s2c.multiview.build import build, export
 from s2c.multiview.print_settings import slicer_flags
 from s2c.multiview.settings import PrintSettings
 from s2c.multiview.slice import find_slicer, slice_solid
@@ -84,6 +86,20 @@ def test_timed_out_slice_leaves_no_gcode(tmp_path, monkeypatch):
     res = slice_solid(build(make_spec((60.0, 40.0, 5.0))), tmp_path, slicer=tmp_path / "s.exe")
     assert isinstance(res, MvAbstain) and res.reason == "slicer_failed"
     assert not (tmp_path / "part.gcode").exists()
+
+
+def test_build_export_holds_the_occt_lock(tmp_path, monkeypatch):
+    locked = []
+    real_export = cq.exporters.export
+
+    def fake_export(*args, **kwargs):
+        locked.append(exporters._OCCT_LOCK.locked())
+        return real_export(*args, **kwargs)
+
+    monkeypatch.setattr(cq.exporters, "export", fake_export)
+    solid = build(make_spec((60.0, 40.0, 5.0)))
+    export(solid, tmp_path)
+    assert locked and all(locked)
 
 
 @pytest.mark.slicer

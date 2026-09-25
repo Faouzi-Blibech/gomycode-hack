@@ -16,6 +16,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import cadquery as cq
 import numpy as np
@@ -137,7 +138,14 @@ def build_part(
         mesh = solid_mesh(solid)
         views = {f: normalize_mask(face_mask(mesh, f, final.envelope)[0]) for f in S.FACES}
         _touch(folder)
-        preview = write_glb(solid, folder / "preview.glb", "normal")
+        preview = folder / "preview.glb"
+        tmp = folder / f"preview.{uuid4().hex[:8]}.tmp.glb"
+        try:
+            write_glb(solid, tmp, "normal")
+            os.replace(tmp, preview)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
         part = Part(key, final, solid, volume(solid), (bb.xlen, bb.ylen, bb.zlen), views, preview, folder, warnings)
         _parts.put(cache_key, part)
         return part
@@ -168,34 +176,37 @@ def _gcode(
 
 def export_part(part: Part, formats, mesh: MeshSettings | None = None, printing: PrintSettings | None = None,
                 slicer: Path | None = None, profile: Path | None = None) -> ExportResult:
+    """Two exports of the same part (e.g. two /mv requests in FastAPI's thread pool) must not both miss the
+    cache and both write the same files at once, so the whole body is serialised per part folder."""
     mesh, printing = mesh or MeshSettings(), printing or PrintSettings()
     unknown = sorted(set(formats) - set(FORMATS))
     if unknown:
         raise ValueError(f"unknown formats {unknown}")
     wanted = [f for f in FORMATS if f in formats]
-    need = [f for f in MESH_FORMATS if f in wanted or (f == "obj" and "blend" in wanted)]
-    made = _mesh_files(part, need, mesh.quality)
-    files = {f: made[f] for f in MESH_FORMATS if f in wanted}
-    warnings: list[str] = []
-    seconds = grams = None
-    if "blend" in wanted:
-        files["blend"], more = write_blend(made["obj"], part.folder / f"mesh-{mesh.quality}")
-        warnings += more
-    drawings = [f for f in DRAWING_FORMATS if f in wanted]
-    if drawings:
-        folder = part.folder / "drawing"
-        missing = [f for f in drawings if not (folder / DRAWING_FILES[f]).exists()]
-        if missing:
-            write_drawings(part.solid, part.spec, folder, missing)
-        files.update({f: folder / DRAWING_FILES[f] for f in drawings})
-    if "gcode" in wanted:
-        gcode, seconds, grams, more = _gcode(part, printing, slicer, profile)
-        warnings += more
-        if gcode is not None:
-            files["gcode"] = gcode
-    _touch(part.folder)
-    ordered = {f: files[f] for f in FORMATS if f in files}
-    return ExportResult(ordered, {f: p.stat().st_size for f, p in ordered.items()}, seconds, grams, warnings)
+    with _lock_for(("export", str(part.folder))):
+        need = [f for f in MESH_FORMATS if f in wanted or (f == "obj" and "blend" in wanted)]
+        made = _mesh_files(part, need, mesh.quality)
+        files = {f: made[f] for f in MESH_FORMATS if f in wanted}
+        warnings: list[str] = []
+        seconds = grams = None
+        if "blend" in wanted:
+            files["blend"], more = write_blend(made["obj"], part.folder / f"mesh-{mesh.quality}")
+            warnings += more
+        drawings = [f for f in DRAWING_FORMATS if f in wanted]
+        if drawings:
+            folder = part.folder / "drawing"
+            missing = [f for f in drawings if not (folder / DRAWING_FILES[f]).exists()]
+            if missing:
+                write_drawings(part.solid, part.spec, folder, missing)
+            files.update({f: folder / DRAWING_FILES[f] for f in drawings})
+        if "gcode" in wanted:
+            gcode, seconds, grams, more = _gcode(part, printing, slicer, profile)
+            warnings += more
+            if gcode is not None:
+                files["gcode"] = gcode
+        _touch(part.folder)
+        ordered = {f: files[f] for f in FORMATS if f in files}
+        return ExportResult(ordered, {f: p.stat().st_size for f, p in ordered.items()}, seconds, grams, warnings)
 
 
 def bundle(part: Part, result: ExportResult, settings: dict | None = None) -> Path:

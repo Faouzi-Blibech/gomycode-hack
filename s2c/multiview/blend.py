@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -58,11 +59,16 @@ def _valid_blend(path: Path) -> bool:
 def _kit(obj_path: Path, out_dir: Path, warnings: list[str]) -> tuple[Path, list[str]]:
     kit = out_dir / KIT_NAME
     if not kit.exists():
-        tmp = kit.with_suffix(".part")
-        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
-            z.write(obj_path, arcname="part.obj")
-            z.writestr("open_in_blender.py", SCRIPT)
-        os.replace(tmp, kit)
+        fd, name = tempfile.mkstemp(suffix=".part", dir=out_dir)  # unique: concurrent callers never share it
+        os.close(fd)
+        tmp = Path(name)
+        try:
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+                z.write(obj_path, arcname="part.obj")
+                z.writestr("open_in_blender.py", SCRIPT)
+            os.replace(tmp, kit)
+        finally:
+            tmp.unlink(missing_ok=True)
     return kit, [*warnings, KIT_WARNING] if warnings else [KIT_WARNING]
 
 

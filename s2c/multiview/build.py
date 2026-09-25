@@ -6,6 +6,7 @@ from pathlib import Path
 
 import cadquery as cq
 
+from s2c.multiview import exporters
 from s2c.multiview.spec import FACE_AXES, Envelope, FaceHole, Fillet, MultiViewSpec, Outline, face_size
 
 
@@ -149,6 +150,7 @@ def export(solid: cq.Workplane, out_dir: Path) -> tuple[Path, Path]:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     step, stl = out_dir / "part.step", out_dir / "part.stl"
-    cq.exporters.export(solid, str(step))
-    cq.exporters.export(solid, str(stl), tolerance=0.01, angularTolerance=0.1)
+    with exporters._OCCT_LOCK:
+        cq.exporters.export(solid, str(step))
+        cq.exporters.export(solid, str(stl), tolerance=0.01, angularTolerance=0.1)
     return step, stl

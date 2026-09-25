@@ -1,6 +1,7 @@
 import os
 import sys
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -90,6 +91,22 @@ def test_real_blend_removes_stale_kit(obj, tmp_path, monkeypatch):
 
 def test_script_usage_line():
     assert "--factory-startup" in SCRIPT.splitlines()[1]
+
+
+def test_concurrent_kit_writes_do_not_collide(obj, tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def make(_):
+        return blend._kit(obj, out, [])
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(make, range(4)))
+    kit = out / KIT_NAME
+    assert kit.exists() and all(path == kit for path, _ in results)
+    with zipfile.ZipFile(kit) as z:
+        assert sorted(z.namelist()) == ["open_in_blender.py", "part.obj"]
+    assert not list(out.glob("*.part"))
 
 
 @pytest.mark.blender

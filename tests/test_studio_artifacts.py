@@ -4,11 +4,12 @@ import shutil
 import threading
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
-from s2c.multiview import artifacts
+from s2c.multiview import artifacts, exporters
 from s2c.multiview.artifacts import build_part, bundle, export_part, geometry_key, sweep
 from s2c.multiview.settings import GeometrySettings, MeshSettings, PrintSettings
 from s2c.multiview.spec import MultiViewSpec, MvAbstain
@@ -128,6 +129,39 @@ def test_concurrent_builds_share_one_build(tmp_path, monkeypatch):
     assert len(calls) == 1
     first, second = results
     assert first.key == second.key and first.preview.exists() and second.preview.exists()
+
+
+def test_concurrent_exports_of_the_same_part_do_not_collide(tmp_path, monkeypatch):
+    write_calls = {"stl": 0, "step": 0}
+    real = {"stl": exporters.WRITERS["stl"], "step": exporters.WRITERS["step"]}
+
+    def counted(fmt):
+        def write(solid, path, quality="normal"):
+            write_calls[fmt] += 1
+            time.sleep(0.05)
+            return real[fmt](solid, path, quality)
+        return write
+
+    monkeypatch.setitem(exporters.WRITERS, "stl", counted("stl"))
+    monkeypatch.setitem(exporters.WRITERS, "step", counted("step"))
+    run_calls = []
+
+    def fake_run(cmd, timeout_s, log_path, cwd=None):
+        run_calls.append(cmd)
+        time.sleep(0.05)
+        Path(cmd[cmd.index("--output") + 1]).write_text(
+            "G1 X1\n; filament used [g] = 1.0\n; estimated printing time (normal mode) = 1m 0s\n")
+        return 0
+
+    monkeypatch.setattr("s2c.multiview.slice.run", fake_run)
+    part = build_part(SPEC, root=tmp_path)
+
+    def do_export(_):
+        return export_part(part, ["stl", "step", "gcode"], slicer=tmp_path / "s.exe")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(do_export, range(2)))
+    assert write_calls == {"stl": 1, "step": 1} and len(run_calls) == 1
 
 
 def test_swept_folder_rebuilds(tmp_path, monkeypatch):

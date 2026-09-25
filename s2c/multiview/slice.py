@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import cadquery as cq
 
+from s2c.multiview import exporters
 from s2c.multiview.proc import run, tail
 from s2c.multiview.spec import MvAbstain
 
@@ -141,8 +142,9 @@ def slice_solid(solid: cq.Workplane, out_dir: Path, profile_path: Path | None = 
                          remedy="The part is larger than the printer bed. Scale it down or split it.")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    stl = out_dir / "part_print.stl"
-    cq.exporters.export(printable, str(stl), tolerance=0.01, angularTolerance=0.1)
+    stl = out_dir / f"part_print.{uuid4().hex[:8]}.tmp.stl"  # unique: a second export never overwrites it mid-slice
+    with exporters._OCCT_LOCK:
+        cq.exporters.export(printable, str(stl), tolerance=0.01, angularTolerance=0.1)
     slicer = slicer or find_slicer()
     if slicer is None:
         return SliceResult(stl, None, None, None, ["G-code unavailable: slicer not installed"])
