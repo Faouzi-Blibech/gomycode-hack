@@ -1,10 +1,11 @@
 import gradio as gr
 
 import app_mv_gradio as A
+from s2c.multiview import pipeline
 from s2c.multiview.pipeline import MvPipeline, Observed
 from s2c.multiview.spec import MvAbstain
 from tests.mv_helpers import make_spec, rect
-from tests.test_mv_pipeline import sketch
+from tests.test_mv_pipeline import fake_reads, sketch
 from tests.test_mv_qwen_faces import fake_gen, silhouette
 
 ENVELOPE = {"envelope.x_mm": 60, "envelope.y_mm": 40, "envelope.z_mm": 10}
@@ -106,7 +107,7 @@ def test_a_bad_number_on_a_later_rebuild_keeps_the_current_faces_and_warnings(tm
     bad_rows[0][1] = "abc"
     redo = dict(zip(A.OUTPUTS, handlers.rebuild(bad_rows, [], done["state"])))
     assert "not a number" in redo["message"] and redo["model"] is None
-    assert [c.split(":")[0] for _, c in redo["faces"]] == [c.split(":")[0] for _, c in done["faces"]]
+    assert [c for _, c in redo["faces"]] == [c for _, c in done["faces"]]
     assert redo["warnings"] == done["warnings"]
 
 
@@ -128,10 +129,30 @@ def test_a_suggested_envelope_value_is_not_pre_filled():
     abstain = MvAbstain(stage="dimensions", reason="missing_x", remedy="Enter the width in mm.",
                         partial={"known": {}, "missing": ["envelope.x_mm"], "suggested": {"envelope.x_mm": 60.0}})
     rows = A.value_rows(None, abstain, {})
-    assert rows[0] == ["envelope.x_mm", "", A.MISSING]
+    assert rows[0][0] == "envelope.x_mm" and rows[0][1] == ""
+    assert rows[0][2] == f"{A.MISSING} — suggested 60 mm"
 
 
 def test_rebuild_without_touching_a_suggestion_does_not_confirm_it(tmp_path, monkeypatch):
     handlers, out = analyzed(tmp_path, monkeypatch)
     done = dict(zip(A.OUTPUTS, handlers.rebuild(out["values"], [], out["state"])))
     assert done["model"] is None and "missing" in done["message"]
+
+
+def test_a_suggested_size_shows_as_a_hint_and_rebuild_does_not_confirm_it(tmp_path, monkeypatch):
+    """front gives x and y (written), top gives x again: z is missing but scale-suggested from the top sketch's
+    aspect ratio (spec 2026-09-23 section 5) - the exact scenario the source-text hint exists for."""
+    monkeypatch.setattr(A, "OUT_ROOT", tmp_path / "out")
+    monkeypatch.setattr(pipeline, "read_values", fake_reads([[(60, "below"), (40, "left")], [(60, "below")]]))
+    handlers = A.Handlers(MvPipeline(reader=lambda crop: ("", 0.0)))
+    paths = []
+    for name, (w, h) in {"front.png": (600, 400), "top.png": (600, 100)}.items():
+        path = tmp_path / name
+        path.write_bytes(sketch(w, h))
+        paths.append(str(path))
+    tags = [["front.png", "front", "sketch"], ["top.png", "top", "sketch"]]
+    out = dict(zip(A.OUTPUTS, handlers.analyze(paths, tags, "none")))
+    z_row = next(r for r in out["values"] if r[0] == "envelope.z_mm")
+    assert z_row[1] == "" and "suggested" in z_row[2]
+    done = dict(zip(A.OUTPUTS, handlers.rebuild(out["values"], [], out["state"])))
+    assert done["model"] is None and "envelope.z_mm" not in done["state"]["edits"]

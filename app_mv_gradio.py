@@ -78,13 +78,14 @@ def _value(spec: MultiViewSpec, path: str) -> float:
 
 def value_rows(spec: MultiViewSpec | None, abstain: MvAbstain | None, edits: dict) -> list[list]:
     """Envelope first, then every numeric feature value, with its source. Outlines are not edited here.
-    A missing axis shows no value: a suggestion is a hint for the message, never a pre-filled box the user could
-    leave untouched and have it count as theirs (CLAUDE.md rule 2)."""
+    A missing axis shows no value in its box: a suggestion is only a hint appended to the source column text
+    (e.g. "missing: ... - suggested 60 mm"), never a pre-filled box the user could leave untouched and have it
+    count as theirs (CLAUDE.md rule 2)."""
     if spec is not None:
         return [[p, _value(spec, p), f"{s} (check)" if s in AMBER else s]
                 for p, s in spec.provenance.items() if not p.startswith("views.")]
     partial = (abstain.partial if abstain else None) or {}
-    known = partial.get("known", {})
+    known, suggested = partial.get("known", {}), partial.get("suggested", {})
     rows = []
     for axis in "xyz":
         path = f"envelope.{axis}_mm"
@@ -92,6 +93,8 @@ def value_rows(spec: MultiViewSpec | None, abstain: MvAbstain | None, edits: dic
             rows.append([path, edits[path], "user_edited"])
         elif path in known:
             rows.append([path, known[path], "found"])
+        elif path in suggested:
+            rows.append([path, "", f"{MISSING} — suggested {suggested[path]:g} mm"])
         else:
             rows.append([path, "", MISSING])
     return rows
