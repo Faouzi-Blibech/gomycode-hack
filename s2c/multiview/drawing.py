@@ -96,8 +96,8 @@ def drawing_document(solid, spec: MultiViewSpec) -> ezdxf.document.Drawing:
             a2, b2 = to_canonical(f.face, [(f.a_mm, f.b_mm)], spec.envelope)[0]
             cx, cy = place[canonical][0] + a2, place[canonical][1] + b2
             msp.add_diameter_dim(center=(cx, cy), radius=f.diameter_mm / 2, angle=45, dimstyle="EZDXF",
-                                 override=DIM_STYLE, text=f"⌀<> ({f.face})",  # ezdxf's own diameter prefix:
-                                 dxfattribs={"layer": "DIMENSIONS"}).render()      # matching it avoids a doubled symbol
+                                 override=DIM_STYLE, text=f"<> ({f.face})",  # ezdxf prepends its own diameter
+                                 dxfattribs={"layer": "DIMENSIONS"}).render()   # sign to "<>"; don't add a second
         else:
             notes.append(f"Feature {k + 1} on the {f.face} face")
     for finish in spec.finishes:

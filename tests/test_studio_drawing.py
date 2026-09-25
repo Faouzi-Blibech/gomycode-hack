@@ -14,12 +14,14 @@ from tests.mv_helpers import make_spec
 SPEC = MultiViewSpec.model_validate_json(
     (Path(__file__).parents[1] / "examples" / "mv" / "l_bracket.json").read_text())
 
-# one through hole on a far face per canonical view (back -> front, left -> right) plus a fillet
+# one through hole on each far face (back -> front, left -> right, bottom -> top) plus a fillet; z-positions are
+# staggered (10, 25, 20) and diameters distinct (6, 4, 8) so no two holes' axes meet inside the part
 FAR_SPEC = make_spec(
     (60.0, 40.0, 30.0),
     features=[
         {"type": "hole", "face": "back", "a_mm": 20.0, "b_mm": 15.0, "diameter_mm": 6.0},
         {"type": "hole", "face": "left", "a_mm": 10.0, "b_mm": 25.0, "diameter_mm": 4.0},
+        {"type": "hole", "face": "bottom", "a_mm": 30.0, "b_mm": 20.0, "diameter_mm": 8.0},
     ],
     finishes=[{"type": "fillet", "edges": "all_vertical", "radius_mm": 2.0}],
 )
@@ -32,6 +34,21 @@ def _hole_center(solid, diameter_mm):
     matches = [e for e in solid.val().Edges() if e.geomType() == "CIRCLE" and abs(e.Length() - target) < 1e-3]
     assert matches, f"no hole edge of diameter {diameter_mm}"
     return matches[0].Center()
+
+
+def _rendered_text(doc, dim):
+    """The literal TEXT/MTEXT content ezdxf composed into this dimension's geometry block: what actually renders,
+    with ezdxf's own formatting codes (e.g. "%%c" for the diameter sign) still in place. ezdxf's drawing add-on
+    (SVG, PDF and the matplotlib preview alike) turns every glyph into filled vector paths, not markup or literal
+    characters, so this block -- not the rendered SVG/PDF bytes -- is the only place the composed text is still a
+    string; it is exactly what a viewer will draw."""
+    block = doc.blocks.get(dim.dxf.geometry)
+    for e in block:
+        if e.dxftype() == "TEXT":
+            return e.dxf.text
+        if e.dxftype() == "MTEXT":
+            return e.text
+    raise AssertionError("dimension geometry block holds no text entity")
 
 
 @pytest.fixture(scope="module")
@@ -78,17 +95,24 @@ def test_far_side_hole_is_dimensioned(tmp_path):
     w, h, depth = env.x_mm, env.y_mm, env.z_mm
     gap = max(15.0, 0.3 * max(w, h, depth))
 
-    back = next(dm for dm in dias if "⌀" in dm.dxf.text and "(back)" in dm.dxf.text)
-    center = (back.dxf.defpoint + back.dxf.defpoint4) / 2
-    back_axis = _hole_center(solid, 6.0)  # front view: (a, b) of the back face's own frame land at (x, y)
-    assert center.x == pytest.approx(back_axis.x, abs=0.01)
-    assert center.y == pytest.approx(back_axis.y, abs=0.01)
+    def far_side(face, diameter_mm):
+        dim = next(dm for dm in dias if f"({face})" in dm.dxf.text)
+        text = _rendered_text(doc, dim)
+        assert text.startswith("%%c") and text.count("%%c") == 1  # exactly one diameter sign, right before the value
+        center = (dim.dxf.defpoint + dim.dxf.defpoint4) / 2
+        return center, _hole_center(solid, diameter_mm)
 
-    left = next(dm for dm in dias if "⌀" in dm.dxf.text and "(left)" in dm.dxf.text)
-    center = (left.dxf.defpoint + left.dxf.defpoint4) / 2
-    left_axis = _hole_center(solid, 4.0)
-    assert center.x == pytest.approx((w + gap) + (depth - left_axis.z), abs=0.01)
-    assert center.y == pytest.approx(left_axis.y, abs=0.01)
+    center, axis = far_side("back", 6.0)  # front view: (a, b) of the back face's own frame land at (x, y)
+    assert center.x == pytest.approx(axis.x, abs=0.01)
+    assert center.y == pytest.approx(axis.y, abs=0.01)
+
+    center, axis = far_side("left", 4.0)  # right view: mirrored along the width, unchanged in height
+    assert center.x == pytest.approx((w + gap) + (depth - axis.z), abs=0.01)
+    assert center.y == pytest.approx(axis.y, abs=0.01)
+
+    center, axis = far_side("bottom", 8.0)  # top view: unchanged in width, mirrored along the depth
+    assert center.x == pytest.approx(axis.x, abs=0.01)
+    assert center.y == pytest.approx((h + gap) + (depth - axis.z), abs=0.01)
 
 
 def test_finish_callout(tmp_path):
