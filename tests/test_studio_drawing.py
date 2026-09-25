@@ -121,6 +121,33 @@ def test_finish_callout(tmp_path):
     assert f"Fillet R2 on {EDGE_LABELS['all_vertical']}" in texts
 
 
+def test_chamfer_callout_uses_c_not_r(tmp_path):
+    spec = make_spec((60.0, 40.0, 30.0), finishes=[{"type": "chamfer", "edges": "all_vertical", "radius_mm": 1.5}])
+    doc = ezdxf.readfile(write_drawings(build(spec), spec, tmp_path, ["dxf"])["dxf"])
+    texts = [t.dxf.text for t in doc.modelspace().query('TEXT[layer=="TEXT"]')]
+    assert f"Chamfer C1.5 on {EDGE_LABELS['all_vertical']}" in texts
+    assert not any("Chamfer R" in t for t in texts)  # R means radius; a chamfer size is C, not R
+
+
+def _view_boxes(env):
+    """(x0, x1, y0, y1) of the front, right and top view rectangles, from the placement drawing_document uses."""
+    w, h, d = env.x_mm, env.y_mm, env.z_mm
+    gap = max(15.0, 0.3 * max(w, h, d))
+    return [(0.0, w, 0.0, h), (w + gap, w + gap + d, 0.0, h), (0.0, w, h + gap, h + gap + d)]
+
+
+def test_text_block_never_overlaps_a_view(tmp_path):
+    thin = make_spec((60.0, 40.0, 3.0), finishes=[{"type": "chamfer", "edges": "all_vertical", "radius_mm": 1.0}])
+    for name, spec in [("l_bracket", SPEC), ("thin_plate", thin)]:
+        doc = ezdxf.readfile(write_drawings(build(spec), spec, tmp_path / name, ["dxf"])["dxf"])
+        boxes = _view_boxes(spec.envelope)
+        for e in doc.modelspace().query('TEXT[layer=="TEXT"]'):
+            tb = bbox.extents([e])
+            for x0, x1, y0, y1 in boxes:
+                overlaps = tb.extmax.x > x0 and tb.extmin.x < x1 and tb.extmax.y > y0 and tb.extmin.y < y1
+                assert not overlaps, f"{name}: {e.dxf.text!r} overlaps view box {(x0, x1, y0, y1)}"
+
+
 def test_drawing_write_is_atomic(tmp_path, monkeypatch):
     from s2c.multiview import drawing
 

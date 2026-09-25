@@ -101,11 +101,13 @@ def drawing_document(solid, spec: MultiViewSpec) -> ezdxf.document.Drawing:
         else:
             notes.append(f"Feature {k + 1} on the {f.face} face")
     for finish in spec.finishes:
-        kind = "Fillet" if isinstance(finish, Fillet) else "Chamfer"
-        notes.append(f"{kind} R{finish.radius_mm:g} on {EDGE_LABELS[finish.edges]}")
+        if isinstance(finish, Fillet):
+            notes.append(f"Fillet R{finish.radius_mm:g} on {EDGE_LABELS[finish.edges]}")
+        else:  # a chamfer's size is a leg length, not a radius
+            notes.append(f"Chamfer C{finish.radius_mm:g} on {EDGE_LABELS[finish.edges]}")
     lines = ["Sketch-to-CAD", f"Envelope {w:g} x {h:g} x {d:g} mm", "Third-angle projection, units mm",
              f"Date {datetime.now(tz=UTC).date().isoformat()}", *notes]
-    x0, y0 = w + gap, h + gap + d
+    x0, y0 = w + gap + d + gap, h + gap + d  # past the right view (whose own right edge is w + gap + d), any envelope
     for i, text in enumerate(lines):
         msp.add_text(text, height=3.5 if i else 5.0, dxfattribs={"layer": "TEXT"}).set_placement((x0, y0 - 7 * i))
     return doc
