@@ -42,7 +42,9 @@ def test_bad_numbers_are_reported_not_raised(tmp_path, monkeypatch):
     handlers, out = analyzed(tmp_path, monkeypatch)
     rows = [["envelope.x_mm", "abc", A.MISSING], ["envelope.y_mm", "-5", A.MISSING], ["envelope.z_mm", "0", A.MISSING]]
     done = dict(zip(A.OUTPUTS, handlers.rebuild(rows, [], out["state"])))
-    assert "not a number" in done["message"] and "more than 0" in done["message"] and done["model"] is None
+    assert "not a number" in done["message"] and "more than 0" in done["message"]
+    assert done["model"] == gr.update()  # no build ran: leave whatever the 3D viewer already shows alone
+    assert done["values"] == rows  # the user's own typed (bad) rows, so they can see and fix them
 
 
 def test_a_wrong_face_tag_is_explained(tmp_path):
@@ -96,6 +98,27 @@ def test_the_reject_list_only_offers_ai_drawn_faces(tmp_path, monkeypatch):
     assert done["rejected"]["choices"] == ["right"]
 
 
+def test_a_rejected_face_stays_rejected_after_the_next_rebuild(tmp_path, monkeypatch):
+    monkeypatch.setattr(A, "OUT_ROOT", tmp_path / "out")
+    gen = fake_gen(silhouette(rect(10, 40), 10, 40))
+    handlers = A.Handlers(MvPipeline(image_gen=gen))
+    paths = []
+    for name, (w, h) in {"front.png": (600, 400), "top.png": (600, 100)}.items():
+        path = tmp_path / name
+        path.write_bytes(sketch(w, h))
+        paths.append(str(path))
+    tags = [["front.png", "front", "sketch"], ["top.png", "top", "sketch"]]
+    out = dict(zip(A.OUTPUTS, handlers.analyze(paths, tags, "none")))
+    rows = [[path, ENVELOPE[path], source] for path, _, source in out["values"]]
+    first = dict(zip(A.OUTPUTS, handlers.rebuild(rows, ["right"], out["state"])))
+    assert first["rejected"]["choices"] == ["right"] and first["rejected"]["value"] == ["right"]
+    assert "assumed rectangle" in next(c for _, c in first["faces"] if c.startswith("right:"))
+    # rebuild again with exactly the checkbox value the app just returned: right must stay rejected, not come back
+    second = dict(zip(A.OUTPUTS, handlers.rebuild(rows, first["rejected"]["value"], first["state"])))
+    assert second["rejected"]["choices"] == ["right"] and second["rejected"]["value"] == ["right"]
+    assert "assumed rectangle" in next(c for _, c in second["faces"] if c.startswith("right:"))
+
+
 # ---- finding 2: an error must not wipe the other outputs, only a changed row is validated/recorded -----------
 
 def test_a_bad_number_on_a_later_rebuild_keeps_the_current_faces_and_warnings(tmp_path, monkeypatch):
@@ -106,9 +129,13 @@ def test_a_bad_number_on_a_later_rebuild_keeps_the_current_faces_and_warnings(tm
     bad_rows = [list(r) for r in done["values"]]
     bad_rows[0][1] = "abc"
     redo = dict(zip(A.OUTPUTS, handlers.rebuild(bad_rows, [], done["state"])))
-    assert "not a number" in redo["message"] and redo["model"] is None
+    assert "not a number" in redo["message"]
+    # the previous model, views, files and stats are kept (left alone), not cleared to empty
+    assert redo["model"] == gr.update() and redo["views"] == gr.update()
+    assert redo["files"] == gr.update() and redo["stats"] == gr.update()
     assert [c for _, c in redo["faces"]] == [c for _, c in done["faces"]]
     assert redo["warnings"] == done["warnings"]
+    assert redo["values"] == bad_rows  # the user's own typed rows, so they can fix the bad cell
 
 
 def test_unchanged_rows_are_not_recorded_as_edits():

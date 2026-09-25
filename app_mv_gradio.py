@@ -189,17 +189,22 @@ class Handlers:
         observed = state.get("observed")
         if observed is None:
             return _pack(state, message="Analyze images first.")
+        rej = tuple(rejected or ())
         edits, errors = parse_edits(rows, state["shown"])
         if errors:
-            res = self.pipe.fuse(observed, dict(state["edits"]), rejected=tuple(rejected or ()))
-            return _pack(state, **{**self._review(observed, res, state), "message": _bullets(errors)})
+            res = self.pipe.fuse(observed, dict(state["edits"]), rejected=rej)
+            review = self._review(observed, res, state, rej)
+            # keep whatever the model/views/files/stats components already show, and the user's own typed rows
+            # (not the recomputed ones) so they can see and fix the exact bad cell
+            return _pack(state, **{**review, "values": rows, "message": _bullets(errors)},
+                         model=gr.update(), views=gr.update(), files=gr.update(), stats=gr.update())
         for path, value in edits.items():
             if value is None:
                 state["edits"].pop(path, None)
             else:
                 state["edits"][path] = value
-        res = self.pipe.fuse(observed, dict(state["edits"]), rejected=tuple(rejected or ()))
-        review = self._review(observed, res, state)
+        res = self.pipe.fuse(observed, dict(state["edits"]), rejected=rej)
+        review = self._review(observed, res, state, rej)
         if isinstance(res, MvAbstain):
             return _pack(state, **review)
         sweep_outputs(OUT_ROOT)
@@ -215,16 +220,20 @@ class Handlers:
                                "message": "Built. Check every value marked (check)."},
                      model=str(built.stl), views=views, files=files, stats=stats)
 
-    def _review(self, observed: Observed, res, state: dict) -> dict:
+    def _review(self, observed: Observed, res, state: dict, rejected=()) -> dict:
         spec = None if isinstance(res, MvAbstain) else res
         abstain = res if isinstance(res, MvAbstain) else None
         rows = value_rows(spec, abstain, state["edits"])
         state["shown"] = {r[0]: (r[1], r[2]) for r in rows}
         warnings = spec.warnings if spec is not None else observed.warnings
         message = _abstain(abstain) if abstain else "Review the faces and values, edit any number, then Rebuild."
+        # a rejected face is refilled as "assumed", which drops it from ai_faces: keep it offered and ticked
+        # anyway, so rejecting it does not quietly wear off on the next Rebuild
+        keep = set(ai_faces(observed)) | set(rejected)
+        choices = [f for f in CANONICAL_FACES if f in keep]
         return {"faces": face_gallery(observed, spec), "reads": read_rows(observed), "values": rows,
                 "warnings": _bullets(warnings), "message": message,
-                "rejected": gr.update(choices=ai_faces(observed), value=[])}
+                "rejected": gr.update(choices=choices, value=list(rejected))}
 
 
 def build_app(pipe: MvPipeline) -> gr.Blocks:
