@@ -11,13 +11,14 @@ import numpy as np
 
 from s2c.multiview.fuse import Observation
 from s2c.multiview.ocr import Linked
-from s2c.multiview.outline import PixelCircle, extract
+from s2c.multiview.outline import EDGE_BAND_PX, LONG_SIDE, PixelCircle, extract
 from s2c.multiview.raster import iou, polygon_mask
 from s2c.multiview.spec import MvAbstain
 
 log = logging.getLogger(__name__)
 GRID = 512
 PAD = 16
+EDGE_BAND_MIN_PX = 3
 OUTLIER_IOU = 0.7
 ASPECT_TOL = 0.10
 SCALE_SPREAD = 0.03
@@ -102,7 +103,7 @@ def _fit(o: Observation, solid: np.ndarray, to_grid: np.ndarray, ref_grid: np.nd
     return best
 
 
-def _merge_circles(group, transforms, diag: float) -> tuple[list[PixelCircle], dict[tuple[int, int], int]]:
+def _merge_circles(face: str, group, transforms, diag: float) -> tuple[list[PixelCircle], dict, list[str]]:
     """Clusters of circle centres; a cluster seen on at least half of the photos becomes one median circle."""
     clusters: list[list[tuple[int, int, float, float, float]]] = []
     for k, (o, t) in enumerate(zip(group, transforms)):
@@ -115,14 +116,17 @@ def _merge_circles(group, transforms, diag: float) -> tuple[list[PixelCircle], d
                 clusters.append([member])
             else:
                 home.append(member)
-    circles, index = [], {}
+    circles, index, warnings = [], {}, []
     for cl in clusters:
-        if 2 * len({m[0] for m in cl}) < len(group):
+        support = len({m[0] for m in cl})
+        if 2 * support < len(group):
+            d = float(np.median([m[4] for m in cl]))
+            warnings.append(f"{face}: a {d:.0f} px hole was seen on only {support} of {len(group)} photos, dropped")
             continue
         for m in cl:
             index[(m[0], m[1])] = len(circles)
         circles.append(PixelCircle(*(float(np.median([m[j] for m in cl])) for j in (2, 3, 4))))
-    return circles, index
+    return circles, index, warnings
 
 
 def _clusters(values: list[float]) -> list[list[int]]:
@@ -140,6 +144,7 @@ def _merge_values(face: str, group, transforms, circle_index) -> tuple[list[Link
     """Per axis or merged hole: keep every value read on at least half of the photos that read one there."""
     buckets: dict[tuple, list[tuple[int, Linked]]] = defaultdict(list)
     out: list[Linked] = []
+    warnings = []
     for k, (o, t) in enumerate(zip(group, transforms)):
         for lv in o.values:
             reading = replace(lv.reading, bbox=_map_box(t, lv.reading.bbox))
@@ -147,11 +152,12 @@ def _merge_values(face: str, group, transforms, circle_index) -> tuple[list[Link
                 hole = circle_index.get((k, lv.hole_index))
                 if hole is not None:
                     buckets[("hole", hole)].append((k, Linked(reading, None, hole)))
+                else:
+                    warnings.append(f"{face}: {reading.value_mm:g} mm was linked to a dropped hole, ignored")
             elif lv.axis is not None:
                 buckets[("axis", lv.axis)].append((k, Linked(reading, lv.axis, None)))
             else:
                 out.append(Linked(reading, None, None))
-    warnings = []
     for items in buckets.values():
         photos = len({k for k, _ in items})
         for g in _clusters([lv.reading.value_mm for _, lv in items]):
@@ -197,7 +203,8 @@ def _merged_scale(face: str, group, transforms) -> tuple[float | None, list[str]
     return median, []
 
 
-def _merge_group(face: str, group: list[Observation], images: list[np.ndarray]):
+def _merge_group(face: str, group: list[Observation], images: list[np.ndarray], idx: list[int] | None = None):
+    idx = list(range(len(group))) if idx is None else idx
     ratios = [o.outline.bbox[2] / o.outline.bbox[3] for o in group]
     median = float(np.median(ratios))
     gw, gh = (GRID, max(round(GRID / median), 8)) if median >= 1 else (max(round(GRID * median), 8), GRID)
@@ -214,28 +221,33 @@ def _merge_group(face: str, group: list[Observation], images: list[np.ndarray]):
     first = _vote(masks)
     keep = [k for k in range(len(group))
             if abs(ratios[k] / median - 1) <= ASPECT_TOL and iou(masks[k], first) >= OUTLIER_IOU]
-    warnings = [f"{face}: photo {k + 1} disagrees with the others, ignored" for k in range(len(group)) if k not in keep]
+    warnings = [f"{face}: photo {idx[k] + 1} disagrees with the others, ignored"
+                for k in range(len(group)) if k not in keep]
     if len(keep) < 2:
         best = max(keep or [ref], key=lambda k: group[k].confidence)
         return group[best], images[best], warnings
     if ref not in keep:
-        merged, image, more = _merge_group(face, [group[k] for k in keep], [images[k] for k in keep])
+        merged, image, more = _merge_group(face, [group[k] for k in keep], [images[k] for k in keep],
+                                           [idx[k] for k in keep])
         return merged, image, warnings + more
     kept, kept_t = [group[k] for k in keep], [transforms[k] for k in keep]
     vote = _vote([masks[k] for k in keep])
     agreement = float(np.mean([iou(masks[k], vote) for k in keep]))
-    outline = extract(cv2.cvtColor(255 - vote, cv2.COLOR_GRAY2BGR))
+    band = max(round(EDGE_BAND_PX * GRID / LONG_SIDE), EDGE_BAND_MIN_PX)
+    outline = extract(cv2.cvtColor(255 - vote, cv2.COLOR_GRAY2BGR), band=band)
     if isinstance(outline, MvAbstain):
         return group[ref], images[ref], warnings + [f"{face}: photos could not be merged, using the clearest one"]
-    circles, circle_index = _merge_circles(kept, kept_t, diag)
-    outline = replace(outline, circles=circles)
+    circles, circle_index, circle_warnings = _merge_circles(face, kept, kept_t, diag)
+    voted_only = [c for c in outline.circles
+                  if not any(np.hypot(c.cx - e.cx, c.cy - e.cy) < CIRCLE_TOL * diag for e in circles)]
+    outline = replace(outline, circles=circles + voted_only)
     values, more = _merge_values(face, kept, kept_t, circle_index)
-    blind, estimates, ratio, from_image = _merge_labels(kept, circle_index, len(circles))
+    blind, estimates, ratio, from_image = _merge_labels(kept, circle_index, len(outline.circles))
     scale, scale_warnings = _merged_scale(face, kept, kept_t)
     merged = Observation(face=face, kind=group[ref].kind, outline=outline, values=values, mm_per_px=scale,
                          blind=blind, depth_estimates=estimates, depth_ratio=ratio, depth_from_image=from_image,
                          confidence=round(max(o.confidence for o in kept) * agreement, 3))
-    warnings += more + scale_warnings + [f"{face}: merged {len(kept)} photos, agreement {agreement:.2f}"]
+    warnings += circle_warnings + more + scale_warnings + [f"{face}: merged {len(kept)} photos, agreement {agreement:.2f}"]
     return merged, images[ref], warnings
 
 

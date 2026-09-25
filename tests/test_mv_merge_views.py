@@ -13,12 +13,13 @@ SX, SY = 511 / 600, 340 / 400     # plate bbox (601 x 401 px) onto the 512 x 341
 
 
 def photo(shift=(0, 0), angle=0.0, size=(600, 400), holes=HOLES, notch=False, seed=0):
-    """A dark plate with light holes on a light table, like a top-down photo."""
+    """A dark plate with light holes on a light table, like a top-down photo.
+    `notch` is either the default corner cutout, or a list of (x0, y0, x1, y1) cutouts of its own."""
     img = np.full((1200, 1600, 3), 200, np.uint8)
     x0, y0 = 500 + shift[0], 400 + shift[1]
     cv2.rectangle(img, (x0, y0), (x0 + size[0], y0 + size[1]), (40, 40, 40), -1)
-    if notch:
-        cv2.rectangle(img, (x0 + 150, y0), (x0 + size[0], y0 + 300), (200, 200, 200), -1)
+    for nx0, ny0, nx1, ny1 in ([(150, 0, size[0], 300)] if notch is True else notch or []):
+        cv2.rectangle(img, (x0 + nx0, y0 + ny0), (x0 + nx1, y0 + ny1), (200, 200, 200), -1)
     for cx, cy in holes:
         cv2.circle(img, (x0 + cx, y0 + cy), 30, (200, 200, 200), -1)
     if angle:
@@ -115,3 +116,75 @@ def test_a_half_turned_photo_is_turned_back_before_voting(angles):
     got = sorted((c.cx, c.cy) for c in merged.outline.circles)
     assert len(got) == 2
     assert all(np.hypot(g[0] - w[0], g[1] - w[1]) < 0.01 * np.hypot(512, 341) for g, w in zip(got, sorted(want)))
+
+
+def test_disagreeing_photo_named_by_input_index():
+    """Photo 1 (odd shape) is dropped by the top-level vote; photo 3 only disagrees once the recursive
+    re-merge compares it against photo 2 alone. The warning must still name it by its original position."""
+    shared = (450, 0, 600, 150)      # corner both photo 1 and photo 3 lack
+    ref_only = (0, 100, 500, 400)    # big cut only photo 1 has: pushes photo 1 out of the top-level vote
+    third_only = (450, 280, 600, 400)  # corner only photo 3 has: pushes it out of the 2-way recursive vote
+    imgs = [photo(notch=[shared, ref_only], seed=1), photo(seed=2), photo(notch=[shared, third_only], seed=3)]
+    observations = [obs(imgs[0], 0.99), obs(imgs[1], 0.9), obs(imgs[2], 0.85)]
+    (merged,), _, warnings = merge_same_face(observations, imgs)
+    assert "top: photo 1 disagrees with the others, ignored" in warnings
+    assert "top: photo 3 disagrees with the others, ignored" in warnings
+    assert not any("photo 2 disagrees" in w for w in warnings)
+    assert merged is observations[1]
+
+
+def test_dropped_hole_is_reported():
+    """A third hole seen on only one of three photos is dropped by the circle vote; the warning must name the
+    face and the hole's size, and the value linked to that hole must be reported as dropped too, not silently lost."""
+    extra = (300, 200)
+    img0, img1, img2 = photo(holes=[*HOLES, extra], seed=10), photo(shift=(20, 0), seed=11), photo(shift=(-20, 0), seed=12)
+    raw0 = extract(img0)
+    extra_i = min(range(len(raw0.circles)),
+                  key=lambda i: (raw0.circles[i].cx - 800) ** 2 + (raw0.circles[i].cy - 600) ** 2)
+    linked = Linked(Reading(12.0, "diameter", (0, 0, 5, 5), 0.9, "12"), None, extra_i)
+    o0 = Observation(face="top", kind="photo", outline=raw0, values=[linked], confidence=0.95)
+    observations = [o0, obs(img1, 0.9), obs(img2, 0.85)]
+    (merged,), _, warnings = merge_same_face(observations, [img0, img1, img2])
+    assert len(merged.outline.circles) == 2
+    assert any("hole was seen on only 1 of 3 photos, dropped" in w for w in warnings)
+    assert any("linked to a dropped hole" in w for w in warnings)
+    assert merged.values == []
+
+
+def test_opening_near_edge_survives_merge():
+    """A square opening about 20 grid px from the edge: EDGE_BAND_PX unscaled to the 512 grid would wrongly
+    treat it as touching the drawn outline and drop it, even though every photo sees it as a real opening."""
+    size = (1000, 700)
+    square = (1000 - 22 - 80, 310, 1000 - 22, 390)  # right edge ~22 px inside the plate, ~11 px on the 512 grid
+    imgs = [photo(size=size, notch=[square], shift=(k * 5, 0), seed=k) for k in range(3)]
+    observations = [obs(img, 0.9 + 0.03 * (2 - k)) for k, img in enumerate(imgs)]
+    assert all(len(o.outline.inner) == 1 for o in observations)
+    (merged,), _, warnings = merge_same_face(observations, imgs)
+    assert len(merged.outline.inner) == 1
+    assert len(merged.outline.circles) == 2
+    assert any(w.startswith("top: merged 3 photos") for w in warnings)
+
+
+def test_voted_circular_opening_is_kept():
+    """An opening that each photo reads as a slightly-chamfered square (circularity just under 0.85) can look
+    circular once the votes are combined at the small merge grid; it must end up as a circle, not vanish."""
+    def chamfered_square(cx, cy, h, c):
+        pts = [(cx - h + c, cy - h), (cx + h - c, cy - h), (cx + h, cy - h + c), (cx + h, cy + h - c),
+               (cx + h - c, cy + h), (cx - h + c, cy + h), (cx - h, cy + h - c), (cx - h, cy - h + c)]
+        return np.array(pts, np.int32)
+
+    hole = chamfered_square(700, 450, 18, 0.15 * 18)
+    imgs = []
+    for k, angle in enumerate((0, 2, -2)):
+        img = np.full((1200, 1600, 3), 200, np.uint8)
+        cv2.rectangle(img, (100, 150), (100 + 1400, 150 + 900), (40, 40, 40), -1)
+        cv2.fillPoly(img, [hole + [100, 150]], (200, 200, 200))
+        m = cv2.getRotationMatrix2D((800, 600), angle, 1.0)
+        img = cv2.warpAffine(img, m, (1600, 1200), borderValue=(200, 200, 200))
+        noise = np.random.default_rng(k).normal(0, 6, img.shape)
+        imgs.append(np.clip(img + noise, 0, 255).astype(np.uint8))
+    observations = [obs(img, 0.9 + 0.03 * (2 - k)) for k, img in enumerate(imgs)]
+    assert all(len(o.outline.circles) == 0 and len(o.outline.inner) == 1 for o in observations)
+    (merged,), _, _ = merge_same_face(observations, imgs)
+    assert len(merged.outline.circles) == 1
+    assert len(merged.outline.inner) == 0

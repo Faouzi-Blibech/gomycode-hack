@@ -58,7 +58,7 @@ def foreground(image_bgr: np.ndarray, mask_out=()) -> np.ndarray:
     return cv2.morphologyEx(th, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
 
 
-def extract(image_bgr: np.ndarray, mask_out=()) -> PixelOutline | MvAbstain:
+def extract(image_bgr: np.ndarray, mask_out=(), band: int = EDGE_BAND_PX) -> PixelOutline | MvAbstain:
     fg = foreground(image_bgr, mask_out)
     h, w = fg.shape
     contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
@@ -68,7 +68,7 @@ def extract(image_bgr: np.ndarray, mask_out=()) -> PixelOutline | MvAbstain:
                          remedy="Retake on a plain background with the whole part in frame.")
     filled = np.zeros_like(fg)
     cv2.drawContours(filled, [outer], -1, 255, -1)
-    band = cv2.subtract(filled, cv2.erode(filled, np.ones((EDGE_BAND_PX, EDGE_BAND_PX), np.uint8)))
+    edge_band = cv2.subtract(filled, cv2.erode(filled, np.ones((band, band), np.uint8)))
     gaps = cv2.morphologyEx(cv2.bitwise_and(filled, cv2.bitwise_not(fg)), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     n, labels, stats, _ = cv2.connectedComponentsWithStats(gaps, connectivity=4)
     inner, circles = [], []
@@ -77,7 +77,7 @@ def extract(image_bgr: np.ndarray, mask_out=()) -> PixelOutline | MvAbstain:
         if area < MIN_OPENING_FRACTION * h * w:
             continue
         comp = np.where(labels == i, 255, 0).astype(np.uint8)
-        if cv2.countNonZero(cv2.bitwise_and(comp, band)):
+        if cv2.countNonZero(cv2.bitwise_and(comp, edge_band)):
             continue  # the inside of a drawn outline, not an opening
         c = max(cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[0], key=cv2.contourArea)
         if circularity(c) >= CIRCULARITY:
