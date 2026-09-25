@@ -16,8 +16,9 @@ from s2c.studio import session as session_mod
 from s2c.studio.app import build_app
 from s2c.studio.handlers import Studio, parse_size
 from s2c.studio.session import SessionStore
+from tests.mv_helpers import rect
 from tests.test_mv_pipeline import sketch
-from tests.test_mv_qwen_faces import fake_gen
+from tests.test_mv_qwen_faces import fake_gen, silhouette
 
 
 @pytest.fixture
@@ -354,3 +355,59 @@ def test_on_geometry_wiring(studio):
     assert refreshed_rows[-1][1] == 4.8  # medium (5.0) -> coarse snaps the drawn hole's diameter down
     session = studio.store.get(sid)
     assert session.shown[session.row_paths[-1]] == refreshed_rows[-1][1]
+
+
+def test_rejected_face_stays_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr("s2c.multiview.slice.find_slicer", lambda: None)
+    # front is observed; top and right are missing and Qwen-Image can draw both, so a real "qwen-image" face
+    # exists to reject (an all-zero fake image, as other tests use, never passes the outline gate).
+    gen = fake_gen(silhouette(rect(60, 10), 60, 10), silhouette(rect(10, 40), 10, 40))
+    studio = Studio(MvPipeline(image_gen=gen), root=tmp_path / "files")
+    sid = with_images(studio, tmp_path, faces=(("front", 600, 400),))
+    review = studio.analyze(sid, "none", AiSettings())
+    on_build = app_fn(build_app(studio=studio), "on_build")
+    geometry_args = (True, "medium", "none", 1.0, "all_vertical")
+    # review_outputs = [review_msg, *sizes, values, faces, rejected, warnings, reads, seed, build]; on_build
+    # prepends `step`, so faces is out[6] and the rejected CheckboxGroup update is out[7].
+    session = studio.store.get(sid)
+
+    out = on_build(sid, "60", "40", "10", review.rows, ["right"], *geometry_args)
+    assert session.rejected == ("right",)
+    assert any(f[1] == "right: assumed rectangle" for f in out[6])
+    rejected_update = out[7]
+    assert rejected_update["value"] == ["right"] and "right" in rejected_update["choices"]
+
+    # build again with exactly the checkbox value the app just returned, as the UI would
+    out2 = on_build(sid, "60", "40", "10", review.rows, rejected_update["value"], *geometry_args)
+    assert session.rejected == ("right",)  # still rejected, not silently re-accepted
+    assert any(f[1] == "right: assumed rectangle" for f in out2[6])
+    assert out2[7]["value"] == ["right"]
+
+
+def test_cleared_feature_cell_reverts(studio, tmp_path):
+    sid = with_images(studio, tmp_path, faces=(("front", 600, 400),))
+    top = tmp_path / "top-hole.png"
+    top.write_bytes(sketch(600, 100, circles=((200, 50, 20),)))
+    studio.add_images(sid, [str(top)])
+    item = studio.store.get(sid).items[-1]
+    studio.set_face(sid, item.id, "top")
+    studio.set_kind(sid, item.id, "sketch")
+    review = studio.analyze(sid, "none", AiSettings())
+    review, model = studio.build(sid, {"x": "60", "y": "40", "z": "10"}, review.rows, [], GeometrySettings())
+    assert model.ok and review.rows
+    idx = next(i for i, r in enumerate(review.rows) if "diameter" in r[0].lower())
+    original = review.rows[idx][1]
+    session = studio.store.get(sid)
+    path = session.row_paths[idx]
+
+    edited = [list(r) for r in review.rows]
+    edited[idx][1] = original + 1
+    review, model = studio.build(sid, {"x": "60", "y": "40", "z": "10"}, edited, [], GeometrySettings())
+    assert model.ok and session.edits[path] == original + 1
+
+    cleared = [list(r) for r in review.rows]
+    cleared[idx][1] = ""
+    review, model = studio.build(sid, {"x": "60", "y": "40", "z": "10"}, cleared, [], GeometrySettings())
+    assert model.ok
+    assert path not in session.edits
+    assert review.rows[idx][1] == original

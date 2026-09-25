@@ -54,6 +54,8 @@ class Review:
     reads: list[list] = field(default_factory=list)
     seed: int = 7
     unchecked: int = 0
+    rejected: list[str] = field(default_factory=list)         # currently-rejected faces, for the checkbox value
+    reject_choices: list[str] = field(default_factory=list)   # ai_faces plus rejected, canonical order
 
 
 @dataclass
@@ -264,6 +266,8 @@ class Studio:
                     ai_faces.append(face)
         else:
             faces = [(255 - m, f"{face}: your image") for face, m in observed.masks.items()]
+        rejected = [f for f in S.CANONICAL_FACES if f in session.rejected]
+        reject_choices = [f for f in S.CANONICAL_FACES if f in ai_faces or f in rejected]
         warnings = spec.warnings if spec is not None else observed.warnings
         info = [w for w in warnings if ": merged " in w]
         check = [w for w in warnings if w not in info]
@@ -277,7 +281,7 @@ class Studio:
                         "ok"))
         return Review(spec is not None, "review", message, sizes, rows, faces, ai_faces,
                       bullet_html("Check", check, "check") + bullet_html("Info", info, "info"), reads,
-                      session.ai.seed, unchecked)
+                      session.ai.seed, unchecked, rejected, reject_choices)
 
     # ---- build ----------------------------------------------------------------------------------------------
     def build(self, sid: str, sizes: dict[str, str], rows, rejected,
@@ -299,10 +303,14 @@ class Studio:
             elif session.shown.get(path) is None or abs(value - float(session.shown[path])) > 1e-9:
                 edits[path] = value
         for path, row in zip(session.row_paths, rows or []):
-            value = parse_size(row[1]) if len(row) > 1 else None
+            text = str(row[1]).strip() if len(row) > 1 else ""
+            if not text:
+                edits.pop(path, None)
+                continue
+            value = parse_size(text)
             shown = session.shown.get(path)
             if value is None:
-                if str(row[1]).strip() not in ("", "None", str(shown)):
+                if text not in ("None", str(shown)):
                     errors.append(f"{row[0]}: '{row[1]}' is not a positive number")
             elif shown is None or abs(value - float(shown)) > 1e-9:
                 edits[path] = value

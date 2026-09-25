@@ -174,7 +174,7 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
         def show_review(r) -> list:
             label = f"Build anyway ({r.unchecked} unchecked) →" if r.unchecked else "Build part →"
             return [r.message_html, *(_size_update(r.sizes.get(a, {})) for a in AXES), r.rows, r.faces,
-                    gr.update(choices=r.ai_faces, value=[]), r.warnings_html, r.reads, r.seed,
+                    gr.update(choices=r.reject_choices, value=r.rejected), r.warnings_html, r.reads, r.seed,
                     gr.update(value=label)]
 
         def ai_settings(*v) -> AiSettings:
