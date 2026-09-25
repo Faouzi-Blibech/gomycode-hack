@@ -184,7 +184,11 @@ def test_voted_circular_opening_is_kept(monkeypatch):
         return replace(real, circles=[PixelCircle(*covered, 30.0), PixelCircle(*new, 20.0)])
 
     monkeypatch.setattr(mv, "extract", fake_extract)
-    (merged,), _, _ = merge_same_face(observations, imgs)
+    (merged,), _, warnings = merge_same_face(observations, imgs)
     got = [(round(c.cx), round(c.cy)) for c in merged.outline.circles]
     assert got.count((round(new[0]), round(new[1]))) == 1
     assert len(merged.outline.circles) == 3  # 2 real per-photo clusters, plus the new one; `covered` not duplicated
+    round_warnings = [w for w in warnings if "became round after merging" in w]
+    assert len(round_warnings) == 1
+    assert not round_warnings[0].startswith("top: merged")
+    assert ": merged " not in round_warnings[0]

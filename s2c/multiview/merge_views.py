@@ -242,6 +242,8 @@ def _merge_group(face: str, group: list[Observation], images: list[np.ndarray], 
     voted_only = [c for c in outline.circles
                   if not any(np.hypot(c.cx - e.cx, c.cy - e.cy) < CIRCLE_TOL * diag for e in circles)]
     outline = replace(outline, circles=circles + voted_only)
+    circle_warnings += [f"{face}: an opening became round after merging {len(kept)} photos, check it"
+                        for _ in voted_only]
     values, more = _merge_values(face, kept, kept_t, circle_index)
     blind, estimates, ratio, from_image = _merge_labels(kept, circle_index, len(outline.circles))
     scale, scale_warnings = _merged_scale(face, kept, kept_t)
