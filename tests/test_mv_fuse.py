@@ -182,3 +182,14 @@ def test_snapping_does_not_move_a_small_part_by_more_than_two_percent():
     spec = _assembled_outline(mm_points, 6, 6)
     assert spec.views.front.outer[2][1] == pytest.approx(2.3)
     assert spec.views.front.outer[3][1] == pytest.approx(2.3)
+
+
+def test_snapping_never_makes_two_points_coincide():
+    """A qualifying vertical wall at a = 0.3 would snap to 0.0 (spec 4.5's envelope-edge rule), but a
+    separate vertex already sits at a = 0.0 on short/sloped edges; that vertex is not itself a snap
+    level, so the collision must be caught by scanning every vertex, not just the other levels."""
+    mm_points = [(0.3, 1.0), (0.3, 5.0), (5.0, 5.0), (5.0, 0.0), (0.5, 0.4), (0.0, 0.6)]
+    spec = _assembled_outline(mm_points, 20, 10)
+    assert len(set(spec.views.front.outer)) == len(set(mm_points))
+    assert spec.views.front.outer[0][0] == pytest.approx(0.3)
+    assert spec.views.front.outer[1][0] == pytest.approx(0.3)

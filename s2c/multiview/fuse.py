@@ -258,8 +258,9 @@ EDGE_MIN_MM = 1.0    # shorter edges are curve segments, not sketched straight l
 MOVE_LIMIT = 0.02    # a level does not move more than this fraction of its axis
 
 
-def _level_targets(levels: set, axis_len: float) -> dict:
-    """snap_coord per level, kept only if it neither collides with another level nor moves too far."""
+def _level_targets(levels: set, axis_len: float, all_coords) -> dict:
+    """snap_coord per level, kept only if it moves, the move is small, and it lands neither on another
+    level's snapped or original value nor on any other vertex's coordinate on this axis (spec 4.5)."""
     candidates = {v: snap_coord(v, axis_len) for v in levels}
     targets = {}
     for v, new in candidates.items():
@@ -267,6 +268,8 @@ def _level_targets(levels: set, axis_len: float) -> dict:
             targets[v] = v
             continue
         collides = any(w != v and (abs(new - w) <= 1e-6 or abs(new - candidates[w]) <= 1e-6) for w in levels)
+        if not collides:
+            collides = any(abs(c - v) > 1e-6 and abs(new - c) <= 1e-6 for c in all_coords)
         targets[v] = v if collides else new
     return targets
 
@@ -288,8 +291,10 @@ def _snap_outline(points: list, a_len: float, b_len: float) -> list:
             on_horiz[i] = on_horiz[(i + 1) % n] = True
         elif abs(da) <= EDGE_SLOPE * abs(db):
             on_vert[i] = on_vert[(i + 1) % n] = True
-    a_targets = _level_targets({round(points[i][0], 6) for i in range(n) if on_vert[i]}, a_len)
-    b_targets = _level_targets({round(points[i][1], 6) for i in range(n) if on_horiz[i]}, b_len)
+    all_a = [p[0] for p in points]
+    all_b = [p[1] for p in points]
+    a_targets = _level_targets({round(points[i][0], 6) for i in range(n) if on_vert[i]}, a_len, all_a)
+    b_targets = _level_targets({round(points[i][1], 6) for i in range(n) if on_horiz[i]}, b_len, all_b)
     out = []
     for i, (a, b) in enumerate(points):
         na = a_targets.get(round(a, 6), a) if on_vert[i] else a
@@ -317,8 +322,9 @@ def snap(data: dict, clearance: str = "medium") -> None:
             continue
         a_axis, b_axis, _ = S.FACE_AXES[face]
         outline = data["views"][face]
+        orig = [tuple(p) for p in outline["outer"]]
         new = _snap_outline(outline["outer"], lengths[a_axis], lengths[b_axis])
-        if len(set(new)) >= 3 and new != [tuple(p) for p in outline["outer"]]:
+        if len(set(new)) >= len(set(orig)) and new != orig:
             outline["outer"] = new
             snapped.append(path)
 
