@@ -29,6 +29,8 @@ from s2c.multiview.raster import Mesh, face_mask, iou, normalize_mask, polygon_m
 from s2c.multiview.reference import find_reference
 from s2c.multiview.settings import AiSettings, GeometrySettings
 from s2c.multiview.slice import slice_solid
+from s2c.multiview.turned import WARNING as TURNED_WARNING
+from s2c.multiview.turned import turned_axis
 
 log = logging.getLogger(__name__)
 IOU_GREEN = 0.85
@@ -210,12 +212,17 @@ class MvPipeline:
                      for f, ol in full.items()}
         feats, feat_prov = features_from(observed.observations, env)
         try:
-            return assemble(env, env_prov, with_prov, feats, feat_prov, warnings, user_values, accepted,
+            spec = assemble(env, env_prov, with_prov, feats, feat_prov, warnings, user_values, accepted,
                             snap_values=geometry.snap, clearance=geometry.clearance)
         except ValidationError as e:
             log.warning("spec rejected: %s", e)
             return S.MvAbstain(stage="dimensions", reason="invalid_value",
                                remedy="A value is out of range. Check the numbers you entered.")
+        axis = turned_axis(spec)
+        note = axis and TURNED_WARNING.format(axis=axis)
+        if note and note not in spec.warnings:
+            spec = spec.model_copy(update={"warnings": [*spec.warnings, note]})
+        return spec
 
     def build(self, spec: S.MultiViewSpec, out_dir: Path, masks: dict | None = None) -> BuildResult | S.MvAbstain:
         try:

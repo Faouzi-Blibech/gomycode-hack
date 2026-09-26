@@ -125,6 +125,21 @@ def _apply_finish(solid: cq.Workplane, finish) -> cq.Workplane:
     return out
 
 
+def _turn(solid: cq.Workplane, spec: MultiViewSpec) -> cq.Workplane:
+    """A round part cut down to its solid of revolution, so a hub comes out round instead of square."""
+    from s2c.multiview.turned import revolve, turned_axis  # deferred: turned reuses _clean from this module
+
+    axis = turned_axis(spec)
+    if axis is None:
+        return solid
+    try:
+        solid = solid.intersect(revolve(spec, axis))
+    except Exception as e:
+        raise BuildError(*INVALID) from e
+    _check(solid)
+    return solid
+
+
 def build(spec: MultiViewSpec) -> cq.Workplane:
     env = spec.envelope
     try:
@@ -138,6 +153,7 @@ def build(spec: MultiViewSpec) -> cq.Workplane:
     except Exception as e:
         raise BuildError(*INVALID) from e
     _check(solid)
+    solid = _turn(solid, spec)
     for f in spec.features:
         solid = _cut_feature(solid, f, env)
     for finish in spec.finishes:
