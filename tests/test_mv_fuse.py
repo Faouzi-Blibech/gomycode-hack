@@ -8,6 +8,7 @@ from s2c.multiview.fuse import (
     canonical_outlines,
     features_from,
     fuse_envelope,
+    outline_kinds,
     snap_coord,
     snap_diameter,
 )
@@ -15,6 +16,7 @@ from s2c.multiview.label import LabelHole, MvLabel
 from s2c.multiview.ocr import Linked, Reading
 from s2c.multiview.outline import PixelCircle, PixelOutline
 from s2c.multiview.spec import Envelope, MvAbstain, Outline
+from tests.mv_helpers import rect
 
 
 def px_outline(x=400, y=300, w=601, h=401, circles=()):
@@ -226,3 +228,30 @@ def test_snapping_never_makes_an_outline_cross_itself():
     assert _crossings(mm_points) == []
     spec = _assembled_outline(mm_points, 30, 20)
     assert _crossings(spec.views.front.outer) == []
+
+
+def _sketched_assembled(mm_points, a_len, b_len, z_mm=20.0):
+    env = Envelope(x_mm=a_len, y_mm=b_len, z_mm=z_mm)
+    o = Observation(face="front", kind="sketch", outline=outline_from_mm(mm_points, a_len, b_len))
+    outlines, _ = canonical_outlines([o], env)
+    outlines["top"] = (Outline(outer=[(0, 0), (a_len, 0), (a_len, z_mm), (0, z_mm)], source="assumed",
+                               confidence=0.3), "default")
+    outlines["right"] = (Outline(outer=[(0, 0), (z_mm, 0), (z_mm, b_len), (0, b_len)], source="assumed",
+                                 confidence=0.3), "default")
+    env_prov = {"envelope.x_mm": "user_written", "envelope.y_mm": "user_written", "envelope.z_mm": "user_edited"}
+    return assemble(env, env_prov, outlines, [], {}, [], kinds=outline_kinds([o]))
+
+
+def test_a_sketched_l_with_wobbly_strokes_and_cut_corners_is_squared():
+    """Pen strokes give short tilted segments and 0.2 mm cut corners; a sketch is squared vertex by vertex."""
+    mm_points = [(0.2, 0.0), (49.8, 0.1), (50.0, 0.25), (49.9, 4.85), (49.7, 5.1), (5.15, 4.9), (4.9, 5.2),
+                 (5.1, 29.8), (4.85, 30.0), (0.15, 29.9), (0.0, 29.7), (0.1, 0.2)]
+    spec = _sketched_assembled(mm_points, 50, 30)
+    assert sorted(set(spec.views.front.outer)) == sorted({(0, 0), (50, 0), (50, 5), (5, 5), (5, 30), (0, 30)})
+
+
+def test_outline_kinds_follow_the_chosen_observation():
+    front = Observation(face="front", kind="sketch", outline=outline_from_mm(rect(10, 10), 10, 10), confidence=0.9)
+    back = Observation(face="back", kind="photo", outline=outline_from_mm(rect(10, 10), 10, 10), confidence=0.5)
+    top = Observation(face="bottom", kind="drawing", outline=outline_from_mm(rect(10, 10), 10, 10))
+    assert outline_kinds([back, front, top]) == {"front": "sketch", "top": "drawing"}

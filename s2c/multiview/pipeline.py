@@ -17,7 +17,15 @@ from s2c.multiview.build import BuildError, export
 from s2c.multiview.build import build as build_solid
 from s2c.multiview.complete import MeshProvider, complete
 from s2c.multiview.depth import DepthProvider, apply_depth, solaria_depth
-from s2c.multiview.fuse import Observation, assemble, attach_label, canonical_outlines, features_from, fuse_envelope
+from s2c.multiview.fuse import (
+    Observation,
+    assemble,
+    attach_label,
+    canonical_outlines,
+    features_from,
+    fuse_envelope,
+    outline_kinds,
+)
 from s2c.multiview.label import Chat, MvLabel, env_chat, hint_label, label_image
 from s2c.multiview.merge_views import merge_same_face
 from s2c.multiview.ocr import BatchReader, Reader, link, read_values
@@ -213,7 +221,8 @@ class MvPipeline:
         feats, feat_prov = features_from(observed.observations, env)
         try:
             spec = assemble(env, env_prov, with_prov, feats, feat_prov, warnings, user_values, accepted,
-                            snap_values=geometry.snap, clearance=geometry.clearance)
+                            snap_values=geometry.snap, clearance=geometry.clearance,
+                            kinds=outline_kinds(observed.observations))
         except ValidationError as e:
             log.warning("spec rejected: %s", e)
             return S.MvAbstain(stage="dimensions", reason="invalid_value",
@@ -266,7 +275,7 @@ def default_pipeline() -> MvPipeline:
         log.warning("Qwen-Image unavailable: set QWEN_IMAGE_SPACE, or QWEN_IMAGE_BACKEND=dashscope with its "
                     "settings; missing faces fall back to TripoSR or an assumed rectangle")
     if not space:
-        log.warning("Solaria unavailable: set SOLARIA_SPACE; hole depth stays with the vision model's labels")
+        log.warning("Solaria unavailable: set SOLARIA_SPACE; every hole stays through unless the user makes it blind")
     return MvPipeline(chat=env_chat(), reader=reader, mesh_provider=provider,
                       batch_reader=qwen_batch_reader(read_chat) if read_chat else None, image_gen=image_gen,
                       depth=solaria_depth(space, os.environ.get("HF_TOKEN")) if space else None)

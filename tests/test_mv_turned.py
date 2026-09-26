@@ -150,3 +150,14 @@ def test_fuse_does_not_warn_when_both_side_views_are_assumed():
     spec = pipe.fuse(observed, {"envelope.x_mm": 40, "envelope.y_mm": 10, "envelope.z_mm": 40})
     assert spec.views.front.source == "assumed" and spec.views.right.source == "assumed"
     assert not [w for w in spec.warnings if w.startswith("Built as a turned part")]
+
+
+@pytest.mark.parametrize("kind", ["fillet", "chamfer"])
+def test_a_turned_flange_with_a_hub_still_takes_a_finish(kind):
+    """If the finish fails on the turned solid, the part is finished on the hull instead of abstaining."""
+    top = [(10, 0), (30, 0), (30, 10), (40, 10), (40, 15), (0, 15), (0, 10), (10, 10)]
+    right = [(0, 10), (10, 10), (10, 0), (15, 0), (15, 40), (10, 40), (10, 30), (0, 30)]
+    spec = make_spec((40.0, 40.0, 15.0), front=outline(circle(20, 20, 20, 180)), top=outline(top),
+                     right=outline(right), finishes=[{"type": kind, "edges": "all_vertical", "radius_mm": 1.0}])
+    assert turned_axis(spec) == "z"
+    assert build(spec).solids().vals()

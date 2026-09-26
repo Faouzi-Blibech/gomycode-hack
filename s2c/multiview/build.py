@@ -172,9 +172,20 @@ def build(spec: MultiViewSpec) -> cq.Workplane:
     except Exception as e:
         raise BuildError(*INVALID) from e
     _check(solid)
-    solid = _turn(solid, spec)
+    turned = _turn(solid, spec)
+    if turned is solid:
+        return _finish_part(solid, spec)
+    try:
+        return _finish_part(turned, spec)
+    except BuildError as e:  # a revolve's faceted rim can refuse a fillet the hull takes
+        log.warning("finishing the turned part failed (%s), finishing the hull instead", e.reason)
+        return _finish_part(solid, spec)
+
+
+def _finish_part(solid: cq.Workplane, spec: MultiViewSpec) -> cq.Workplane:
+    """Holes, slots, then fillets and chamfers, on a solid that already passed _check."""
     for f in spec.features:
-        solid = _cut_feature(solid, f, env)
+        solid = _cut_feature(solid, f, spec.envelope)
     for finish in spec.finishes:
         solid = _apply_finish(solid, finish)
     _check(solid)

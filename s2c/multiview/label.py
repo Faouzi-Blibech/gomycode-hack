@@ -42,8 +42,17 @@ SYSTEM_PROMPT = """You label one image of a mechanical part for a CAD tool. Repl
 Rules:
 - face: the side of the part the image shows (front, back, left, right, top, bottom), or unknown.
 - input_kind: sketch (hand drawn), photo (real part) or drawing (clean printed drawing).
-- holes: every round hole, as u, v fractions of the part's bounding box (u to the right, v upward); blind is true if it does not go through.
+- holes: every round hole, as u, v fractions of the part's bounding box (u to the right, v upward).
 - Never estimate any size in real-world units -- not the overall width, height, depth, nor any hole depth. Never output code."""
+
+
+def prompt_schema() -> dict:
+    """The label schema the model is shown: no estimates and no blind flags, because neither may reach
+    geometry (rule 2, P0-3). The model still validates replies that carry them."""
+    schema = MvLabel.model_json_schema()
+    schema["properties"].pop("estimates", None)
+    schema.get("$defs", {}).get("LabelHole", {}).get("properties", {}).pop("blind", None)
+    return schema
 
 
 def _strip_fences(text: str) -> str:
@@ -58,7 +67,7 @@ def label_image(image_bytes: bytes, chat: Chat, face_hint: str | None = None,
                 kind_hint: str | None = None) -> MvLabel | MvAbstain:
     b64 = base64.b64encode(image_bytes).decode()
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT.format(schema=json.dumps(MvLabel.model_json_schema()))},
+        {"role": "system", "content": SYSTEM_PROMPT.format(schema=json.dumps(prompt_schema()))},
         {"role": "user", "content": [
             {"type": "text", "text": "Label this image."},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}]},

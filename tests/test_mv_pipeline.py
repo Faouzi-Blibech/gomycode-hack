@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import cv2
 import numpy as np
 import pytest
@@ -162,3 +164,20 @@ def test_default_pipeline_warns_when_unconfigured(monkeypatch, caplog):
         pipeline.default_pipeline()
     assert sum("Qwen-Image" in r.message for r in caplog.records) == 1
     assert sum("Solaria" in r.message for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize("kind", ["fillet", "chamfer"])
+def test_the_bundled_sketch_example_takes_a_one_mm_finish(kind):
+    """The demo's own sketches: squared outlines, so the default 1 mm finish builds."""
+    from s2c.multiview.build import build
+    from s2c.multiview.finish import apply_geometry
+    from s2c.multiview.settings import GeometrySettings
+
+    d = Path(__file__).parents[1] / "examples" / "mv" / "sketches"
+    pipe = MvPipeline()
+    observed = pipe.observe([ImageInput((d / "front.png").read_bytes(), "front", "sketch"),
+                             ImageInput((d / "top.png").read_bytes(), "top", "sketch")])
+    spec = pipe.fuse(observed, {"envelope.x_mm": 50, "envelope.y_mm": 30, "envelope.z_mm": 20})
+    assert len(set(spec.views.front.outer)) <= 8
+    finished, _ = apply_geometry(spec, GeometrySettings(finish=kind, finish_mm=1.0))
+    assert build(finished).solids().vals()

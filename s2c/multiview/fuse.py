@@ -335,8 +335,33 @@ def _crosses(points: list, moved: set) -> bool:
     return False
 
 
-def snap(data: dict, clearance: str = "medium") -> None:
-    """Snap scaled, inferred and estimated values of a spec dict in place (spec 4.5)."""
+def outline_kinds(observations: list[Observation]) -> dict[str, str]:
+    """The input kind (sketch, photo, drawing) behind each canonical outline: the observation
+    `canonical_outlines` picks, by the same rule."""
+    kinds = {}
+    for face in S.CANONICAL_FACES:
+        group = [o for o in observations if S.CANONICAL_OF[o.face] == face]
+        if group:
+            kinds[face] = max(group, key=lambda o: (o.confidence, o.face in S.CANONICAL_FACES)).kind
+    return kinds
+
+
+def _snap_sketch(points: list, a_len: float, b_len: float) -> list:
+    """A hand sketch: every vertex to the envelope edges, standard walls and the 0.5 mm grid, which squares
+    wobbly strokes and closes cut corners. Points that land on each other merge."""
+    out: list = []
+    for a, b in points:
+        p = (snap_coord(a, a_len), snap_coord(b, b_len))
+        if not out or p != out[-1]:
+            out.append(p)
+    if len(out) > 1 and out[0] == out[-1]:
+        out.pop()
+    return out
+
+
+def snap(data: dict, clearance: str = "medium", kinds: dict | None = None) -> None:
+    """Snap scaled, inferred and estimated values of a spec dict in place (spec 4.5). Sketched outlines are
+    squared vertex by vertex; drawn and photographed ones keep their curves and thin features (level snap)."""
     prov, snapped = data["provenance"], data.setdefault("snapped", [])
     for k, f in enumerate(data["features"]):
         for name in ("a_mm", "b_mm", "diameter_mm", "depth_mm", "width_mm", "length_mm"):
@@ -355,16 +380,21 @@ def snap(data: dict, clearance: str = "medium") -> None:
         a_axis, b_axis, _ = S.FACE_AXES[face]
         outline = data["views"][face]
         orig = [tuple(p) for p in outline["outer"]]
-        new = _snap_outline(outline["outer"], lengths[a_axis], lengths[b_axis])
-        moved = {i for i, (p, q) in enumerate(zip(orig, new)) if p != q}
-        if moved and len(set(new)) >= len(set(orig)) and not _crosses(new, moved):
+        if (kinds or {}).get(face) == "sketch":
+            new = _snap_sketch(orig, lengths[a_axis], lengths[b_axis])
+            ok = len(set(new)) >= 3 and new != orig and not _crosses(new, set(range(len(new))))
+        else:
+            new = _snap_outline(outline["outer"], lengths[a_axis], lengths[b_axis])
+            moved = {i for i, (p, q) in enumerate(zip(orig, new)) if p != q}
+            ok = bool(moved) and len(set(new)) >= len(set(orig)) and not _crosses(new, moved)
+        if ok:
             outline["outer"] = new
             snapped.append(path)
 
 
 def assemble(env: S.Envelope, env_prov: dict, outlines: dict, feats: list[dict], feat_prov: dict,
              warnings: list[str], user_values: dict | None = None, accepted=(), snap_values: bool = True,
-             clearance: str = "medium") -> S.MultiViewSpec:
+             clearance: str = "medium", kinds: dict | None = None) -> S.MultiViewSpec:
     """outlines: canonical face -> (Outline, provenance). Applies the user's edits, then snapping."""
     data = {
         "envelope": env.model_dump(),
@@ -384,5 +414,5 @@ def assemble(env: S.Envelope, env_prov: dict, outlines: dict, feats: list[dict],
             data["features"][int(m.group(1))][m.group(2)] = float(value)
             data["provenance"][path] = "user_edited"
     if snap_values:
-        snap(data, clearance)
+        snap(data, clearance, kinds)
     return S.MultiViewSpec.model_validate(data)
