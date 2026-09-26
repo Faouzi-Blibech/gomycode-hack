@@ -6,7 +6,6 @@ import base64
 import json
 import logging
 import os
-import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -18,7 +17,6 @@ from s2c.multiview.spec import MvAbstain
 
 log = logging.getLogger(__name__)
 Chat = Callable[[list[dict]], str]
-_ESTIMATE_KEY = re.compile(r"^holes\[\d+\]\.depth_mm$")
 CHAT_TIMEOUT_S = 60
 
 
@@ -35,7 +33,7 @@ class MvLabel(BaseModel):
     input_kind: Literal["sketch", "photo", "drawing"]
     holes: list[LabelHole] = []
     description: str = ""
-    estimates: dict[str, float] = {}
+    estimates: dict[str, float] = {}  # ignored on read; kept only so older model replies still validate
     confidence: float = Field(ge=0, le=1)
 
 
@@ -45,8 +43,7 @@ Rules:
 - face: the side of the part the image shows (front, back, left, right, top, bottom), or unknown.
 - input_kind: sketch (hand drawn), photo (real part) or drawing (clean printed drawing).
 - holes: every round hole, as u, v fractions of the part's bounding box (u to the right, v upward); blind is true if it does not go through.
-- estimates: optional hole depth guesses in millimetres, only with keys like "holes[0].depth_mm".
-- Never estimate the overall width, height or depth. Never output code."""
+- Never estimate any size in real-world units -- not the overall width, height, depth, nor any hole depth. Never output code."""
 
 
 def _strip_fences(text: str) -> str:
@@ -79,12 +76,11 @@ def label_image(image_bytes: bytes, chat: Chat, face_hint: str | None = None,
     if label is None:
         return MvAbstain(stage="label", reason="label_invalid",
                          remedy="The model could not describe this photo. Try a cleaner photo.")
-    dropped = [k for k in label.estimates if not _ESTIMATE_KEY.match(k)]
-    if dropped:
-        log.warning("discarded model estimates %s: only hole depths may be estimated", dropped)
+    if label.estimates:
+        log.warning("discarded model estimates %s: millimetre values are never model-estimated (rule 2)",
+                   sorted(label.estimates))
     label = label.model_copy(update={
-        "estimates": {k: v for k, v in label.estimates.items() if _ESTIMATE_KEY.match(k) and v > 0},
-        "face": face_hint or label.face, "input_kind": kind_hint or label.input_kind})
+        "estimates": {}, "face": face_hint or label.face, "input_kind": kind_hint or label.input_kind})
     if label.face == "unknown":
         return MvAbstain(stage="label", reason="face_unknown", remedy="Tell us which face this photo shows.")
     return label

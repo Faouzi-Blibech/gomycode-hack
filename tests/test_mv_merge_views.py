@@ -110,6 +110,18 @@ def test_a_solaria_result_wins_over_the_labels():
     assert merged.blind[upper] and merged.depth_ratio[upper] == 0.4 and upper in merged.depth_from_image
 
 
+def test_label_only_blind_votes_no_longer_mark_a_hole_blind():
+    """Rule 2: without a Solaria result, no vote of vision-model blind flags -- even unanimous -- may
+    make a merged hole blind."""
+    imgs = [photo(), photo(shift=(20, 0), seed=1), photo(shift=(-20, 0), seed=2)]
+    observations = [obs(imgs[0], 0.95), obs(imgs[1]), obs(imgs[2])]
+    for o in observations:
+        o.blind = {0: True, 1: True}
+    (merged,), _, _ = merge_same_face(observations, imgs)
+    assert merged.blind == {0: False, 1: False}
+    assert merged.depth_from_image == set()
+
+
 @pytest.mark.parametrize("angles", [(0, 180), (0, 0, 180, 180)], ids=["two photos", "four photos"])
 def test_a_half_turned_photo_is_turned_back_before_voting(angles):
     imgs = [photo(angle=a, seed=k) for k, a in enumerate(angles)]

@@ -4,12 +4,14 @@ import pytest
 from s2c.multiview.fuse import (
     Observation,
     assemble,
+    attach_label,
     canonical_outlines,
     features_from,
     fuse_envelope,
     snap_coord,
     snap_diameter,
 )
+from s2c.multiview.label import LabelHole, MvLabel
 from s2c.multiview.ocr import Linked, Reading
 from s2c.multiview.outline import PixelCircle, PixelOutline
 from s2c.multiview.spec import Envelope, MvAbstain, Outline
@@ -89,6 +91,27 @@ def test_blind_hole_depth_defaults_to_half_the_axis():
                     blind={0: True})
     feats, prov = features_from([o], env)
     assert feats[0]["depth_mm"] == 3 and prov["features[0].depth_mm"] == "default"
+
+
+def test_a_label_blind_flag_and_depth_estimate_never_reach_a_feature():
+    """Rule 2: only Solaria may mark a hole blind. A vision-model label saying blind, with a depth guess
+    attached, must leave the feature a through hole with no model millimetres anywhere."""
+    env = Envelope(x_mm=60, y_mm=40, z_mm=6)
+    o = Observation(face="front", kind="sketch", outline=px_outline(circles=[PixelCircle(500, 600, 60)]))
+    label = MvLabel(face="front", input_kind="sketch", holes=[LabelHole(u=100 / 601, v=101 / 401, blind=True)],
+                    estimates={"holes[0].depth_mm": 4.0}, confidence=0.9)
+    attach_label(o, label)
+    feats, prov = features_from([o], env)
+    assert feats[0]["depth_mm"] is None
+    assert "features[0].depth_mm" not in prov
+
+
+def test_a_solaria_depth_ratio_still_makes_a_hole_blind_and_estimated():
+    env = Envelope(x_mm=60, y_mm=40, z_mm=6)
+    o = Observation(face="front", kind="sketch", outline=px_outline(circles=[PixelCircle(500, 600, 60)]),
+                    blind={0: True}, depth_ratio={0: 0.5}, depth_from_image={0})
+    feats, prov = features_from([o], env)
+    assert feats[0]["depth_mm"] == pytest.approx(3.0) and prov["features[0].depth_mm"] == "estimated"
 
 
 def test_snapping_tables():

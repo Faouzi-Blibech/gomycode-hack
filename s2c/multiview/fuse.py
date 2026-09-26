@@ -30,26 +30,16 @@ class Observation:
     outline: PixelOutline
     values: list[Linked] = field(default_factory=list)
     mm_per_px: float | None = None              # reference-object scale, photos only
-    blind: dict[int, bool] = field(default_factory=dict)             # circle index -> blind, from the label
-    depth_estimates: dict[int, float] = field(default_factory=dict)  # circle index -> mm, from the label
+    blind: dict[int, bool] = field(default_factory=dict)             # circle index -> blind, Solaria only (rule 2)
+    depth_estimates: dict[int, float] = field(default_factory=dict)  # unused; kept for Solaria's cleanup pop
     depth_ratio: dict[int, float] = field(default_factory=dict)      # circle index -> blind depth / axis length, Solaria
     depth_from_image: set[int] = field(default_factory=set)          # circles whose blind flag came from Solaria
     confidence: float = 0.9
 
 
 def attach_label(obs: Observation, label) -> None:
-    """Match the label's holes (u, v in the bounding box) to the detected circles."""
-    x, y, w, h = obs.outline.bbox
-    for i, hole in enumerate(label.holes):
-        if not obs.outline.circles:
-            return
-        dist = [((c.cx - x) / w - hole.u) ** 2 + ((y + h - c.cy) / h - hole.v) ** 2 for c in obs.outline.circles]
-        k = int(np.argmin(dist))
-        if dist[k] <= 0.15 ** 2:
-            obs.blind[k] = hole.blind
-            estimate = label.estimates.get(f"holes[{i}].depth_mm")
-            if estimate is not None:
-                obs.depth_estimates[k] = estimate
+    """No-op: the vision model's hole flags and depth guesses never reach geometry (rule 2). Only Solaria
+    (depth.py apply_depth) may mark a hole blind or give it a depth."""
 
 
 def _value(r: Reading) -> float:
@@ -224,8 +214,6 @@ def features_from(observations: list[Observation], env: S.Envelope):
             if o.blind.get(i):
                 if i in o.depth_ratio:
                     depth, depth_prov = o.depth_ratio[i] * axis_len, "estimated"
-                elif i in o.depth_estimates:
-                    depth, depth_prov = min(o.depth_estimates[i], axis_len), "estimated"
                 else:
                     depth, depth_prov = axis_len / 2, "default"
             elif _duplicate_through(feats, o.face, a, b, env):

@@ -1,6 +1,6 @@
 import json
 
-from s2c.multiview.label import MvLabel, hint_label, label_image
+from s2c.multiview.label import SYSTEM_PROMPT, MvLabel, hint_label, label_image
 from s2c.multiview.spec import MvAbstain
 
 GOOD = json.dumps({"face": "front", "input_kind": "sketch", "holes": [{"u": 0.2, "v": 0.3, "blind": True}],
@@ -19,10 +19,15 @@ def chat_returning(*outputs):
     return chat
 
 
-def test_valid_label_keeps_hole_depths_and_drops_envelope_estimates():
+def test_valid_label_drops_every_model_estimate():
     label = label_image(b"jpeg", chat_returning(GOOD))
     assert label.face == "front" and label.holes[0].blind
-    assert label.estimates == {"holes[0].depth_mm": 3.0}
+    assert label.estimates == {}
+
+
+def test_system_prompt_never_asks_for_millimetre_guesses():
+    assert "estimates" not in SYSTEM_PROMPT.lower()
+    assert "millimet" not in SYSTEM_PROMPT.lower()
 
 
 def test_retry_once_with_the_validation_error():
