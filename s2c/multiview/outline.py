@@ -16,7 +16,8 @@ CIRCULARITY = 0.85
 EDGE_BAND_PX = 31  # the inside of a drawn outline touches this band next to the edge; a real opening does not
 MIN_THIN_FRACTION = 0.002  # a thin part's edge view can be this small and still be a real outline
 MIN_THIN_SPAN = 0.10       # ...provided it is long relative to the page...
-MIN_THIN_FILL = 0.5        # ...and filled, not a hollow or broken stroke
+MIN_THIN_FILL = 0.5        # ...and filled, not a hollow or broken stroke...
+MIN_THIN_MARGIN = 0.01     # ...and fully in frame, not a table edge or ruler crossing the border
 
 
 @dataclass
@@ -62,13 +63,17 @@ def foreground(image_bgr: np.ndarray, mask_out=()) -> np.ndarray:
 
 
 def is_thin_edge_view(contour, area: float, h: int, w: int) -> bool:
-    """Small but long and filled: the edge-on silhouette of a thin part, not a speck or broken stroke."""
+    """Small but long, filled and fully in frame: a thin part's edge-on silhouette, not a speck,
+    a broken stroke, or a table edge / ruler / shadow crossing the image border."""
     if area < MIN_THIN_FRACTION * h * w:
         return False
-    _, _, bw, bh = cv2.boundingRect(contour)
+    x, y, bw, bh = cv2.boundingRect(contour)
     if max(bw, bh) < MIN_THIN_SPAN * max(h, w):
         return False
-    return area >= MIN_THIN_FILL * bw * bh
+    if area < MIN_THIN_FILL * bw * bh:
+        return False
+    margin = MIN_THIN_MARGIN * max(h, w)
+    return x >= margin and y >= margin and (w - (x + bw)) >= margin and (h - (y + bh)) >= margin
 
 
 def extract(image_bgr: np.ndarray, mask_out=(), band: int = EDGE_BAND_PX) -> PixelOutline | MvAbstain:
@@ -76,8 +81,9 @@ def extract(image_bgr: np.ndarray, mask_out=(), band: int = EDGE_BAND_PX) -> Pix
     h, w = fg.shape
     contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     outer = max(contours, key=cv2.contourArea) if contours else None
-    area = cv2.contourArea(outer) if outer is not None else 0.0
-    if outer is None or (area < MIN_OUTLINE_FRACTION * h * w and not is_thin_edge_view(outer, area, h, w)):
+    outer_area = cv2.contourArea(outer) if outer is not None else 0.0
+    if outer is None or (outer_area < MIN_OUTLINE_FRACTION * h * w
+                          and not is_thin_edge_view(outer, outer_area, h, w)):
         return MvAbstain(stage="outline", reason="no_outline",
                          remedy="Retake on a plain background with the whole part in frame.")
     filled = np.zeros_like(fg)

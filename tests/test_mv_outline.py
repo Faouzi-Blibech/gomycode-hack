@@ -70,6 +70,20 @@ def test_a_small_speck_still_abstains():
     assert isinstance(res, MvAbstain) and res.reason == "no_outline"
 
 
+def test_a_strip_across_the_whole_photo_still_abstains():
+    img = page(1600, 1600)
+    cv2.rectangle(img, (0, 785), (1600, 785 + 30), (128, 128, 128), -1)
+    res = extract(img)
+    assert isinstance(res, MvAbstain) and res.reason == "no_outline"
+
+
+def test_a_strip_touching_one_border_still_abstains():
+    img = page(1600, 1600)
+    cv2.rectangle(img, (0, 785), (1000, 785 + 30), (128, 128, 128), -1)
+    res = extract(img)
+    assert isinstance(res, MvAbstain) and res.reason == "no_outline"
+
+
 def test_masked_region_is_ignored():
     img = page()
     cv2.rectangle(img, (100, 300), (500, 700), (60, 60, 60), -1)    # the part
