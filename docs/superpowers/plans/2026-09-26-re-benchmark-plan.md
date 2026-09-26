@@ -129,3 +129,90 @@ Written after Task 4, from its data. Each fix is TDD, plus a benchmark rerun on 
 ### Task 6: README accuracy line
 
 - [ ] After the fixes, rerun the full benchmark. In `README.md`'s accuracy table, add one row: "Reference parts (≈400, clean renders, true size given): built X %, median volume error Y %, median 3D IoU Z", with the date and the command. State that phone photos are still unmeasured.
+
+---
+
+## Addendum (2026-09-26, from the baseline): Tasks 7 and 8
+
+Baseline findings (clean renders, true size given, snapping on, no providers; all 400 parts, `tmp/re_bench/baseline`, HEAD b5b7555):
+- Overall: 356 of 400 built (26 abstained, 18 skipped), median |volume error| 15.6 %, median 3D IoU 0.873, 20.5 % of built parts within 5 % volume.
+- Almost every error is over-volume (314 of 356 built parts more than 2 % over, 1 under). The rebuilt silhouettes match the true ones (view IoU ≈ 1.0) on most bad parts, so the error is material that no view shows.
+- **Finding A, outline snapping.** `fuse.snap` moves every vertex of a scaled outline: points within 0.5 mm of an edge go to the edge, thin walls go to standard thicknesses, and the rest go to the 0.5 mm grid.
+  - This squares off curved outlines. On `pulley_001` the round top view gets flats, 0.46 mm beyond the circle.
+  - It also collapses thin features. On `bolt_nut_031` the 0.3 mm flange snaps to 0, the flange vanishes, and the hex is stretched to the full width: view IoU 0.35–0.67.
+  - Turning outline snapping off on 12 probe parts raised the voxel IoU on 7 of them (for example `gear_002` 0.959 → 0.998, `gear_001` 0.858 → 0.901) and lowered none by more than 0.003.
+- **Finding B, turned parts.** For a part that is round along one axis, the hull of three extrusions has square cross-sections wherever the diameter steps down (hubs, collars, chamfered rims).
+  - The error source is the knob, pulley, gear, bolt_nut, washer_spacer, shaft_collar and shaft_coupler categories, about half the dataset.
+  - A spike that intersects the hull with the solid of revolution of the side profile moved the volume ratio as follows: `knob_001` 1.215 → 1.168, `shaft_coupler_001` 1.10 → 1.076, `washer_spacer_001` 1.022 → 0.992, `shaft_collar_001` 1.087 → 1.067.
+  - `pulley_001` and `gear_001` were not detected until Finding A is fixed, because their round views had been squared off.
+- **Inherent limits (not fixed, documented).**
+  - Open boxes and trays (`bearing_holder`), three-plate corner brackets (`bracket_012/013/014/041`) and blind pockets. Every silhouette is right, yet the hull fills them in.
+  - Nothing in the three outlines can tell these parts apart from solid ones, so an honest per-part warning is not possible from silhouettes alone.
+  - The README states the limit and reports the error per category.
+
+Task order: 7 and 8 in parallel (disjoint files), then a full benchmark rerun (before/after in the ledger and the commit message), then Task 6.
+
+### Task 7: Outline snapping keeps curves and thin features
+
+**Files:**
+- Modify: `s2c/multiview/fuse.py` (the outline part of `snap`; `snap_coord` and the feature snapping stay as they are)
+- Test: `tests/test_mv_fuse.py`
+
+**Rule.** Snapping an outline is for cleaning hand-drawn straight lines, so it only moves straight, axis-parallel lines, and only when the move is small for the part:
+- An edge counts as horizontal when `|Δb| <= 0.035 * |Δa|` (2°) and it is at least 1 mm long; vertical likewise with a and b swapped. Only the b of a vertex on a horizontal edge, or the a of a vertex on a vertical edge, may be snapped. Curves (polylines with short or sloped edges) are left alone.
+- Work per level: the distinct b values of horizontal edges (and the a values of vertical edges), rounded to 1e-6. Each level snaps with `snap_coord(v, length)`.
+- A level is not snapped when:
+  - the snapped value equals another level's snapped or original value (this is what collapses the 0.3 mm flange onto 0);
+  - or the move exceeds 2 % of that axis's length (a 0.25 mm grid move on a 6 mm part is 4 %).
+- Every vertex on a snapped level takes the new value. Other vertices keep theirs. The path is recorded in `snapped` only when something moved.
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_mv_fuse.py`, calling `assemble` with provenance `"scaled"` for the views (reuse the existing `test_assemble_snaps_only_untrusted_values_and_applies_edits` setup):
+  - `test_snapping_leaves_a_round_outline_round`: the front view is a 64-point circle of radius 6.5 centred in a 13 × 13 face (envelope 13 × 13 × 5). After `assemble`, every outer point is within 0.01 mm of where it was.
+  - `test_snapping_never_collapses_a_thin_flange`: the front outline is a hex-on-flange profile in a 17.5 × 6 face: `[(0,0), (17.5,0), (17.5,0.3), (14.5,0.3), (14.5,6), (3,6), (3,0.3), (0,0.3)]`. After `assemble`, the points at b = 0.3 are still at 0.3.
+  - `test_snapping_still_squares_a_sketched_l_bracket`: an L outline in a 50 × 30 face with the inner corner at a = 4.8 and b = 4.8 (edges axis-parallel, all longer than 1 mm) snaps to 5.0 (thin-wall table), and `"views.front.outer"` is in `snapped`.
+  - `test_snapping_does_not_move_a_small_part_by_more_than_two_percent`: in a 6 × 6 face, a horizontal level at b = 2.3 stays at 2.3. Snapping would move it by 0.3 mm, which is 5 %.
+- [ ] **Step 2: Run** `uv run pytest tests/test_mv_fuse.py -v`. Expected: the round, flange and small-part tests FAIL; the L-bracket test passes (existing behaviour).
+- [ ] **Step 3: Implement** a helper `_snap_outline(points, a_len, b_len) -> list[Point]` in `fuse.py` and use it in `snap` for the three canonical faces.
+- [ ] **Step 4: Run** `uv run pytest tests/test_mv_fuse.py tests/test_studio_pipeline.py tests/test_studio_ui.py -q` and ruff on the touched files. Expected: PASS.
+
+### Task 8: Turned parts are built as solids of revolution
+
+**Files:**
+- Create: `s2c/multiview/turned.py`, `tests/test_mv_turned.py`
+- Modify: `s2c/multiview/build.py` (intersect with the revolve before features and finishes), `s2c/multiview/pipeline.py` (`fuse` adds one warning when the part reads as turned)
+
+**Interfaces (produced):**
+- `turned_axis(spec: MultiViewSpec) -> str | None`: `"x"`, `"y"` or `"z"` when the part reads as turned about that axis, else `None`. Deterministic, from the spec alone. Candidate axes in the order y, z, x. The axis view and the side views are:
+  - y: axis view top; side views front (radial x) and right (radial z);
+  - z: axis view front; side views top (radial x) and right (radial y);
+  - x: axis view right; side views front (radial y) and top (radial z).
+- The part reads as turned about axis k when all three hold:
+  1. The two envelope lengths across k are equal within 2 %.
+  2. Every outer point of the axis view (in global coordinates via `to_global`) lies within `1.03 * R + 0.2` mm of the centre, where R is half the larger of the two lengths.
+  3. The four half-profiles agree:
+     - A half-profile is the extent from the centre line, on each side of each side view, at 256 heights spread over the open interval along k.
+     - The extent at a height is the max (right half) or min (left half) radial coordinate of the outline's edge crossings, measured from the centre line.
+     - Every pair's mean absolute difference, divided by R, is at most 0.03.
+- `WARNING = "Built as a turned part around the {axis} axis: its view along that axis is round and both side views match"`.
+- `revolve(spec: MultiViewSpec, axis: str) -> cq.Workplane`: the solid of revolution about the centre line of the envelope along `axis`.
+  - Its profile is `r(h)` = the maximum of the four half-extents at height h.
+  - It is evaluated at each outline vertex height h ± 1e-4 mm, so steps stay sharp, and closed along the axis from h = 0 to h = L.
+  - The maximum keeps the true part inside the revolve.
+- `build.build`: after the hull passes `_check`, if `turned_axis(spec)` is not None, `solid = solid.intersect(revolve(spec, axis))`, then `_check` again. Features and finishes follow as before.
+- `MvPipeline.fuse`: when `turned_axis(spec)` is not None, it appends `WARNING.format(axis=axis)` to the spec's warnings.
+
+- [ ] **Step 1: Write the failing tests** (`tests/test_mv_turned.py`, using `tests/mv_helpers.make_spec`, `circle`, `outline`, `rect`):
+  - `test_a_stepped_round_part_is_built_round`: envelope 20 × 15 × 20.
+    - The top view is `circle(10, 10, 10, 180)`.
+    - The front and right views are the same stepped profile: `[(0,0), (20,0), (20,5), (15,5), (15,15), (5,15), (5,5), (0,5)]`, a flange of radius 10 and height 5 under a hub of radius 5 and height 10.
+    - `turned_axis == "y"`, and the built volume is `π(10²·5 + 5²·10) ≈ 2356.2` within 1.5 %. Without the fix it is about 2570.
+  - `test_a_square_plate_is_not_turned`: the envelope 20 × 5 × 20 with rectangle views gives `turned_axis is None`, and the volume is 2000.
+  - `test_different_side_views_are_not_turned`: the same round top view, but the right view is the rectangle `rect(20, 15)`, gives `None`.
+  - `test_a_round_disk_with_a_through_hole_keeps_its_hole`:
+    - The front view is a circle, with envelope 30 × 30 × 6.
+    - It has a centred Ø8 through hole on the front.
+    - Expected: `turned_axis == "z"`, and the volume is `π(15² − 4²)·6` within 1.5 %.
+  - `test_fuse_warns_when_the_part_is_turned`: run `MvPipeline().fuse` on an `Observed` for a round part, built the way `tests/test_studio_pipeline.py` builds its observations (or monkeypatch `turned_axis` to return `"y"` on any spec). Assert that the warning `WARNING.format(axis="y")` is in `spec.warnings`.
+- [ ] **Step 2: Run** `uv run pytest tests/test_mv_turned.py -v`. Expected: FAIL (module missing).
+- [ ] **Step 3: Implement** `turned.py`, then the two calls in `build.py` and `pipeline.py`.
+- [ ] **Step 4: Run** `uv run pytest tests/test_mv_turned.py tests/test_mv_build.py tests/test_mv_pipeline.py tests/test_studio_pipeline.py -q` and ruff on the touched files. Expected: PASS, with no change to any existing build test's volume.
