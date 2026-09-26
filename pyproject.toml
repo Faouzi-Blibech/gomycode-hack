@@ -51,6 +51,7 @@ markers = [
   "slicer: needs PrusaSlicer installed",
   "network: calls a hosted model; runs only with NETWORK_TESTS=1",
   "blender: needs Blender or bpy configured (BLENDER_PATH or BLENDER_PYTHON)",
+  "dataset: needs the reverse-engineering dataset (RE_DATASET)",
 ]
 
 [tool.ruff]
