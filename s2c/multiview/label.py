@@ -1,5 +1,5 @@
-"""Vision model labels each image: which face, which holes are blind, optional hole-depth guesses. Spec 6.1.
-The model returns JSON only. It never sets the envelope and never returns code."""
+"""Vision model labels each image: which face it shows and the rough hole positions. Spec 6.1.
+The model returns JSON only. It never sets the envelope, never returns code, and no millimetre it gives reaches geometry."""
 from __future__ import annotations
 
 import base64
