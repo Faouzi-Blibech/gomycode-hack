@@ -217,6 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# SDD scratch workspace (git-ignored)
+.superpowers/
+
 logs/
 .env
 tmp/

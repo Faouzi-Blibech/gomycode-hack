@@ -121,10 +121,10 @@ Accuracy numbers, updated as tests land:
 
 | Metric | Value |
 | --- | --- |
-| Golden sketches passing | pending |
+| Golden sketches passing | pending, golden set not yet built |
 | Coin scale error | pending |
 | OCR value accuracy | pending |
-| Median sketch-to-STL latency | pending |
+| Median sketch-to-STL latency | pending full-pipeline measurement; one measured vision-model call (`gemma3:4b` via Ollama) took about 17.8 s, logged in `logs/vlm.jsonl` — this is a single sample of model latency only, not a pipeline median |
 
 ## Responsible AI and data
 
@@ -139,14 +139,8 @@ Three people, three owners. The integrator owns the contracts, model layer, merg
 
 ## Status
 
-Updated 2026-09-25, two days before the demo:
+Updated 2026-09-26:
 
-- **Branches.** `geometry/multiview-gcode` → `geometry/qwen-solaria` → `geometry/studio-ui` are on GitHub and not merged; `main` still holds only the docs.
-- **Built and tested.**
-  - The multi-view path and the Studio: capture, review, model and export in 12 formats.
-  - About 290 automated tests.
-  - An end-to-end run on the bundled example: 50 × 30 × 20 mm, export and G-code.
-- **Not built yet.** The single-view modules (`partspec/`, `metrology.py`, `merge.py`, `builder.py`, `views.py`, `s2c/api.py`) and the `web/` app are not on any branch.
-- **Not measured yet.** Accuracy on real phone photos. The golden set is empty, and the table above still says "pending".
-- **What to do next.** The four-track checklist (recognition, 3D modeling, security, backend and orchestration), the decisions the team has to take, and the cut list are in `docs/superpowers/reviews/2026-09-24-project-review.md`.
-- **Design and history.** Designs are in `docs/superpowers/specs/`; the task lists of past work are in `docs/superpowers/plans/`.
+- **Single-view path:** Real code exists for the contracts (`s2c/partspec/`), the temp file store (`s2c/store.py`), the vision client and topology extraction (`s2c/vision/`), the sketch-path merge with its abstention gates (`s2c/merge.py`), and silhouette handling (`s2c/silhouette.py`). Fakes in `s2c/fakes/` allow the pipeline to run before all modules land. CI (`.github/workflows/ci.yml`) runs `ruff check` and `pytest` on push and PR.
+- **Multi-view path & Studio:** Built and tested with capture, review, modeling, and export across 12 formats, backed by over 290 automated tests and verified end-to-end on benchmark examples.
+- **What to do next:** See the checklist and plans in `docs/superpowers/reviews/2026-09-24-project-review.md` and `docs/superpowers/plans/`.

@@ -274,12 +274,14 @@ Mobile web app: three screens.
 | M3 Photo path + app | 26 Sep | Coin metrology on 5 photos. Mobile web app runs on a phone against the API. Video script drafted, demo parts sourced, one part printed if a printer is found. |
 | Event | 27 Sep | See day plan. |
 
-Event day plan:
-- 09:00 to 10:00: get NVIDIA key, set env vars, run the golden set on the NVIDIA model. If accuracy drops, keep the fallback provider and disclose both.
-- 10:00 to 14:00: fixes, polish, mentors.
-- 14:00 to 15:30: record the 90-second video. Not later.
+Event day plan (per the hackathon's published schedule: roster due 10:00, NVIDIA Build vouchers issued only after roster submission and activated in a 10:15-11:15 workshop, submissions close 17:30 Tunis time):
+- 09:00 to 10:00: setup, sanity checks on the fallback provider, submit the team roster well before the 10:00 deadline. No NVIDIA key exists yet at this point.
+- 10:15 to 11:15: attend the voucher-activation workshop. This is the earliest the sponsor's key can exist.
+- 11:15 to 12:00: set `VLM_BASE_URL`/`VLM_MODEL`/`VLM_API_KEY` to NVIDIA Build, run the golden set against it. Only swap the demo to NVIDIA Build once that run actually passes; until it does, keep the working fallback provider configured and disclose both. Treat the swap as conditional, not a certainty.
+- 12:00 to 14:00: fixes, polish, mentors.
+- 14:00 to 15:30: record the 90-second video, with real time to spare rather than at the last minute.
 - 15:30 to 17:00: project card, tool disclosure, README, final deploy.
-- 17:00 to 17:30: submit. Nothing new after 17:00.
+- 17:00 to 17:30: submit. Nothing new started in this final stretch.
 
 ## 7. Judging map
 
