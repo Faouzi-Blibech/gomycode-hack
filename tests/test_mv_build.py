@@ -111,3 +111,24 @@ def test_export_writes_step_and_stl(tmp_path):
     step, stl = export(build(make_spec((60.0, 40.0, 5.0))), tmp_path)
     assert step.read_text(errors="ignore").startswith("ISO-10303-21")
     assert stl.stat().st_size > 84
+
+
+def test_build_retries_a_fuzzy_intersection_when_the_exact_one_comes_back_empty(monkeypatch):
+    """OCC can return nothing when two faces almost coincide; a 1e-4 mm fuzzy boolean then gives the part."""
+    exact = cq.Workplane.intersect
+    calls = []
+
+    def flaky(self, other, clean=True, tol=None):
+        calls.append(tol)
+        return cq.Workplane() if tol is None else exact(self, other, clean=clean, tol=tol)
+
+    monkeypatch.setattr(cq.Workplane, "intersect", flaky)
+    solid = build(make_spec((40.0, 30.0, 20.0), front=outline([(0, 0), (40, 0), (0, 30)])))
+    assert math.isclose(volume(solid), 600 * 20, rel_tol=0.005)
+    assert any(t is not None for t in calls)
+
+
+def test_a_really_empty_intersection_still_abstains():
+    with pytest.raises(BuildError) as e:
+        build(make_spec((40.0, 30.0, 20.0), front=outline(rect(10, 10)), top=outline(rect(10, 10, 30, 10))))
+    assert e.value.reason == "intersection_empty"

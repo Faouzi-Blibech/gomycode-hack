@@ -280,6 +280,7 @@ def _snap_outline(points: list, a_len: float, b_len: float) -> list:
     if n < 3:
         return list(points)
     on_horiz, on_vert = [False] * n, [False] * n
+    horiz_edges, vert_edges = [], []
     for i in range(n):
         a1, b1 = points[i]
         a2, b2 = points[(i + 1) % n]
@@ -289,18 +290,49 @@ def _snap_outline(points: list, a_len: float, b_len: float) -> list:
             continue
         if abs(db) <= EDGE_SLOPE * abs(da):
             on_horiz[i] = on_horiz[(i + 1) % n] = True
+            horiz_edges.append((i, (i + 1) % n))
         elif abs(da) <= EDGE_SLOPE * abs(db):
             on_vert[i] = on_vert[(i + 1) % n] = True
+            vert_edges.append((i, (i + 1) % n))
     all_a = [p[0] for p in points]
     all_b = [p[1] for p in points]
     a_targets = _level_targets({round(points[i][0], 6) for i in range(n) if on_vert[i]}, a_len, all_a)
     b_targets = _level_targets({round(points[i][1], 6) for i in range(n) if on_horiz[i]}, b_len, all_b)
-    out = []
-    for i, (a, b) in enumerate(points):
-        na = a_targets.get(round(a, 6), a) if on_vert[i] else a
-        nb = b_targets.get(round(b, 6), b) if on_horiz[i] else b
-        out.append((na, nb))
-    return out
+    na = [a_targets.get(round(a, 6), a) if on_vert[i] else a for i, (a, _) in enumerate(points)]
+    nb = [b_targets.get(round(b, 6), b) if on_horiz[i] else b for i, (_, b) in enumerate(points)]
+    _keep_straight(points, na, vert_edges, axis=0)
+    _keep_straight(points, nb, horiz_edges, axis=1)
+    return list(zip(na, nb))
+
+
+def _keep_straight(points: list, new: list, edges: list, axis: int) -> None:
+    """A straight edge never ends up more slanted than it was: when its two ends would snap to different
+    values, both keep their own. Repeats because an end may be shared by a chain of edges."""
+    changed = True
+    while changed:
+        changed = False
+        for i, j in edges:
+            if abs(new[i] - new[j]) > abs(points[i][axis] - points[j][axis]) + 1e-9:
+                new[i], new[j] = points[i][axis], points[j][axis]
+                changed = True
+
+
+def _crosses(points: list, moved: set) -> bool:
+    """Whether an edge touching a moved vertex properly crosses any non-adjacent edge."""
+    n = len(points)
+
+    def ccw(p, q, r):
+        return (r[1] - p[1]) * (q[0] - p[0]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    for i in {k for m in moved for k in ((m - 1) % n, m)}:
+        p, q = points[i], points[(i + 1) % n]
+        for j in range(n):
+            if j in (i, (i - 1) % n, (i + 1) % n):
+                continue
+            r, s = points[j], points[(j + 1) % n]
+            if ccw(p, q, r) * ccw(p, q, s) < 0 and ccw(r, s, p) * ccw(r, s, q) < 0:
+                return True
+    return False
 
 
 def snap(data: dict, clearance: str = "medium") -> None:
@@ -324,7 +356,8 @@ def snap(data: dict, clearance: str = "medium") -> None:
         outline = data["views"][face]
         orig = [tuple(p) for p in outline["outer"]]
         new = _snap_outline(outline["outer"], lengths[a_axis], lengths[b_axis])
-        if len(set(new)) >= len(set(orig)) and new != orig:
+        moved = {i for i, (p, q) in enumerate(zip(orig, new)) if p != q}
+        if moved and len(set(new)) >= len(set(orig)) and not _crosses(new, moved):
             outline["outer"] = new
             snapped.append(path)
 

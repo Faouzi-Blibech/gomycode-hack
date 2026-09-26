@@ -193,3 +193,36 @@ def test_snapping_never_makes_two_points_coincide():
     assert len(set(spec.views.front.outer)) == len(set(mm_points))
     assert spec.views.front.outer[0][0] == pytest.approx(0.3)
     assert spec.views.front.outer[1][0] == pytest.approx(0.3)
+
+
+def _crossings(points):
+    """Pairs of non-adjacent edges that properly cross."""
+    def ccw(p, q, r):
+        return (r[1] - p[1]) * (q[0] - p[0]) - (q[1] - p[1]) * (r[0] - p[0])
+    n, hits = len(points), []
+    for i in range(n):
+        p, q = points[i], points[(i + 1) % n]
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue
+            r, s = points[j], points[(j + 1) % n]
+            if ccw(p, q, r) * ccw(p, q, s) < 0 and ccw(r, s, p) * ccw(r, s, q) < 0:
+                hits.append((i, j))
+    return hits
+
+
+def test_snapping_moves_both_ends_of_a_straight_line_together():
+    """5.721 would go to the 6 mm wall and 5.679 to the 5.5 grid: the straight line must not become slanted."""
+    mm_points = [(0, 0), (30.45, 0), (30.45, 15.15), (10, 15.15), (5.721, 6.37), (5.679, 4.987), (0, 4.987)]
+    spec = _assembled_outline(mm_points, 30.45, 15.15)
+    top, bottom = spec.views.front.outer[4], spec.views.front.outer[5]
+    assert abs(top[0] - bottom[0]) <= abs(5.721 - 5.679) + 1e-9
+
+
+def test_snapping_never_makes_an_outline_cross_itself():
+    """The level at 4.8 would snap to 5.0, over the curve that starts at its end and stays below 5.0."""
+    mm_points = [(0, 0), (30, 0), (30, 20), (22, 20), (22, 4.8), (8, 4.8), (12, 4.95), (13, 4.9), (18, 6),
+                 (18, 20), (0, 20)]
+    assert _crossings(mm_points) == []
+    spec = _assembled_outline(mm_points, 30, 20)
+    assert _crossings(spec.views.front.outer) == []

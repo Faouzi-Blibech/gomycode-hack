@@ -22,6 +22,20 @@ EMPTY = ("intersection_empty", "The views do not describe one part. Check which 
 log = logging.getLogger(__name__)
 
 
+FUZZY_MM = 1e-4  # a retry tolerance far below any drawn or measured detail
+
+
+def _intersect(a: cq.Workplane, b: cq.Workplane) -> cq.Workplane:
+    """Exact boolean first. OCC can return nothing when two faces almost coincide (a hole edge 0.02 mm from a
+    foot edge), so an empty or invalid result is retried as a fuzzy boolean; a truly empty one stays empty."""
+    out = a.intersect(b)
+    solids = out.solids().vals()
+    if solids and all(s.isValid() for s in solids):
+        return out
+    fuzzy = a.intersect(b, tol=FUZZY_MM)
+    return fuzzy if fuzzy.solids().vals() else out
+
+
 def volume(solid: cq.Workplane) -> float:
     return float(sum(s.Volume() for s in solid.solids().vals()))
 
@@ -132,11 +146,12 @@ def _turn(hull: cq.Workplane, spec: MultiViewSpec) -> cq.Workplane:
     The turn only refines a hull that already built: if OCC fails on it, the hull is kept."""
     from s2c.multiview import turned  # deferred: turned reuses _clean from this module
 
-    axis = turned.turned_axis(spec)
-    if axis is None:
-        return hull
+    axis = None
     try:
-        solid = hull.intersect(turned.revolve(spec, axis))
+        axis = turned.turned_axis(spec)
+        if axis is None:
+            return hull
+        solid = _intersect(hull, turned.revolve(spec, axis))
         _check(solid)
     except Exception as e:  # noqa: BLE001 - OCC raises anything; the hull is a valid answer
         log.warning("turned build around %s failed, keeping the hull: %s", axis, e)
@@ -149,7 +164,7 @@ def build(spec: MultiViewSpec) -> cq.Workplane:
     try:
         solid = _prism("front", spec.views.front, env)
         for face in ("top", "right"):
-            solid = solid.intersect(_prism(face, getattr(spec.views, face), env))
+            solid = _intersect(solid, _prism(face, getattr(spec.views, face), env))
             if not solid.solids().vals():  # an empty result would make CadQuery fall back to an earlier solid
                 raise BuildError(*EMPTY)
     except BuildError:

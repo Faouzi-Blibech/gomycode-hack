@@ -218,7 +218,11 @@ class MvPipeline:
             log.warning("spec rejected: %s", e)
             return S.MvAbstain(stage="dimensions", reason="invalid_value",
                                remedy="A value is out of range. Check the numbers you entered.")
-        axis = turned_axis(spec)
+        try:
+            axis = turned_axis(spec)
+        except Exception as e:  # noqa: BLE001 - the turn is a refinement; its check must never break a fuse
+            log.warning("turned check failed: %s", e)
+            axis = None
         note = axis and TURNED_WARNING.format(axis=axis)
         if note and note not in spec.warnings:
             spec = spec.model_copy(update={"warnings": [*spec.warnings, note]})
