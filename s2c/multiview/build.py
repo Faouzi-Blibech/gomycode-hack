@@ -2,6 +2,7 @@
 Spec section 6.4. Deterministic; no model output is ever executed here."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import cadquery as cq
@@ -18,6 +19,7 @@ class BuildError(Exception):
 
 INVALID = ("invalid_solid", "Simplify the outline or retake the photo.")
 EMPTY = ("intersection_empty", "The views do not describe one part. Check which face each photo shows.")
+log = logging.getLogger(__name__)
 
 
 def volume(solid: cq.Workplane) -> float:
@@ -125,18 +127,20 @@ def _apply_finish(solid: cq.Workplane, finish) -> cq.Workplane:
     return out
 
 
-def _turn(solid: cq.Workplane, spec: MultiViewSpec) -> cq.Workplane:
-    """A round part cut down to its solid of revolution, so a hub comes out round instead of square."""
-    from s2c.multiview.turned import revolve, turned_axis  # deferred: turned reuses _clean from this module
+def _turn(hull: cq.Workplane, spec: MultiViewSpec) -> cq.Workplane:
+    """A round part cut down to its solid of revolution, so a hub comes out round instead of square.
+    The turn only refines a hull that already built: if OCC fails on it, the hull is kept."""
+    from s2c.multiview import turned  # deferred: turned reuses _clean from this module
 
-    axis = turned_axis(spec)
+    axis = turned.turned_axis(spec)
     if axis is None:
-        return solid
+        return hull
     try:
-        solid = solid.intersect(revolve(spec, axis))
-    except Exception as e:
-        raise BuildError(*INVALID) from e
-    _check(solid)
+        solid = hull.intersect(turned.revolve(spec, axis))
+        _check(solid)
+    except Exception as e:  # noqa: BLE001 - OCC raises anything; the hull is a valid answer
+        log.warning("turned build around %s failed, keeping the hull: %s", axis, e)
+        return hull
     return solid
 
 

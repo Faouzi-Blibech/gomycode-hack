@@ -1,13 +1,18 @@
+import logging
 import math
 from itertools import pairwise
 
+import cadquery as cq
 import cv2
 import numpy as np
+import pytest
 
+from s2c.multiview import turned
 from s2c.multiview.build import build, volume
 from s2c.multiview.pipeline import ImageInput, MvPipeline
-from s2c.multiview.turned import SNAP, WARNING, profile, turned_axis
+from s2c.multiview.turned import SNAP, TURN_BUDGET, WARNING, profile, turned_axis
 from tests.mv_helpers import circle, make_spec, outline, rect
+from tests.test_mv_pipeline import sketch
 
 STEP = [(0, 0), (20, 0), (20, 5), (15, 5), (15, 15), (5, 15), (5, 5), (0, 5)]
 
@@ -16,6 +21,60 @@ def test_a_stepped_round_part_is_built_round():
     s = make_spec((20.0, 15.0, 20.0), front=outline(STEP), top=outline(circle(10, 10, 10, 180)), right=outline(STEP))
     assert turned_axis(s) == "y"
     assert math.isclose(volume(build(s)), math.pi * (10 ** 2 * 5 + 5 ** 2 * 10), rel_tol=0.015)
+
+
+def _broken_revolve(spec, axis):
+    raise RuntimeError("revolve failed")
+
+
+def _far_away_revolve(spec, axis):
+    return cq.Workplane().box(1, 1, 1).translate((500, 500, 500))  # an empty intersection
+
+
+@pytest.mark.parametrize("revolve", [_broken_revolve, _far_away_revolve])
+def test_a_failed_turn_keeps_the_hull(monkeypatch, caplog, revolve):
+    monkeypatch.setattr(turned, "revolve", revolve)
+    s = make_spec((20.0, 15.0, 20.0), front=outline(STEP), top=outline(circle(10, 10, 10, 180)), right=outline(STEP))
+    with caplog.at_level(logging.WARNING):
+        v = volume(build(s))
+    hull = 90 * 10 ** 2 * math.sin(math.radians(2)) * 5 + 10 * 10 * 10  # 180-gon flange, square hub
+    assert math.isclose(v, hull, rel_tol=0.005)
+    assert "turned" in caplog.text
+
+
+def test_a_slender_shaft_keeps_its_radius():
+    """Clean-up tolerances follow R across the axis, not the 200 mm length, or the shaft grows fat."""
+    shaft = [(0, 0), (8, 0), (8, 20), (6.5, 20), (6.5, 200), (1.5, 200), (1.5, 20), (0, 20)]
+    s = make_spec((8.0, 200.0, 8.0), front=outline(shaft), top=outline(circle(4, 4, 4, 180)), right=outline(shaft))
+    assert turned_axis(s) == "y"
+    assert math.isclose(volume(build(s)), math.pi * (4 ** 2 * 20 + 2.5 ** 2 * 180), rel_tol=0.02)
+
+
+def test_a_round_view_with_both_side_views_assumed_is_not_turned():
+    """Assumed side views are rectangles, so the hull is already a cylinder and nothing was seen to match."""
+    side = outline(rect(40, 10), source="assumed")
+    s = make_spec((40.0, 10.0, 40.0), front=side, top=outline(circle(20, 20, 20, 180)), right=side)
+    assert turned_axis(s) is None
+
+
+def _knurled(n, r=20.0, ridges=120):
+    rho = [r - 0.4 + 0.4 * math.cos(ridges * 2 * math.pi * i / n) for i in range(n)]
+    return [(r + p * math.cos(2 * math.pi * i / n), r + p * math.sin(2 * math.pi * i / n)) for i, p in enumerate(rho)]
+
+
+def _terraced(steps, r=20.0, length=20.0):
+    right = [(r + r - j * r / 2 / steps, h) for j in range(steps) for h in (j * length / steps, (j + 1) * length / steps)]
+    return right + [(2 * r - a, h) for a, h in reversed(right)]
+
+
+def test_a_turn_too_costly_for_its_budget_is_skipped():
+    """The intersect's cost grows with axis-view points times profile points; past the budget the hull stands."""
+    side = outline(_terraced(20))
+    cheap = make_spec((40.0, 20.0, 40.0), front=side, top=outline(_knurled(600)), right=side)
+    costly = make_spec((40.0, 20.0, 40.0), front=side, top=outline(_knurled(1600)), right=side)
+    assert turned_axis(cheap) == "y"
+    assert 1600 * len(profile(costly, "y")) > TURN_BUDGET
+    assert turned_axis(costly) is None
 
 
 def test_a_square_plate_is_not_turned():
@@ -64,8 +123,8 @@ def test_leaning_outline_edges_still_make_cylinders():
     lean = [(0, 0), (20, 0), (20, 5), (15, 5), (15.0001, 15), (4.9999, 15), (5, 5), (0, 5)]
     s = make_spec((20.0, 15.0, 20.0), front=outline(lean), top=outline(circle(10, 10, 10, 180)), right=outline(lean))
     pts = profile(s, "y")
-    snap = SNAP * 20
-    assert all(a[0] == b[0] or a[1] == b[1] or (abs(a[0] - b[0]) > snap and abs(a[1] - b[1]) > snap)
+    r_snap, h_snap = SNAP * 10, SNAP * 15
+    assert all(a[0] == b[0] or a[1] == b[1] or (abs(a[0] - b[0]) > r_snap and abs(a[1] - b[1]) > h_snap)
                for a, b in pairwise(pts))
     assert math.isclose(volume(build(s)), math.pi * (10 ** 2 * 5 + 5 ** 2 * 10), rel_tol=0.015)
 
@@ -78,7 +137,16 @@ def _circle_sketch(r_px):
 
 def test_fuse_warns_when_the_part_is_turned():
     pipe = MvPipeline()
+    observed = pipe.observe([ImageInput(_circle_sketch(300), "top", "sketch"),
+                             ImageInput(sketch(600, 150), "front", "sketch")])
+    spec = pipe.fuse(observed, {"envelope.x_mm": 40, "envelope.y_mm": 10, "envelope.z_mm": 40})
+    assert spec.views.front.source == "observed" and spec.views.right.source == "assumed"
+    assert WARNING.format(axis="y") in spec.warnings
+
+
+def test_fuse_does_not_warn_when_both_side_views_are_assumed():
+    pipe = MvPipeline()
     observed = pipe.observe([ImageInput(_circle_sketch(300), "top", "sketch")])
     spec = pipe.fuse(observed, {"envelope.x_mm": 40, "envelope.y_mm": 10, "envelope.z_mm": 40})
     assert spec.views.front.source == "assumed" and spec.views.right.source == "assumed"
-    assert WARNING.format(axis="y") in spec.warnings
+    assert not [w for w in spec.warnings if w.startswith("Built as a turned part")]
