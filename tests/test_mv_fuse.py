@@ -133,3 +133,52 @@ def test_assemble_snaps_only_untrusted_values_and_applies_edits():
     assert spec.features[0].diameter_mm == 5.5 and "features[0].diameter_mm" in spec.snapped
     assert spec.features[0].b_mm == 12.3 and spec.provenance["features[0].b_mm"] == "user_edited"
     assert spec.confidence == 0.3
+
+
+def outline_from_mm(points, a_len, b_len):
+    """A PixelOutline whose to_face_mm round-trip reproduces `points` in mm exactly (scale 1:1)."""
+    w, h = a_len + 1, b_len + 1
+    outer = np.array([[a, b_len - b] for a, b in points], dtype=float)
+    return PixelOutline(outer=outer, bbox=(0, 0, w, h), shape=(200, 200))
+
+
+def _assembled_outline(mm_points, a_len, b_len, z_mm=5.0):
+    env = Envelope(x_mm=a_len, y_mm=b_len, z_mm=z_mm)
+    o = Observation(face="front", kind="sketch", outline=outline_from_mm(mm_points, a_len, b_len))
+    outlines, _ = canonical_outlines([o], env)
+    outlines["top"] = (Outline(outer=[(0, 0), (a_len, 0), (a_len, z_mm), (0, z_mm)], source="assumed",
+                               confidence=0.3), "default")
+    outlines["right"] = (Outline(outer=[(0, 0), (z_mm, 0), (z_mm, b_len), (0, b_len)], source="assumed",
+                                 confidence=0.3), "default")
+    env_prov = {"envelope.x_mm": "user_written", "envelope.y_mm": "user_written", "envelope.z_mm": "user_edited"}
+    return assemble(env, env_prov, outlines, [], {}, [])
+
+
+def test_snapping_leaves_a_round_outline_round():
+    thetas = np.linspace(0, 2 * np.pi, 64, endpoint=False)
+    mm_points = [(6.5 + 6.5 * np.cos(t), 6.5 + 6.5 * np.sin(t)) for t in thetas]
+    spec = _assembled_outline(mm_points, 13, 13)
+    for (a0, b0), (a1, b1) in zip(mm_points, spec.views.front.outer):
+        assert abs(a1 - a0) <= 0.01 and abs(b1 - b0) <= 0.01
+
+
+def test_snapping_never_collapses_a_thin_flange():
+    mm_points = [(0, 0), (17.5, 0), (17.5, 0.3), (14.5, 0.3), (14.5, 6), (3, 6), (3, 0.3), (0, 0.3)]
+    spec = _assembled_outline(mm_points, 17.5, 6)
+    for (a0, b0), (a1, b1) in zip(mm_points, spec.views.front.outer):
+        if abs(b0 - 0.3) < 1e-9:
+            assert abs(b1 - 0.3) < 1e-9
+
+
+def test_snapping_still_squares_a_sketched_l_bracket():
+    mm_points = [(0, 0), (50, 0), (50, 4.8), (4.8, 4.8), (4.8, 30), (0, 30)]
+    spec = _assembled_outline(mm_points, 50, 30)
+    assert spec.views.front.outer[3] == pytest.approx((5.0, 5.0))
+    assert "views.front.outer" in spec.snapped
+
+
+def test_snapping_does_not_move_a_small_part_by_more_than_two_percent():
+    mm_points = [(0, 0), (6, 0), (6, 2.3), (3, 2.3), (3, 6), (0, 6)]
+    spec = _assembled_outline(mm_points, 6, 6)
+    assert spec.views.front.outer[2][1] == pytest.approx(2.3)
+    assert spec.views.front.outer[3][1] == pytest.approx(2.3)

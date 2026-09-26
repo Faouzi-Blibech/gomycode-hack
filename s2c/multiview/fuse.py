@@ -253,6 +253,51 @@ def snap_coord(v: float, length: float) -> float:
     return min(max(_grid(v), 0.0), float(length))
 
 
+EDGE_SLOPE = 0.035  # tan(2 deg): how far off-axis a "straight" outline edge may drift
+EDGE_MIN_MM = 1.0    # shorter edges are curve segments, not sketched straight lines
+MOVE_LIMIT = 0.02    # a level does not move more than this fraction of its axis
+
+
+def _level_targets(levels: set, axis_len: float) -> dict:
+    """snap_coord per level, kept only if it neither collides with another level nor moves too far."""
+    candidates = {v: snap_coord(v, axis_len) for v in levels}
+    targets = {}
+    for v, new in candidates.items():
+        if abs(new - v) <= 1e-9 or abs(new - v) > MOVE_LIMIT * axis_len:
+            targets[v] = v
+            continue
+        collides = any(w != v and (abs(new - w) <= 1e-6 or abs(new - candidates[w]) <= 1e-6) for w in levels)
+        targets[v] = v if collides else new
+    return targets
+
+
+def _snap_outline(points: list, a_len: float, b_len: float) -> list:
+    """Snap only straight axis-parallel edges (spec 4.5); curves and sloped or thin edges pass through."""
+    n = len(points)
+    if n < 3:
+        return list(points)
+    on_horiz, on_vert = [False] * n, [False] * n
+    for i in range(n):
+        a1, b1 = points[i]
+        a2, b2 = points[(i + 1) % n]
+        da, db = a2 - a1, b2 - b1
+        length = (da * da + db * db) ** 0.5
+        if length < EDGE_MIN_MM:
+            continue
+        if abs(db) <= EDGE_SLOPE * abs(da):
+            on_horiz[i] = on_horiz[(i + 1) % n] = True
+        elif abs(da) <= EDGE_SLOPE * abs(db):
+            on_vert[i] = on_vert[(i + 1) % n] = True
+    a_targets = _level_targets({round(points[i][0], 6) for i in range(n) if on_vert[i]}, a_len)
+    b_targets = _level_targets({round(points[i][1], 6) for i in range(n) if on_horiz[i]}, b_len)
+    out = []
+    for i, (a, b) in enumerate(points):
+        na = a_targets.get(round(a, 6), a) if on_vert[i] else a
+        nb = b_targets.get(round(b, 6), b) if on_horiz[i] else b
+        out.append((na, nb))
+    return out
+
+
 def snap(data: dict, clearance: str = "medium") -> None:
     """Snap scaled, inferred and estimated values of a spec dict in place (spec 4.5)."""
     prov, snapped = data["provenance"], data.setdefault("snapped", [])
@@ -272,7 +317,7 @@ def snap(data: dict, clearance: str = "medium") -> None:
             continue
         a_axis, b_axis, _ = S.FACE_AXES[face]
         outline = data["views"][face]
-        new = [(snap_coord(a, lengths[a_axis]), snap_coord(b, lengths[b_axis])) for a, b in outline["outer"]]
+        new = _snap_outline(outline["outer"], lengths[a_axis], lengths[b_axis])
         if len(set(new)) >= 3 and new != [tuple(p) for p in outline["outer"]]:
             outline["outer"] = new
             snapped.append(path)
