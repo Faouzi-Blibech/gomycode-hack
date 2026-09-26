@@ -216,3 +216,29 @@ Task order: 7 and 8 in parallel (disjoint files), then a full benchmark rerun (b
 - [ ] **Step 2: Run** `uv run pytest tests/test_mv_turned.py -v`. Expected: FAIL (module missing).
 - [ ] **Step 3: Implement** `turned.py`, then the two calls in `build.py` and `pipeline.py`.
 - [ ] **Step 4: Run** `uv run pytest tests/test_mv_turned.py tests/test_mv_build.py tests/test_mv_pipeline.py tests/test_studio_pipeline.py -q` and ruff on the touched files. Expected: PASS, with no change to any existing build test's volume.
+
+### Task 9: A thin part's edge view is an outline, not "no outline"
+
+**Finding (baseline):**
+- 13 parts abstain with `outline:no_outline`: 6 washer_spacer, 6 hinge and 1 gear.
+- Their silhouettes are found correctly. The edge view of a thin washer is a filled 1454 × 30 px strip, 1.65 % of the image. It is simply smaller than `MIN_OUTLINE_FRACTION` (2 % of the image area).
+- The gate exists to reject blank pages, specks and broken pen sketches, whose stroke is also a small area. So the fix keeps the 2 % rule and adds one narrow way through for small, filled, elongated shapes.
+
+**Files:**
+- Modify: `s2c/multiview/outline.py` (`extract`'s no-outline gate only)
+- Test: `tests/test_mv_outline.py`
+
+**Rule:**
+- A largest contour under `MIN_OUTLINE_FRACTION` of the image area is still accepted when all three hold:
+  - its area is at least `MIN_THIN_FRACTION = 0.002` of the image;
+  - its bounding box's long side is at least `MIN_THIN_SPAN = 0.10` of the image's long side;
+  - it fills at least `MIN_THIN_FILL = 0.5` of its bounding box (`contourArea / (w * h)`).
+- Everything else abstains exactly as before.
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_mv_outline.py`:
+  - `test_the_edge_view_of_a_thin_washer_is_an_outline`: a filled grey (128) rectangle 1450 × 30 px, centred on a white 1600 × 1600 page. `extract` returns a `PixelOutline` whose bbox width is 1450 ± 6 and height 30 ± 6.
+  - `test_a_small_speck_still_abstains`: a filled 40 × 40 square on a white 1600 × 1600 page gives `no_outline`.
+  - The existing `test_blank_page_abstains` and `tests/test_mv_rescue.py::test_a_broken_sketch_has_no_outline` must stay green. The pen stroke of the broken sketch fills about 4 % of its bounding box.
+- [ ] **Step 2: Run** `uv run pytest tests/test_mv_outline.py -v`. Expected: the washer test FAILS with `no_outline`; the others pass.
+- [ ] **Step 3: Implement** the gate in `extract`.
+- [ ] **Step 4: Run** `uv run pytest tests/test_mv_outline.py tests/test_mv_rescue.py tests/test_mv_pipeline.py tests/test_mv_merge_views.py -q` and ruff on the touched files. Expected: PASS.
