@@ -124,7 +124,14 @@ Accuracy numbers, updated as tests land:
 | Golden sketches passing | pending, golden set not yet built |
 | Coin scale error | pending |
 | OCR value accuracy | pending |
+| Reference parts, multi-view path (400 parts with known STLs, clean renders, true size given; 2026-09-26) | built 95 % (381 of 400), median volume error 10.3 %, median 3D IoU 0.91, 31 % of parts within 5 % volume. Before the fixes of 2026-09-26: 89 %, 15.6 %, 0.87, 21 %. Not a phone-photo number: that is still unmeasured |
 | Median sketch-to-STL latency | pending full-pipeline measurement; one measured vision-model call (`gemma3:4b` via Ollama) took about 17.8 s, logged in `logs/vlm.jsonl` — this is a single sample of model latency only, not a pipeline median |
+
+Reference-part benchmark:
+- **Command:** `uv run python scripts/re_benchmark.py --dataset <folder> --jobs 6 --timeout 300`.
+- **Dataset:** about 400 printable parts with STLs and six renders each. It is kept outside the repository because of its non-commercial licences.
+- **What is measured:** the multi-view path gets the six renders, tagged by face, and the true size typed in. Each rebuilt part is scored against its STL, and the output is a per-category table.
+- **Main remaining error:** material that no view can see (open boxes and trays, three-plate corner brackets, blind pockets). The visual hull fills it in, which is why brackets (median 24 %) and bearing holders (17 %) are worst, and washers (2.8 %) and shaft collars (2.3 %) best.
 
 ## Responsible AI and data
 
@@ -143,4 +150,9 @@ Updated 2026-09-26:
 
 - **Single-view path:** Real code exists for the contracts (`s2c/partspec/`), the temp file store (`s2c/store.py`), the vision client and topology extraction (`s2c/vision/`), the sketch-path merge with its abstention gates (`s2c/merge.py`), and silhouette handling (`s2c/silhouette.py`). Fakes in `s2c/fakes/` allow the pipeline to run before all modules land. CI (`.github/workflows/ci.yml`) runs `ruff check` and `pytest` on push and PR.
 - **Multi-view path & Studio:** Built and tested with capture, review, modeling, and export across 12 formats, backed by over 290 automated tests and verified end-to-end on benchmark examples.
+- **Accuracy (2026-09-26):**
+  - The multi-view path is measured on 400 reference parts, with the reference-part row in the table above.
+  - Turned parts are now built as solids of revolution.
+  - The vision model's hole depths and blind flags no longer reach geometry (P0-3).
+  - A fillet that does not fit keeps the last good part and suggests the largest size that builds (P0-11).
 - **What to do next:** See the checklist and plans in `docs/superpowers/reviews/2026-09-24-project-review.md` and `docs/superpowers/plans/`.
