@@ -55,6 +55,21 @@ def test_blank_page_abstains():
     assert isinstance(res, MvAbstain) and res.reason == "no_outline"
 
 
+def test_the_edge_view_of_a_thin_washer_is_an_outline():
+    img = page(1600, 1600)
+    cv2.rectangle(img, (75, 785), (75 + 1450, 785 + 30), (128, 128, 128), -1)
+    o = extract(img)
+    _, _, w, h = o.bbox
+    assert abs(w - 1450) <= 6 and abs(h - 30) <= 6
+
+
+def test_a_small_speck_still_abstains():
+    img = page(1600, 1600)
+    cv2.rectangle(img, (780, 780), (820, 820), (60, 60, 60), -1)
+    res = extract(img)
+    assert isinstance(res, MvAbstain) and res.reason == "no_outline"
+
+
 def test_masked_region_is_ignored():
     img = page()
     cv2.rectangle(img, (100, 300), (500, 700), (60, 60, 60), -1)    # the part

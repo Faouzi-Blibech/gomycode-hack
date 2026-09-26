@@ -14,6 +14,9 @@ MIN_OUTLINE_FRACTION = 0.02
 MIN_OPENING_FRACTION = 0.0003
 CIRCULARITY = 0.85
 EDGE_BAND_PX = 31  # the inside of a drawn outline touches this band next to the edge; a real opening does not
+MIN_THIN_FRACTION = 0.002  # a thin part's edge view can be this small and still be a real outline
+MIN_THIN_SPAN = 0.10       # ...provided it is long relative to the page...
+MIN_THIN_FILL = 0.5        # ...and filled, not a hollow or broken stroke
 
 
 @dataclass
@@ -58,12 +61,23 @@ def foreground(image_bgr: np.ndarray, mask_out=()) -> np.ndarray:
     return cv2.morphologyEx(th, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
 
 
+def is_thin_edge_view(contour, area: float, h: int, w: int) -> bool:
+    """Small but long and filled: the edge-on silhouette of a thin part, not a speck or broken stroke."""
+    if area < MIN_THIN_FRACTION * h * w:
+        return False
+    _, _, bw, bh = cv2.boundingRect(contour)
+    if max(bw, bh) < MIN_THIN_SPAN * max(h, w):
+        return False
+    return area >= MIN_THIN_FILL * bw * bh
+
+
 def extract(image_bgr: np.ndarray, mask_out=(), band: int = EDGE_BAND_PX) -> PixelOutline | MvAbstain:
     fg = foreground(image_bgr, mask_out)
     h, w = fg.shape
     contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     outer = max(contours, key=cv2.contourArea) if contours else None
-    if outer is None or cv2.contourArea(outer) < MIN_OUTLINE_FRACTION * h * w:
+    area = cv2.contourArea(outer) if outer is not None else 0.0
+    if outer is None or (area < MIN_OUTLINE_FRACTION * h * w and not is_thin_edge_view(outer, area, h, w)):
         return MvAbstain(stage="outline", reason="no_outline",
                          remedy="Retake on a plain background with the whole part in frame.")
     filled = np.zeros_like(fg)
