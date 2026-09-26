@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from pathlib import Path
 
@@ -109,6 +110,24 @@ def test_a_failed_finish_opens_the_model_step(studio, tmp_path, monkeypatch):
     assert studio.rebuild_geometry(sid, GeometrySettings(finish="none"))[1].ok
 
 
+def test_failed_finish_keeps_the_last_part(studio, tmp_path, monkeypatch):
+    sid = with_images(studio, tmp_path)
+    review = studio.analyze(sid, "none", AiSettings())
+    sizes = {"x": "60", "y": "40", "z": "10"}
+    _, good = studio.build(sid, sizes, review.rows, [], GeometrySettings())
+    assert good.ok
+    session = studio.store.get(sid)
+    part_before = session.part
+    fail_big_fillets(monkeypatch)
+    _, model = studio.build(sid, sizes, review.rows, [], GeometrySettings(finish="fillet", finish_mm=6.0))
+    assert model.ok is False
+    assert model.preview == good.preview and model.stats_html == good.stats_html
+    assert [f[1] for f in model.views] == [f[1] for f in good.views]
+    assert all(np.array_equal(a, b) for (a, _), (b, _) in zip(model.views, good.views))
+    assert "largest that builds" in model.message_html and re.search(r"\d", model.message_html)
+    assert session.part is part_before
+
+
 def test_a_failed_part_without_a_finish_stays_on_the_review(studio, tmp_path, monkeypatch):
     monkeypatch.setattr(handlers, "build_part",
                         lambda spec, geometry, root: MvAbstain(stage="build", reason="bad", remedy="Fix it."))
@@ -132,8 +151,10 @@ def test_the_build_button_shows_a_failed_finish_in_step_3(studio, tmp_path, monk
     review = studio.analyze(sid, "none", AiSettings())
     on_build = app_fn(build_app(studio=studio), "on_build")
     out = on_build(sid, "60", "40", "10", review.rows, [], True, "medium", "fillet", 6.0, "all_vertical")
-    step, model_msg = out[0], out[-4]
-    assert isinstance(step, gr.Walkthrough) and step.selected == 2 and "Fillet failed" in model_msg
+    step, model_msg, viewer = out[0], out[-4], out[-3]
+    assert isinstance(step, gr.Walkthrough) and step.selected == 2
+    assert "does not fit" in model_msg and "largest that builds" in model_msg
+    assert viewer is not None  # never a literal None, which would blank the Model3D component
 
 
 def test_old_builds_are_swept_when_a_part_is_built(studio, tmp_path):

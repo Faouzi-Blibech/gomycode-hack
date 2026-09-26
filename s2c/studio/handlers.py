@@ -15,6 +15,7 @@ import numpy as np
 
 from s2c.multiview import spec as S
 from s2c.multiview.artifacts import ROOT, build_part, bundle, export_part, sweep
+from s2c.multiview.finish import largest_finish
 from s2c.multiview.fuse import fuse_envelope
 from s2c.multiview.pipeline import ImageInput, MvPipeline
 from s2c.multiview.raster import iou, outline_mask
@@ -342,11 +343,16 @@ class Studio:
         sweep(self.root)
         part = build_part(session.spec, session.geometry, self.root)
         if isinstance(part, S.MvAbstain):
+            # A finish that cannot be built is fixed with the Geometry controls, which live in step 3 (index 2);
+            # the part on screen is still good, so it is kept rather than blanking the viewer.
+            if part.stage == "build" and session.geometry.finish != "none":
+                return self._finish_failure_model(session)
             session.part = None
-            # A finish that cannot be built is fixed with the Geometry controls, which live in step 3 (index 2)
-            finish_failed = part.stage == "build" and session.geometry.finish != "none"
-            return Model(False, _abstain_card(part), open_step=2 if finish_failed else None)
+            return Model(False, _abstain_card(part))
         session.part, session.exported = part, None
+        return self._built_model(part, session)
+
+    def _built_model(self, part, session) -> Model:
         masks = session.observed.masks
         views = []
         for face, mask in part.views.items():
@@ -359,6 +365,18 @@ class Studio:
         note = " ".join(part.warnings)
         return Model(True, card("Part built", note or "Rotate the part, then choose formats and export.", "ok"),
                      str(part.preview), views, stats)
+
+    def _finish_failure_model(self, session) -> Model:
+        """The size that failed, and the largest one that would actually build, found by real builds so the
+        suggestion is never a guess."""
+        kind, size = session.geometry.finish, session.geometry.finish_mm
+        best = largest_finish(session.spec, session.geometry)
+        body = f"No {kind} fits this part." if best is None else f"The largest that builds is {best:g} mm."
+        msg = card(f"{kind.capitalize()} {size:g} mm does not fit.", body, "stop")
+        if session.part is None:
+            return Model(False, msg, open_step=2)
+        prev = self._built_model(session.part, session)
+        return Model(False, msg, prev.preview, prev.views, prev.stats_html, open_step=2)
 
     # ---- export ---------------------------------------------------------------------------------------------
     def export(self, sid: str, export: ExportSettings, mesh: MeshSettings, printing: PrintSettings) -> Exported:
