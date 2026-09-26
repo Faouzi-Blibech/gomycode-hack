@@ -125,28 +125,71 @@ All 35 minor findings the two earlier reviews had deferred are fixed, plus the i
   - The lab app never counts a suggested size as the user's. It keeps its outputs when a value is bad, and remembers rejected faces.
 - **Checked in the running Studio.** A cleared size reverts, the review refreshes, export leaves no temp files, and the upload label wraps on a phone.
 
-## Task checklist (updated 2026-09-25)
+## Task checklist: four tracks (updated 2026-09-26)
 
-Tick items as they merge. Each owner is a suggestion based on the role briefs in `docs/roles/`. P0 numbers refer to the table above.
+The remaining work is split into four tracks, one per person or agent. ★ marks what is needed for the 2026-09-27 demo. Tick items as they merge. P0 numbers refer to the table above.
 
-**09-25: decisions and safety fixes, all small**
-- [ ] Decisions 1–4 above. Integrator leads, whole team.
-- [ ] P0-1: a vision-API failure falls back to the user's tags. Integrator.
-- [ ] P0-2: hosted drawing, depth and 3D off for the demo, from environment defaults. Integrator.
-- [ ] P0-3: remove model millimetre depths and model blind flags; flip `tests/test_mv_label.py:22`. Integrator (label), geometry owner (fuse).
-- [ ] P0-4: TripoSR failure memo, enforced timeout, close the Space clients, `u2netp`. Integrator.
-- [ ] P0-9: privacy lines true in code and docs; re-encode images before the VLM. Integrator.
-- [ ] P0-10: clear the stale zip and step 3 on Build, finish change and re-Analyze. Integrator.
-- [ ] P0-11: a failed finish keeps the last good part and suggests the largest size that builds. Geometry owner.
-- [ ] P0-12: `scripts/preflight.py`, TrOCR warm-up, timestamped error logs. Integrator.
+**Before anything else, whole team:** decisions 1–4 above.
 
-**09-26: accuracy, docs and rehearsal**
-- [ ] P0-7: 3–5 real phone captures of the demo parts, measured with calipers, and the degradation tests. Geometry owner (parts), numbers owner (tests).
-- [ ] P0-5: outline gate, sheet warp and flat-field, one PR behind P0-7. Numbers owner.
-- [ ] P0-6: OCR parsing and linking fixes, crop cap, TrOCR gate. Numbers owner.
-- [ ] P0-8: stroke-width compensation. Numbers owner, checked by the geometry owner on the golden parts.
-- [ ] P0-13: README quick start and `docs/demo.md` beat sheet. Integrator.
-- [ ] P0-14: LAN access with a password, only if the phone is demoed. Integrator.
-- [ ] Merge the demo branch to `main`, then two full rehearsals on the demo laptop, the hotspot and the real parts. Whole team.
+### Track 1: Recognition (images, OCR, outlines)
+Code: `outline.py`, `ocr.py`, `qwen_reader.py`, `label.py` (prompt), `reference.py`.
+- [ ] ★ P0-5: the paper sheet is taken as the part. Add a border/coverage/quad abstain, rectify the sheet with `reference._quads`/`_rectify`, and even out the lighting (`outline.py:48-90`). Land it together with the degradation tests.
+- [ ] ★ P0-6: OCR gives trusted junk numbers.
+  - Never join digits across spaces (`ocr.py:43`).
+  - Link ⌀ and R values only to a nearby hole.
+  - Flag a value more than 3× off the pixel measurement.
+  - Gate TrOCR reads at 0.7 confidence.
+  - Show Qwen reads amber unless TrOCR agrees.
+  - Send at most 16 crops.
+- [ ] P0-8: correct for pen-stroke width, which makes walls too thick and holes too small (`outline.py:61-90`). The 3D modeling track checks it on the golden parts.
+- [ ] P0-3 (prompt half): stop asking the vision model for hole depths and blind flags (`label.py:48`).
+- [ ] P0-7 (tests half): degradation tests for shadow, ruled paper, sheet on a desk, tilt and noise.
+- [ ] After the demo: hole positions written by the user (multi-view spec §4.4); report the dropped-hole warning in mm, not grid pixels; drafting conventions (centre lines, pen gaps).
 
-**After the demo (P1/P2):** see the REMOVE, REWRITE, ADD and CHANGE lists above and the cut list. First up: delete the lab app and the old build path, the PartSpec adapter once decision 1 is made, CI, and the per-hole through/blind control.
+### Track 2: 3D modeling (geometry, build, drawing)
+Code: `fuse.py`, `build.py`, `finish.py`, `drawing.py`, `artifacts.py`.
+- [ ] ★ P0-3 (geometry half): remove the model's millimetre depths and blind flags from geometry (`fuse.py:50-52,224-231`, `merge_views.py:184-186`). Holes are through unless the user says otherwise. Flip `tests/test_mv_label.py:22`.
+- [ ] ★ P0-11: a failed fillet or chamfer keeps the last good part and suggests the largest size that builds, by bisection with at most 7 builds (`studio/handlers.py:318-325`).
+- [ ] P0-7 (parts half): 3–5 real demo parts measured with calipers for the golden set (`tests/golden_mv/`), and one measured accuracy number in the README.
+- [ ] After the demo:
+  - a per-hole through/blind control;
+  - a lazy Drawing tab in step 3;
+  - the PartSpec → MultiViewSpec adapter, once decision 1 is taken;
+  - one `FACE_FRAMES` table;
+  - edits keyed by face and position.
+
+### Track 3: Security and privacy
+Code: `pipeline.py`, `label.py`, `studio/app.py`, `status.py`, `routes.py`, `docs/disclosure.md`, `CLAUDE.md`.
+- [ ] ★ P0-9: re-encode images as a 1600 px JPEG before the vision model, so no EXIF or GPS data leaves the machine (`pipeline.py:106`).
+- [ ] ★ P0-9: make the privacy lines true.
+  - Add an upload notice naming DashScope and Hugging Face.
+  - Set `delete_cache=(600, 3600)`.
+  - Turn analytics off.
+  - Correct `CLAUDE.md:69`, `status.py:25`, `studio/app.py:23` and `docs/disclosure.md`, including the rembg `bria-rmbg` CC BY-NC licence.
+  - List the models in the manifest.
+- [ ] ★ Treat placeholder API keys (`replace-me`) as unset.
+- [ ] ★ Add the `OPENCV_IO_MAX_IMAGE_PIXELS` pixel cap.
+- [ ] P0-14, only if the phone is demoed: LAN access only through `STUDIO_HOST` plus `STUDIO_PASSWORD` (Gradio auth), over the presenter's hotspot, never `share=True`.
+- [ ] After the demo:
+  - `/mv` API limits: upload size, spec size, concurrency;
+  - CORS;
+  - token scope;
+  - pinned `gradio` and `gradio_client` versions;
+  - paths that do not depend on the working directory.
+
+### Track 4: Backend and orchestration (pipeline, providers, UI flow, release)
+Code: `pipeline.py`, `complete.py`, `hf3d.py`, `depth.py`, `qwen_image.py`, `studio/handlers.py`, `studio/app.py`, `scripts/`, `README.md`.
+- [ ] ★ P0-1: a vision-API error, a 429 or a `label_invalid` reply falls back to the user's face tags instead of crashing Analyze. Skip the label call when face and kind are tagged, and add a catch-all card (`pipeline.py:104-109`).
+- [ ] ★ P0-2: hosted Qwen-Image, TripoSR, Solaria and rescue are off for the demo, through environment-driven Studio defaults. Never run TripoSR on a sketch. The coverage chip says "extruded (rectangle)".
+- [ ] ★ P0-4: remember a TripoSR failure, enforce the Space timeout, close each Space client, and default rembg to `u2netp` (`complete.py:105-110`, `hf3d.py`).
+- [ ] ★ P0-10: clear the stale zip and step 3 after Build, a finish change or a new Analyze (`studio/app.py:250,266-272`).
+- [ ] ★ P0-12: add `scripts/preflight.py` (keys, Spaces, and the offline example asserting 50/30/20 and Ø5.5), a TrOCR warm-up at launch, timestamped error logs, and timeouts from the environment.
+- [ ] ★ P0-13: a README quick start and a `docs/demo.md` beat sheet with a fallback for each step.
+- [ ] ★ Merge the demo branch to `main`, then two full rehearsals on the demo laptop with the hotspot and the real parts. Whole team.
+- [ ] After the demo:
+  - delete the lab app and the old build path;
+  - move `/mv/build` onto `artifacts`;
+  - CI;
+  - a per-request model-call recorder and "What the AI did" panel;
+  - a shared `atomic_write` helper;
+  - the "merged" badge for opposite-face photos in the Studio.

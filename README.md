@@ -148,5 +148,5 @@ Updated 2026-09-25, two days before the demo:
   - An end-to-end run on the bundled example: 50 × 30 × 20 mm, export and G-code.
 - **Not built yet.** The single-view modules (`partspec/`, `metrology.py`, `merge.py`, `builder.py`, `views.py`, `s2c/api.py`) and the `web/` app are not on any branch.
 - **Not measured yet.** Accuracy on real phone photos. The golden set is empty, and the table above still says "pending".
-- **What to do next.** The P0 checklist, the decisions the team has to take, and the cut list are in `docs/superpowers/reviews/2026-09-24-project-review.md`.
+- **What to do next.** The four-track checklist (recognition, 3D modeling, security, backend and orchestration), the decisions the team has to take, and the cut list are in `docs/superpowers/reviews/2026-09-24-project-review.md`.
 - **Design and history.** Designs are in `docs/superpowers/specs/`; the task lists of past work are in `docs/superpowers/plans/`.
