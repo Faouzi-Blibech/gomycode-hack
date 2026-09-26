@@ -1,0 +1,12 @@
+[
+  {
+    "file": "front.png",
+    "face": "front",
+    "kind": "sketch"
+  },
+  {
+    "file": "top.png",
+    "face": "top",
+    "kind": "sketch"
+  }
+]
