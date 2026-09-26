@@ -1,6 +1,7 @@
 """Benchmark module and CLI against a synthetic reverse-engineering dataset, plus a real-dataset smoke test."""
 import json
 import os
+import time
 from pathlib import Path
 
 import cadquery as cq
@@ -10,7 +11,7 @@ import trimesh
 from PIL import Image
 
 from s2c.multiview import spec as S
-from s2c.multiview.benchmark import load_part, score_part, summarize, summary_markdown
+from s2c.multiview.benchmark import RefPart, load_part, score_part, summarize, summary_markdown
 from s2c.multiview.pipeline import MvPipeline
 from s2c.multiview.raster import Mesh, face_mask, solid_mesh
 
@@ -86,6 +87,22 @@ def test_flipped_stl_winding_still_scores_built_with_positive_volume(tmp_path):
     assert abs(row["vol_err"]) < 0.06
 
 
+def test_score_part_timeout_frees_the_worker(tmp_path, monkeypatch):
+    """A real hang must return once timeout_s elapses, not once the hung work finally finishes."""
+    ref = RefPart("boxes/box_009", "boxes", None, None, {}, True, 10)
+
+    def hang(*args, **kwargs):
+        time.sleep(3)
+        return {}
+
+    monkeypatch.setattr("s2c.multiview.benchmark._run", hang)
+    t0 = time.time()
+    row = score_part(ref, MvPipeline(), tmp_path / "out", timeout_s=0.5)
+    elapsed = time.time() - t0
+    assert row["result"] == "skipped timeout"
+    assert elapsed < 1.5, elapsed
+
+
 def test_not_watertight_is_skipped(tmp_path):
     part_dir = make_part(tmp_path, "boxes/box_002", _box_with_hole(40, 20, 10))
     meta_path = part_dir / "metadata.json"
@@ -153,6 +170,36 @@ def test_cli_writes_results_and_summary(tmp_path):
     summary_text = (out / "summary.md").read_text()
     assert "clean renders" in summary_text
     assert json.loads((out / "summary.json").read_text())["overall"]["n"] == 2
+
+
+def test_cli_isolates_a_broken_part_and_still_scores_the_other(tmp_path):
+    """A bad metadata.json must not poison the run: it becomes one error row, the other part still builds."""
+    from scripts import re_benchmark
+
+    dataset = tmp_path / "dataset"
+    make_part(dataset, "boxes/box_001", _box_with_hole(40, 20, 10))
+    broken_dir = make_part(dataset, "boxes/box_002", _box_with_hole(30, 30, 8))
+    (broken_dir / "metadata.json").write_text("{not valid json")
+    out = tmp_path / "out"
+    re_benchmark.main(["--dataset", str(dataset), "--out", str(out), "--jobs", "2"])
+    rows = {json.loads(line)["part"]: json.loads(line)
+            for line in (out / "results.jsonl").read_text().strip().splitlines()}
+    assert rows["boxes/box_001"]["result"] == "built"
+    assert rows["boxes/box_002"]["result"].startswith("error ")
+
+
+def test_cli_with_two_jobs_writes_two_rows_and_both_summaries(tmp_path):
+    from scripts import re_benchmark
+
+    dataset = tmp_path / "dataset"
+    make_part(dataset, "boxes/box_001", _box_with_hole(40, 20, 10))
+    make_part(dataset, "boxes/box_002", _box_with_hole(30, 30, 8))
+    out = tmp_path / "out"
+    re_benchmark.main(["--dataset", str(dataset), "--out", str(out), "--jobs", "2"])
+    lines = (out / "results.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 2
+    assert (out / "summary.md").exists()
+    assert (out / "summary.json").exists()
 
 
 @pytest.mark.dataset

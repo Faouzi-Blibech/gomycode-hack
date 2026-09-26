@@ -72,20 +72,33 @@ def voxel_iou(a: trimesh.Trimesh, b: trimesh.Trimesh, n: int = 64) -> float:
     return len(ca & cb) / union if union else 0.0
 
 
-def _row(ref: RefPart, result: str, secs: float = 0.0, **extra) -> dict:
-    row = {"part": ref.name, "category": ref.category, "result": result, "secs": round(secs, 1)}
+def bare_row(part: str, category: str, result: str, secs: float = 0.0) -> dict:
+    """A results.jsonl row for a part that never became a RefPart (a bad metadata.json or STL, a crash)."""
+    row = {"part": part, "category": category, "result": result, "secs": round(secs, 1)}
     row.update(dict.fromkeys(ROW_FIELDS))
+    return row
+
+
+def _row(ref: RefPart, result: str, secs: float = 0.0, **extra) -> dict:
+    row = bare_row(ref.name, ref.category, result, secs)
     row.update(extra)
     return row
+
+
+def _frame_iou(ref: RefPart, env: S.Envelope) -> float:
+    def one(face: str) -> float:
+        ours = normalize_mask(face_mask(ref.mesh, face, env)[0])
+        theirs = normalize_mask(render_mask(ref.renders[face]))
+        return iou(ours, theirs)
+
+    return float(np.mean([one(f) for f in S.FACES]))
 
 
 def _score_built(ref: RefPart, pipe: MvPipeline, root: Path, t0: float) -> dict:
     env = ref.envelope
     truth = trimesh.Trimesh(ref.mesh.vertices, ref.mesh.faces, process=False)
     true_vol = abs(float(truth.volume))
-    frame_iou = float(np.mean([iou(normalize_mask(face_mask(ref.mesh, f, env)[0]), normalize_mask(render_mask(ref.renders[f])))
-                               for f in S.FACES]))
-    row = _row(ref, "built", frame_iou=round(frame_iou, 3), vol_true=round(true_vol, 3))
+    row = _row(ref, "built", frame_iou=round(_frame_iou(ref, env), 3), vol_true=round(true_vol, 3))
     imgs = [ImageInput(ref.renders[f].read_bytes(), f, "drawing") for f in S.FACES]
     observed = pipe.observe(imgs)
     if isinstance(observed, S.MvAbstain):
@@ -127,12 +140,15 @@ def score_part(ref: RefPart, pipe: MvPipeline, root: Path, timeout_s: float = 12
         return _row(ref, "skipped not_watertight")
     if ref.triangles > MAX_TRIANGLES:
         return _row(ref, "skipped too_large")
-    with ThreadPoolExecutor(max_workers=1) as ex:
-        future = ex.submit(_run, ref, pipe, root)
-        try:
-            return future.result(timeout=timeout_s)
-        except FutureTimeoutError:
-            return _row(ref, "skipped timeout", secs=timeout_s)
+    ex = ThreadPoolExecutor(max_workers=1)
+    future = ex.submit(_run, ref, pipe, root)
+    try:
+        result = future.result(timeout=timeout_s)
+    except FutureTimeoutError:
+        ex.shutdown(wait=False, cancel_futures=True)  # a real hang must free this worker, not block on shutdown
+        return _row(ref, "skipped timeout", secs=timeout_s)
+    ex.shutdown(wait=False)
+    return result
 
 
 def _reason(result: str) -> tuple[str, str | None]:
