@@ -15,6 +15,23 @@ dependencies = [
   "numpy>=1.26",
   "pillow>=10",
   "python-dotenv>=1.0",
+  "httpx>=0.27",
+  "trimesh>=4.4",
+  "ezdxf>=1.1",
+  "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+ai = [
+  "torch>=2.4",
+  "transformers>=4.44",
+  "rembg[cpu]>=2.0.57",
+  "scikit-image>=0.24",
+  "trimesh>=4.4",
+  "omegaconf>=2.3",
+  "einops>=0.7",
+  "imageio>=2.34",
+  "gradio_client>=1.3",
 ]
 
 [dependency-groups]
@@ -29,6 +46,13 @@ packages = ["s2c"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "gpu: needs a CUDA GPU and the ai extra",
+  "slicer: needs PrusaSlicer installed",
+  "network: calls a hosted model; runs only with NETWORK_TESTS=1",
+  "blender: needs Blender or bpy configured (BLENDER_PATH or BLENDER_PYTHON)",
+  "dataset: needs the reverse-engineering dataset (RE_DATASET)",
+]
 
 [tool.ruff]
-line-length = 100
+line-length = 120

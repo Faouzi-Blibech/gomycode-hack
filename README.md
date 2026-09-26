@@ -64,6 +64,26 @@ Open the web app on your phone using the LAN URL Vite prints. The API and the ap
 
 The vision model is chosen by three environment variables: `VLM_BASE_URL`, `VLM_MODEL`, `VLM_API_KEY`. Any OpenAI-compatible endpoint works. The table in `docs/models.md` lists NVIDIA Build, Gemini, Groq and Ollama presets.
 
+## Multi-view path (pending team sign-off)
+
+Give one or more images per face, several of the same face if you have them: they are aligned and voted into one cleaner outline. Qwen-VL reads the numbers you wrote. Faces you did not give are drawn by Qwen-Image and kept only if they agree with the faces you did give; otherwise TripoSR, otherwise a rectangle. Solaria's depth map tells through holes from blind ones. The part is the intersection of the three extruded outlines, sliced to G-code. Designs: `docs/superpowers/specs/2026-09-22-multiview-gcode-design.md` and `docs/superpowers/specs/2026-09-23-qwen-solaria-design.md`.
+
+    uv run python app_mv_studio.py                                                           # the Studio on :7860 (guided flow, parameters, every export)
+    uv run python app_mv_gradio.py                                                           # the simple lab app
+    uv run python scripts/mv_build.py examples/mv/l_bracket.json --out tmp/mv_demo          # spec -> STEP, STL, G-code
+    uv run python scripts/mv_export.py examples/mv/l_bracket.json --format stl --format step --format pdf  # spec -> chosen formats + zip
+    uv run python scripts/mv.py --image front.jpg@front@sketch --image top.jpg@top@sketch   # images -> the same
+    uv run uvicorn s2c.multiview.app:app --port 8001                                        # /mv API
+    NETWORK_TESTS=1 uv run pytest tests/test_mv_network.py -v                               # live check of the hosted models
+
+Settings are in `.env.example`: Qwen-VL and Qwen-Image on DashScope or Hugging Face, Solaria on Hugging Face. Photos of real parts: shoot top-down with the part lying flat.
+
+G-code needs PrusaSlicer: `winget install --id Prusa3D.PrusaSlicer -e` (needs admin), or unzip the portable zip from the PrusaSlicer GitHub release into `vendor/`. Without it you still get STL and STEP.
+
+Export formats: STL, STEP, 3MF, OBJ, GLB, PLY, BREP, Blender, DXF/SVG/PDF drawing, G-code, and a zip with a manifest. Blender: set `BLENDER_PATH`, or run `scripts/setup_blender.ps1`; without it the download is a Blender kit.
+
+TripoSR (the local fallback when Qwen-Image cannot complete a face): `powershell scripts/setup_triposr.ps1` installs it; without it, that face falls straight to a rectangle.
+
 ## Repository layout
 
 ```text
@@ -119,4 +139,8 @@ Three people, three owners. The integrator owns the contracts, model layer, merg
 
 ## Status
 
-Design and plans are complete. Real code exists today for the contracts (`s2c/partspec/`), the temp file store (`s2c/store.py`), the vision client and topology extraction (`s2c/vision/`), the sketch-path merge with its abstention gates (`s2c/merge.py`), and silhouette handling (`s2c/silhouette.py`). The vision stage is verified end to end against a local Ollama model; see `docs/models.md` for the working configuration and the one to avoid. Builder, views, OCR, metrology, the FastAPI surface and both UIs are still served by their fakes in `s2c/fakes/`, so the pipeline runs but does not yet produce real geometry or read real dimensions. CI (`.github/workflows/ci.yml`) runs `ruff check` and `pytest` on every push and pull request against Python 3.11. See `docs/superpowers/plans/` for the task lists and `docs/superpowers/specs/` for the full design.
+Updated 2026-09-26:
+
+- **Single-view path:** Real code exists for the contracts (`s2c/partspec/`), the temp file store (`s2c/store.py`), the vision client and topology extraction (`s2c/vision/`), the sketch-path merge with its abstention gates (`s2c/merge.py`), and silhouette handling (`s2c/silhouette.py`). Fakes in `s2c/fakes/` allow the pipeline to run before all modules land. CI (`.github/workflows/ci.yml`) runs `ruff check` and `pytest` on push and PR.
+- **Multi-view path & Studio:** Built and tested with capture, review, modeling, and export across 12 formats, backed by over 290 automated tests and verified end-to-end on benchmark examples.
+- **What to do next:** See the checklist and plans in `docs/superpowers/reviews/2026-09-24-project-review.md` and `docs/superpowers/plans/`.
