@@ -117,6 +117,51 @@ def test_default_pipeline_reads_with_qwen_vl_when_configured(monkeypatch):
     assert pipeline.default_pipeline().batch_reader is not None
 
 
+def test_default_pipeline_warms_trocr_then_qwen_in_one_daemon_thread(monkeypatch):
+    import threading
+
+    from s2c.multiview import qwen_reader
+    from s2c.reading.trocr import TrocrReader
+
+    for key, value in {"VLM_BASE_URL": "http://localhost:9/v1", "VLM_MODEL": "m", "VLM_API_KEY": "k"}.items():
+        monkeypatch.setenv(key, value)
+    order = []
+    started, release = threading.Event(), threading.Event()
+
+    def slow_warm(self):
+        started.set()
+        release.wait(timeout=2)
+        order.append("trocr")
+
+    monkeypatch.setattr(TrocrReader, "warm", slow_warm)
+    monkeypatch.setattr(qwen_reader, "warm_chat", lambda chat: order.append("qwen"))
+    pipeline.default_pipeline()
+    assert started.wait(timeout=2)
+    warmups = [t for t in threading.enumerate() if t.name == "reader-warmup"]
+    assert warmups and warmups[0].daemon
+    release.set()
+    warmups[0].join(timeout=5)
+    assert order == ["trocr", "qwen"]  # TrOCR must finish loading before Ollama sees the Qwen warm-up
+
+
+def test_default_pipeline_does_not_warm_qwen_when_unconfigured(monkeypatch):
+    import threading
+
+    from s2c.multiview import qwen_reader
+    from s2c.reading.trocr import TrocrReader
+
+    monkeypatch.delenv("VLM_API_KEY", raising=False)
+    monkeypatch.delenv("VLM_BASE_URL", raising=False)
+    order = []
+    monkeypatch.setattr(TrocrReader, "warm", lambda self: order.append("trocr"))
+    monkeypatch.setattr(qwen_reader, "warm_chat", lambda chat: order.append("qwen"))
+    pipeline.default_pipeline()
+    warmups = [t for t in threading.enumerate() if t.name == "reader-warmup"]
+    if warmups:
+        warmups[0].join(timeout=5)
+    assert order == ["trocr"]
+
+
 def test_two_sketches_of_one_face_merge_into_one_observation(tmp_path):
     pipe = MvPipeline()
     observed = pipe.observe([ImageInput(sketch(600, 400), "front", "sketch"),

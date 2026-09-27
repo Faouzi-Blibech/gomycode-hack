@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,6 +15,7 @@ import cv2
 import numpy as np
 from pydantic import ValidationError
 
+from s2c.multiview import qwen_reader
 from s2c.multiview import spec as S
 from s2c.multiview.build import BuildError, export
 from s2c.multiview.build import build as build_solid
@@ -295,13 +298,28 @@ class MvPipeline:
                            views, scores, warnings)
 
 
+def _warm_readers(reader: object | None, read_chat: Chat | None) -> None:
+    """TrOCR first, then Qwen: Ollama only sees TrOCR's GPU share once it has actually claimed it, so it
+    can decide how many layers to keep on the GPU with that share already gone."""
+    if reader is not None:
+        warm = getattr(reader, "warm", None)
+        if warm is not None:
+            t0 = time.perf_counter()
+            try:
+                warm()
+                log.info("reader %s ready in %.1f s", reader.name, time.perf_counter() - t0)
+            except Exception as e:  # noqa: BLE001 - a failed warm-up only means a slower first read
+                log.warning("reader %s warm-up failed: %s", reader.name, e)
+    if read_chat is not None:
+        qwen_reader.warm_chat(read_chat)
+
+
 def default_pipeline() -> MvPipeline:
     """Qwen-VL, Qwen-Image and Solaria from the environment; TrOCR and TripoSR when the ai extra is installed."""
     reader = provider = None
     try:
         from s2c.reading.trocr import TrocrReader
         reader = TrocrReader()
-        ReadingService([reader]).warm()  # loads the model in the background; the first request does not wait
     except Exception as e:  # noqa: BLE001 - transformers missing: fall back without TrOCR
         log.warning("TrOCR unavailable: %s", e)
     try:
@@ -310,6 +328,9 @@ def default_pipeline() -> MvPipeline:
     except Exception as e:  # noqa: BLE001 - a failed provider falls back, never breaks the request
         log.warning("TripoSR unavailable: %s", e)
     read_chat = env_chat(stage="mv_read")
+    if reader is not None or read_chat is not None:
+        threading.Thread(target=_warm_readers, args=(reader, read_chat), name="reader-warmup",
+                          daemon=True).start()
     space = os.environ.get("SOLARIA_SPACE")
     image_gen = default_gen()
     if image_gen is None:
