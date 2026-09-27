@@ -507,17 +507,25 @@ def _read_label(image: np.ndarray, box: Box | None, reader: Reader | None) -> st
 
 def _name(boxes: list[Box], texts: list[str], projection: str, slack: int):
     """Faces, whether each view lines up with the front, whether some name for it passed the scale check, the
-    warnings, and the views whose label won over their place in the layout. Every view is tried as the front; the naming that agrees with the most labels, then names the most
-    view area, wins, and a tie goes to the layout's front (most aligned neighbours, spec 3.2)."""
+    warnings, and the views whose label won over their place in the layout.
+
+    Every view is tried as the front. The naming that names the most view area under the scale check wins, then the
+    one agreeing with the most labels, then the layout's front (most aligned neighbours, spec 3.2): one wrong
+    "FRONT VIEW" label cannot flip a naming the layout completes."""
     hints = [_label_hint(t) for t in texts]
     usual = _layout_front(boxes, slack)
     best = None
     for f in range(len(boxes)):
         faces, aligned, checked, notes, agreed, against = _assign(boxes, hints, texts, f, projection, slack)
-        score = (agreed, sum(_area(boxes[i]) for i, x in enumerate(faces) if x != AUTO), f == usual)
+        score = (sum(_area(boxes[i]) for i, x in enumerate(faces) if x != AUTO), agreed, f == usual)
         if best is None or score > best[0]:
-            best = (score, faces, aligned, checked, notes, against)
-    return best[1:]
+            best = (score, faces, aligned, checked, notes, against, f)
+    *result, f = best[1:]
+    if f != usual and hints[f] == "front":
+        placed = _layout(boxes, usual, projection, slack)[0][f]
+        if placed:
+            result[3] = result[3] + [f"{texts[f]} is where {placed} belongs; used the label"]
+    return tuple(result)
 
 
 def _assign(boxes, hints, texts, f, projection, slack):

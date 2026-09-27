@@ -250,6 +250,18 @@ def test_an_overruled_label_says_why(views, face, text, why):
     assert not any("does not match its size" in w for w in naming.warnings)
 
 
+@pytest.mark.parametrize("wrong", ["top", "left"])
+def test_one_wrong_front_label_does_not_flip_the_naming(views, wrong):
+    """The layout names all three views; a lone "FRONT VIEW" on another view is overruled, with a warning."""
+    faces = ("front", "top", "left")
+    img, truth = draw_sheet(pick(views, faces))
+    texts = {f: "" for f in faces} | {wrong: "FRONT VIEW"}
+    sheet = split_sheet(img)
+    naming = name_views(sheet, img, reader=fake_reader(img, truth, texts))
+    assert named(sheet, naming, truth, faces) == {f: f for f in faces}
+    assert any(w.startswith("FRONT VIEW") for w in naming.warnings), naming.warnings
+
+
 def test_an_unnamable_view_stays_auto(views):
     """A view as large as a real one but in line with nothing: its name would be a guess."""
     img, truth = draw_sheet(pick(views, FIVE), labels=False)
