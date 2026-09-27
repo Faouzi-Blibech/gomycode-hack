@@ -67,7 +67,8 @@ def get_chat_transport() -> ChatTransport | None:
     base_url = os.environ.get("CHAT_BASE_URL") or os.environ.get("VLM_BASE_URL") or ""
     model = os.environ.get("CHAT_MODEL") or os.environ.get("VLM_MODEL") or ""
     api_key = os.environ.get("CHAT_API_KEY") or os.environ.get("VLM_API_KEY") or ""
-    local = base_url.startswith(("http://localhost", "http://127.0.0.1"))  # Ollama needs no key
+    # A local Ollama needs no key; in Docker the entrypoint rewrites localhost to host.docker.internal
+    local = base_url.startswith(("http://localhost", "http://127.0.0.1", "http://host.docker.internal"))
     if not (base_url and model and (api_key or local)):
         return None
     from openai import OpenAI

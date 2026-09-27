@@ -79,3 +79,12 @@ def test_no_provider_configured_is_503(monkeypatch):
 def test_too_many_messages_is_400():
     r = post(fake(), *["hi"] * 21)
     assert r.status_code == 400 and r.json()["error"]
+
+
+def test_ollama_behind_the_docker_host_needs_no_key(monkeypatch):
+    from s2c.web.chat import get_chat_transport
+    for k in ("CHAT_BASE_URL", "CHAT_MODEL", "CHAT_API_KEY", "VLM_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("VLM_BASE_URL", "http://host.docker.internal:11434/v1")
+    monkeypatch.setenv("VLM_MODEL", "gemma3:4b")
+    assert get_chat_transport() is not None
