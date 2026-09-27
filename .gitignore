@@ -36,6 +36,9 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Reader call log (no image, no text, but not something to commit)
+logs/reading.jsonl
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
@@ -229,3 +232,9 @@ vendor/*
 
 # Reverse-engineering dataset: third-party NC-licensed models, read by scripts/re_benchmark.py --dataset
 Reverce engineering/
+
+# Web app
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+!web/src/lib/

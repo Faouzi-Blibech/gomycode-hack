@@ -5,6 +5,9 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -12,6 +15,7 @@ import cv2
 import numpy as np
 from pydantic import ValidationError
 
+from s2c.multiview import qwen_reader
 from s2c.multiview import spec as S
 from s2c.multiview.build import BuildError, export
 from s2c.multiview.build import build as build_solid
@@ -40,9 +44,18 @@ from s2c.multiview.settings import AiSettings, GeometrySettings
 from s2c.multiview.slice import slice_solid
 from s2c.multiview.turned import WARNING as TURNED_WARNING
 from s2c.multiview.turned import complete_turned, turned_axis
+from s2c.reading import ReadingService, as_reader, read_timeout_s
 
 log = logging.getLogger(__name__)
 IOU_GREEN = 0.85
+
+Progress = Callable[[str, dict], None]
+
+
+def _emit(progress: Progress | None, **data) -> None:
+    """Report one pipeline stage event; a no-op when no callback was given. Never wraps the callback in
+    try/except -- an exception it raises (e.g. JobCancelled) must propagate out of observe()/fuse()."""
+    progress and progress("stage", data)
 
 
 @dataclass
@@ -108,6 +121,16 @@ class MvPipeline:
         self.seed, self.attempts = SEED, TRIES
         self.draw_faces = self.rescue_enabled = True
 
+    def reading(self) -> ReadingService | None:
+        """The readers in trust order: the batch (Qwen-VL) reader first, it keeps the ⌀ and R signs; then TrOCR."""
+        base, model = os.environ.get("VLM_BASE_URL"), os.environ.get("VLM_MODEL")
+        qwen_key = f"qwen:{base}:{model}" if base and model and self.batch_reader is not None else None
+        readers = [r for r in (
+            as_reader(self.batch_reader, "qwen", calibrated=False, batch=True, timeout_s=read_timeout_s(),
+                      cache_key=qwen_key),
+            as_reader(self.reader, "trocr", calibrated=True, batch=False)) if r is not None]
+        return ReadingService(readers) if readers else None
+
     def configured(self, ai: AiSettings) -> MvPipeline:
         """A copy for one request with the user's AI switches, seed and attempts; the shared pipeline never changes."""
         pipe = copy.copy(self)
@@ -128,21 +151,27 @@ class MvPipeline:
             return hint_label(item.face, item.kind or "sketch")
         return S.MvAbstain(stage="label", reason="face_unknown", remedy="Tell us which face this photo shows.")
 
-    def observe(self, images: list[ImageInput], reference: str | None = None) -> Observed | S.MvAbstain:
+    def observe(self, images: list[ImageInput], reference: str | None = None,
+                progress: Progress | None = None) -> Observed | S.MvAbstain:
         observed = Observed([], [], {}, [])
         reads = self.reader is not None or self.batch_reader is not None
         if not reads:
             observed.warnings.append("OCR unavailable: enter the dimensions by hand")
+        service = self.reading() if reads else None
         excluded: list[tuple] = []
-        for item in images:
+        for i, item in enumerate(images):
             bgr = cv2.imdecode(np.frombuffer(item.data, np.uint8), cv2.IMREAD_COLOR)
             if bgr is None:
                 return S.MvAbstain(stage="outline", reason="bad_image",
                                    remedy="The file is not an image. Upload a JPEG or PNG.")
             bgr = resize_long_side(bgr)
+            _emit(progress, key="label", state="running", index=i)
             label = self._label(item)
             if isinstance(label, S.MvAbstain):
                 return label
+            height, width = bgr.shape[:2]
+            _emit(progress, key="label", state="done", index=i, face=label.face, kind=label.input_kind,
+                  confidence=label.confidence, width=width, height=height)
             mm_per_px, mask_out = None, ()
             if reference and label.input_kind == "photo":
                 ref = find_reference(bgr, reference)
@@ -150,12 +179,21 @@ class MvPipeline:
                     return ref
                 bgr, mm_per_px = ref.image, ref.mm_per_px
                 mask_out = (ref.bbox,) if ref.bbox else ()
+            _emit(progress, key="outline", state="running", index=i)
             outline, rescued = self._outline(bgr, mask_out, label.input_kind)
             if isinstance(outline, S.MvAbstain):
                 return outline
+            _emit(progress, key="outline", state="done", index=i, outline=outline.outer.astype(int).tolist(),
+                  circles=[{"cx": c.cx, "cy": c.cy, "d": c.d} for c in outline.circles])
             values = []
-            if reads and label.input_kind != "photo":
-                values = link(read_values(bgr, outline, self.reader, self.batch_reader), outline)
+            if not reads or label.input_kind == "photo":
+                _emit(progress, key="read", state="skipped", index=i)
+            else:
+                _emit(progress, key="read", state="running", index=i)
+                values = link(read_values(bgr, outline, service), outline)
+                _emit(progress, key="read", state="done", index=i,
+                      reads=[{"text": v.reading.text, "value_mm": v.reading.value_mm, "kind": v.reading.kind,
+                              "bbox": v.reading.bbox, "confidence": v.reading.confidence} for v in values])
             obs = Observation(face=label.face, kind=label.input_kind, outline=outline, values=values,
                               mm_per_px=mm_per_px, confidence=label.confidence * (RESCUE_PENALTY if rescued else 1.0),
                               stroke=line_width(bgr, outline, mask_out) if outline.line_art and not rescued else 0.0)
@@ -192,7 +230,7 @@ class MvPipeline:
             try:
                 depth = self.depth(observed.images[k])
                 warnings += apply_depth(observed.observations[k], depth, excluded[k])
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - a failed provider falls back, never breaks the request
                 log.warning("Solaria failed on %s: %s", face, e)
                 warnings.append(f"{face}: depth unavailable")
         return warnings
@@ -207,7 +245,8 @@ class MvPipeline:
         return observed
 
     def fuse(self, observed: Observed, user_values: dict | None = None, accepted=(), rejected=(),
-             geometry: GeometrySettings | None = None) -> S.MultiViewSpec | S.MvAbstain:
+             geometry: GeometrySettings | None = None,
+             progress: Progress | None = None) -> S.MultiViewSpec | S.MvAbstain:
         geometry = geometry or GeometrySettings()
         env_result = fuse_envelope(observed.observations, user_values)
         if isinstance(env_result, S.MvAbstain):
@@ -229,6 +268,7 @@ class MvPipeline:
         image = observed.images[best] if best < len(observed.images) else None  # None once routes dropped them
         pairs = sorted(zip(observed.observations, observed.images), key=lambda p: -p[0].confidence)
         refs = [(o.face, img) for o, img in pairs][:MAX_REFS]
+        _emit(progress, key="draw", state="running")
         full, more, observed.mesh = complete({f: ol for f, (ol, _) in outlines.items()}, env, target.face,
                                              observed.masks[target.face], image, self.mesh_provider,
                                              observed.mesh, tuple(rejected),
@@ -236,9 +276,11 @@ class MvPipeline:
                                              qwen_cache=observed.qwen_cache, filled_by=observed.filled_by,
                                              seed=self.seed, attempts=self.attempts)
         warnings += more
+        _emit(progress, key="draw", state="done", filled_by=dict(observed.filled_by))
         with_prov = {f: (ol, outlines[f][1] if f in outlines else ("inferred" if ol.source == "inferred" else "default"))
                      for f, ol in full.items()}
         feats, feat_prov = features_from(observed.observations, env, edges)
+        _emit(progress, key="fuse", state="running")
         try:
             spec = assemble(env, env_prov, with_prov, feats, feat_prov, warnings, user_values, accepted,
                             snap_values=geometry.snap, clearance=geometry.clearance,
@@ -255,6 +297,7 @@ class MvPipeline:
         note = axis and TURNED_WARNING.format(axis=axis)
         if note and note not in spec.warnings:
             spec = spec.model_copy(update={"warnings": [*spec.warnings, note]})
+        _emit(progress, key="fuse", state="done")
         return spec
 
     def build(self, spec: S.MultiViewSpec, out_dir: Path, masks: dict | None = None) -> BuildResult | S.MvAbstain:
@@ -275,20 +318,39 @@ class MvPipeline:
                            views, scores, warnings)
 
 
+def _warm_readers(reader: object | None, read_chat: Chat | None) -> None:
+    """TrOCR first, then Qwen: Ollama only sees TrOCR's GPU share once it has actually claimed it, so it
+    can decide how many layers to keep on the GPU with that share already gone."""
+    if reader is not None:
+        warm = getattr(reader, "warm", None)
+        if warm is not None:
+            t0 = time.perf_counter()
+            try:
+                warm()
+                log.info("reader %s ready in %.1f s", reader.name, time.perf_counter() - t0)
+            except Exception as e:  # noqa: BLE001 - a failed warm-up only means a slower first read
+                log.warning("reader %s warm-up failed: %s", reader.name, e)
+    if read_chat is not None:
+        qwen_reader.warm_chat(read_chat)
+
+
 def default_pipeline() -> MvPipeline:
     """Qwen-VL, Qwen-Image and Solaria from the environment; TrOCR and TripoSR when the ai extra is installed."""
     reader = provider = None
     try:
-        from s2c.multiview.ocr import trocr_reader
-        reader = trocr_reader()
-    except Exception as e:  # transformers missing
+        from s2c.reading.trocr import TrocrReader
+        reader = TrocrReader()
+    except Exception as e:  # noqa: BLE001 - transformers missing: fall back without TrOCR
         log.warning("TrOCR unavailable: %s", e)
     try:
         from s2c.multiview.hf3d import default_provider
         provider = default_provider()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - a failed provider falls back, never breaks the request
         log.warning("TripoSR unavailable: %s", e)
     read_chat = env_chat(stage="mv_read")
+    if reader is not None or read_chat is not None:
+        threading.Thread(target=_warm_readers, args=(reader, read_chat), name="reader-warmup",
+                          daemon=True).start()
     space = os.environ.get("SOLARIA_SPACE")
     image_gen = default_gen()
     if image_gen is None:

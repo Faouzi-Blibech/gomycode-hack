@@ -133,7 +133,7 @@ def default_provider():
         for name, fn in (("local", local_triposr), ("space", space_triposr)):
             try:
                 return fn(image_bgr)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - a failed provider falls back, never breaks the request
                 log.warning("TripoSR %s failed: %s", name, e)
                 errors.append(f"{name}: {e}")
         raise RuntimeError("; ".join(errors))

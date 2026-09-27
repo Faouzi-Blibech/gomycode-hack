@@ -21,6 +21,7 @@ CLEARANCE_CLASSES = {  # ISO 273 clearance holes for M2, M2.5, M3, M4, M5, M6, M
 THICKNESS_MM = (1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0)
 SNAPPABLE = frozenset({"scaled", "inferred", "estimated"})
 DISAGREE = 0.05
+SCALE_TRAP = 3.0  # sketches are not to scale, but a written size 3x off the rest is a misread until confirmed
 _FEATURE_PATH = re.compile(r"features\[(\d+)\]\.(\w+)")
 
 
@@ -64,9 +65,13 @@ def _differs(a: float, b: float) -> bool:
 @dataclass
 class _Candidate:
     value: float
-    prov: str
+    prov: str          # user_written | unconfirmed | measured; "unconfirmed" never leaves this module
     confidence: float
     face: str
+    px: float = 0.0    # the span the value measures, in image pixels
+    axis: str = ""     # envelope axis this candidate feeds (x, y or z)
+    source: object = None  # the Reading a written candidate came from; a round part's "ab" reading feeds
+                            # both its axes from the same Reading, so it must never count as two other sizes
 
 
 def _envelope_candidates(observations: list[Observation]) -> dict[str, list[_Candidate]]:
@@ -79,18 +84,45 @@ def _envelope_candidates(observations: list[Observation]) -> dict[str, list[_Can
                         if (lv.axis == which and lv.reading.kind == "linear") or lv.axis == "ab"]
             if readings:
                 r = max(readings, key=_value)
-                cands[axis].append(_Candidate(_value(r), "user_written", r.confidence, o.face))
+                prov = "user_written" if r.confirmed else "unconfirmed"
+                cands[axis].append(_Candidate(_value(r), prov, r.confidence, o.face, float(px), axis, r))
             if o.mm_per_px:
-                cands[axis].append(_Candidate(px * o.mm_per_px, "measured", o.confidence, o.face))
+                cands[axis].append(_Candidate(px * o.mm_per_px, "measured", o.confidence, o.face, float(px), axis))
     return cands
+
+
+def _scale_trap(cands: dict[str, list[_Candidate]], user_values: dict) -> list[str]:
+    """A written size whose mm per pixel is more than SCALE_TRAP times off the median of at least two other
+    written sizes is demoted to unconfirmed. A note is dropped for an axis the user already confirmed."""
+    written = [c for axis in "xyz" for c in cands[axis] if c.prov in ("user_written", "unconfirmed") and c.px > 0]
+    notes = []
+    for c in written:
+        others, seen = [], set()
+        for o in written:
+            if o is c or (c.source is not None and o.source is c.source):
+                continue
+            key = id(o.source) if o.source is not None else id(o)
+            if key in seen:
+                continue
+            seen.add(key)
+            others.append(o.value / o.px)
+        if len(others) < 2:
+            continue
+        median, scale = float(np.median(others)), c.value / c.px
+        if c.prov == "user_written" and max(scale / median, median / scale) > SCALE_TRAP:
+            c.prov = "unconfirmed"
+            if f"envelope.{c.axis}_mm" not in user_values:
+                notes.append(f"{c.face}: {c.value:g} mm does not fit the drawing's scale; check it")
+    return notes
 
 
 def fuse_envelope(observations: list[Observation], user_values: dict | None = None):
     user_values = user_values or {}
     cands = _envelope_candidates(observations)
+    warnings: list[str] = _scale_trap(cands, user_values)
     values: dict[str, float] = {}
     prov: dict[str, str] = {}
-    warnings: list[str] = []
+    pending: dict[str, float] = {}
     for axis in "xyz":
         key, name = f"envelope.{axis}_mm", S.AXIS_NAMES[axis]
         if key in user_values:
@@ -98,6 +130,7 @@ def fuse_envelope(observations: list[Observation], user_values: dict | None = No
             continue
         written = [c for c in cands[axis] if c.prov == "user_written"]
         measured = [c for c in cands[axis] if c.prov == "measured"]
+        unconfirmed = [c for c in cands[axis] if c.prov == "unconfirmed"]
         if written:
             best = max(written, key=lambda c: c.confidence)
             for c in written:
@@ -112,14 +145,22 @@ def fuse_envelope(observations: list[Observation], user_values: dict | None = No
         elif measured:
             best = max(measured, key=lambda c: c.confidence)
             values[axis], prov[key] = round(best.value, 2), "measured"
+        elif unconfirmed:
+            pending[axis] = max(unconfirmed, key=lambda c: c.confidence).value
     missing = [a for a in "xyz" if a not in values]
     if missing:
         first = missing[0]
+        name = S.AXIS_NAMES[first]
+        remedy = (f"Check the {name}: the sketch reads {pending[first]:g} mm. Confirm or correct it."
+                  if first in pending else f"Enter the {name} in mm.")
+        suggested = {**_suggest(observations, values, missing),
+                     **{f"envelope.{a}_mm": v for a, v in pending.items()}}
         return S.MvAbstain(
-            stage="dimensions", reason=f"missing_{first}", remedy=f"Enter the {S.AXIS_NAMES[first]} in mm.",
+            stage="dimensions", reason=f"missing_{first}", remedy=remedy,
             partial={"known": {f"envelope.{a}_mm": v for a, v in values.items()},
                      "missing": [f"envelope.{a}_mm" for a in missing],
-                     "suggested": _suggest(observations, values, missing)})
+                     "suggested": suggested,
+                     "provenance": {f"envelope.{a}_mm": prov[f"envelope.{a}_mm"] for a in values}})
     return S.Envelope(x_mm=values["x"], y_mm=values["y"], z_mm=values["z"]), prov, warnings
 
 
@@ -204,12 +245,16 @@ def _duplicate_through(feats: list[dict], face: str, a: float, b: float, env: S.
 
 
 def _diameter(o: Observation, i: int, sa: float, sb: float) -> tuple[float, str]:
-    """Circle i's diameter in mm and its provenance: written next to it, else measured on a photo, else scaled."""
-    written = [_value(lv.reading) for lv in o.values if lv.hole_index == i]
+    """Circle i's diameter in mm and its provenance: written next to it (inferred when unconfirmed or off scale), else
+    measured on a photo, else scaled."""
+    c = o.outline.circles[i]
+    drawn = c.d * o.mm_per_px if o.mm_per_px else c.d * (sa + sb) / 2
+    written = [(_value(lv.reading), lv.reading.confirmed) for lv in o.values if lv.hole_index == i]
     if written:
-        return float(written[-1]), "user_written"
-    d = o.outline.circles[i].d
-    return (float(d * o.mm_per_px), "measured") if o.mm_per_px else (float(d * (sa + sb) / 2), "scaled")
+        d, confirmed = written[-1]
+        off = drawn > 0 and max(d / drawn, drawn / d) > SCALE_TRAP
+        return float(d), "user_written" if confirmed and not off else "inferred"
+    return float(drawn), "measured" if o.mm_per_px else "scaled"
 
 
 def features_from(observations: list[Observation], env: S.Envelope, edges: dict[int, set[int]] | None = None):

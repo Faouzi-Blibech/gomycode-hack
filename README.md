@@ -53,14 +53,32 @@ Requirements: Python 3.11, [uv](https://docs.astral.sh/uv/), Node 20.
 cp .env.example .env            # add a vision model key, see docs/models.md
 uv sync
 uv run pytest                   # everything green before you start
-
-uv run uvicorn s2c.api:app --host 0.0.0.0 --port 8000     # API
-uv run python app_gradio.py                                # lab view on :7860
-
-cd web && npm install && npm run dev -- --host             # mobile web app
 ```
 
-Open the web app on your phone using the LAN URL Vite prints. The API and the app must be reachable from the phone.
+**Demo, one port.** Build the web app once, then the API serves it at `/`:
+
+```bash
+cd web && npm install && npm run build && cd ..
+uv run uvicorn s2c.web.server:app --host 0.0.0.0 --port 8000
+```
+
+Open `http://localhost:8000`, or `http://<your-LAN-IP>:8000` on a phone on the same network. Rebuild `web/` after any frontend change.
+
+**Development, two processes, hot reload.** Vite on :5173 proxies `/api` to the API on :8000:
+
+```bash
+uv run uvicorn s2c.web.server:app --port 8000 --reload     # terminal 1
+cd web && npm run dev                                       # terminal 2, open http://localhost:5173
+```
+
+On Windows, `powershell scripts/dev.ps1` starts both (Ctrl+C stops both). Other entry points:
+
+```bash
+uv run uvicorn s2c.api:app --port 8002        # the single-image API
+uv run python app_gradio.py                   # lab view on :7860
+```
+
+Without any model keys the app still runs end to end: the offline path traces the outlines, skips reading, and asks you to type the overall size on the Review screen. `GET /api/status` shows which providers are configured.
 
 The vision model is chosen by three environment variables: `VLM_BASE_URL`, `VLM_MODEL`, `VLM_API_KEY`. Any OpenAI-compatible endpoint works. The table in `docs/models.md` lists NVIDIA Build, Gemini, Groq and Ollama presets.
 
