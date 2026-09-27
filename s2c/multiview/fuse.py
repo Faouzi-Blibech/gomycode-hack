@@ -60,6 +60,9 @@ class _Candidate:
     confidence: float
     face: str
     px: float = 0.0    # the span the value measures, in image pixels
+    axis: str = ""     # envelope axis this candidate feeds (x, y or z)
+    source: object = None  # the Reading a written candidate came from; a round part's "ab" reading feeds
+                            # both its axes from the same Reading, so it must never count as two other sizes
 
 
 def _envelope_candidates(observations: list[Observation]) -> dict[str, list[_Candidate]]:
@@ -73,32 +76,41 @@ def _envelope_candidates(observations: list[Observation]) -> dict[str, list[_Can
             if readings:
                 r = max(readings, key=_value)
                 prov = "user_written" if r.confirmed else "unconfirmed"
-                cands[axis].append(_Candidate(_value(r), prov, r.confidence, o.face, float(px)))
+                cands[axis].append(_Candidate(_value(r), prov, r.confidence, o.face, float(px), axis, r))
             if o.mm_per_px:
-                cands[axis].append(_Candidate(px * o.mm_per_px, "measured", o.confidence, o.face, float(px)))
+                cands[axis].append(_Candidate(px * o.mm_per_px, "measured", o.confidence, o.face, float(px), axis))
     return cands
 
 
-def _scale_trap(cands: dict[str, list[_Candidate]]) -> list[str]:
+def _scale_trap(cands: dict[str, list[_Candidate]], user_values: dict) -> list[str]:
     """A written size whose mm per pixel is more than SCALE_TRAP times off the median of at least two other
-    written sizes is demoted to unconfirmed."""
+    written sizes is demoted to unconfirmed. A note is dropped for an axis the user already confirmed."""
     written = [c for axis in "xyz" for c in cands[axis] if c.prov in ("user_written", "unconfirmed") and c.px > 0]
     notes = []
     for c in written:
-        others = [o.value / o.px for o in written if o is not c]
+        others, seen = [], set()
+        for o in written:
+            if o is c or (c.source is not None and o.source is c.source):
+                continue
+            key = id(o.source) if o.source is not None else id(o)
+            if key in seen:
+                continue
+            seen.add(key)
+            others.append(o.value / o.px)
         if len(others) < 2:
             continue
         median, scale = float(np.median(others)), c.value / c.px
         if c.prov == "user_written" and max(scale / median, median / scale) > SCALE_TRAP:
             c.prov = "unconfirmed"
-            notes.append(f"{c.face}: {c.value:g} mm does not fit the drawing's scale; check it")
+            if f"envelope.{c.axis}_mm" not in user_values:
+                notes.append(f"{c.face}: {c.value:g} mm does not fit the drawing's scale; check it")
     return notes
 
 
 def fuse_envelope(observations: list[Observation], user_values: dict | None = None):
     user_values = user_values or {}
     cands = _envelope_candidates(observations)
-    warnings: list[str] = _scale_trap(cands)
+    warnings: list[str] = _scale_trap(cands, user_values)
     values: dict[str, float] = {}
     prov: dict[str, str] = {}
     pending: dict[str, float] = {}

@@ -286,6 +286,27 @@ def test_a_size_far_off_the_drawing_scale_is_only_a_suggestion():
     assert res.remedy == "Check the depth: the sketch reads 1248 mm. Confirm or correct it."
 
 
+def test_a_confirmed_axis_drops_its_scale_trap_warning():
+    front = front_obs()
+    top = Observation(face="top", kind="sketch", outline=px_outline(h=101),
+                      values=[written(60, "a"), written(1248, "b")])
+    env, prov, warnings = fuse_envelope([front, top], {"envelope.z_mm": 25})
+    assert env.z_mm == 25 and prov["envelope.z_mm"] == "user_edited"
+    assert not any("scale" in w for w in warnings)
+
+
+def test_a_circular_parts_matching_axis_pair_is_not_double_counted_in_the_scale_trap():
+    # a round front reads one diameter for both axes (⌀80 on a 400 x 400 px outline); top writes one other
+    # size (45 mm on 60 px). Before the fix the ab reading's two candidates counted each other as a second
+    # "other written size", tripping the trap on the lone genuine other size.
+    front = Observation(face="front", kind="sketch", outline=px_outline(w=401, h=401), values=[written(80, "ab")])
+    top = Observation(face="top", kind="sketch", outline=px_outline(h=61), values=[written(45, "b")])
+    env, prov, warnings = fuse_envelope([front, top])
+    assert (env.x_mm, env.y_mm, env.z_mm) == (80, 80, 45)
+    assert prov["envelope.z_mm"] == "user_written"
+    assert not any("scale" in w for w in warnings)
+
+
 def test_the_scale_trap_needs_two_other_sizes():
     front = Observation(face="front", kind="sketch", outline=px_outline(h=121),
                         values=[written(100, "a"), written(3, "b")])  # a thin plate drawn thick: 6x off
