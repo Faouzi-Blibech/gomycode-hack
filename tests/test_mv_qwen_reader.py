@@ -5,7 +5,7 @@ import numpy as np
 from s2c.multiview.ocr import read_values
 from s2c.multiview.outline import extract
 from s2c.multiview.qwen_reader import qwen_batch_reader
-from tests.test_mv_ocr import sketch_with_values
+from tests.test_mv_ocr import sketch_with_values, svc
 
 CROP = np.full((40, 60, 3), 255, np.uint8)
 
@@ -69,7 +69,7 @@ def test_no_crops_makes_no_call():
     assert qwen_batch_reader(chat)([]) == [] and chat.calls == []
 
 
-def test_read_values_uses_the_batch_once_and_falls_back_to_the_reader():
+def test_read_values_calls_the_batch_once_and_keeps_the_local_reads_when_it_fails():
     img = sketch_with_values()
     o = extract(img)
     calls = []
@@ -81,6 +81,7 @@ def test_read_values_uses_the_batch_once_and_falls_back_to_the_reader():
     def failing(crops):
         return None
 
-    assert sorted(r.value_mm for r in read_values(img, o, None, batch)) == [40.0, 60.0] and calls == [2]
-    assert [r.value_mm for r in read_values(img, o, lambda crop: ("60", 0.8), failing)] == [60.0, 60.0]
-    assert read_values(img, o, None, failing) == []
+    assert sorted(r.value_mm for r in read_values(img, o, svc(batch=batch))) == [40.0, 60.0] and calls == [2]
+    kept = read_values(img, o, svc(lambda crop: ("60", 0.8), failing))
+    assert [(r.value_mm, r.confirmed) for r in kept] == [(60.0, False), (60.0, False)]
+    assert read_values(img, o, svc(batch=failing)) == []

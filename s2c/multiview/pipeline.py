@@ -40,6 +40,7 @@ from s2c.multiview.settings import AiSettings, GeometrySettings
 from s2c.multiview.slice import slice_solid
 from s2c.multiview.turned import WARNING as TURNED_WARNING
 from s2c.multiview.turned import turned_axis
+from s2c.reading import ReadingService, as_reader, read_timeout_s
 
 log = logging.getLogger(__name__)
 IOU_GREEN = 0.85
@@ -107,6 +108,16 @@ class MvPipeline:
         self.seed, self.attempts = SEED, TRIES
         self.draw_faces = self.rescue_enabled = True
 
+    def reading(self) -> ReadingService | None:
+        """The readers in trust order: the batch (Qwen-VL) reader first, it keeps the ⌀ and R signs; then TrOCR."""
+        base, model = os.environ.get("VLM_BASE_URL"), os.environ.get("VLM_MODEL")
+        qwen_key = f"qwen:{base}:{model}" if base and model and self.batch_reader is not None else None
+        readers = [r for r in (
+            as_reader(self.batch_reader, "qwen", calibrated=False, batch=True, timeout_s=read_timeout_s(),
+                      cache_key=qwen_key),
+            as_reader(self.reader, "trocr", calibrated=True, batch=False)) if r is not None]
+        return ReadingService(readers) if readers else None
+
     def configured(self, ai: AiSettings) -> MvPipeline:
         """A copy for one request with the user's AI switches, seed and attempts; the shared pipeline never changes."""
         pipe = copy.copy(self)
@@ -133,6 +144,7 @@ class MvPipeline:
         reads = self.reader is not None or self.batch_reader is not None
         if not reads:
             observed.warnings.append("OCR unavailable: enter the dimensions by hand")
+        service = self.reading() if reads else None
         excluded: list[tuple] = []
         for i, item in enumerate(images):
             bgr = cv2.imdecode(np.frombuffer(item.data, np.uint8), cv2.IMREAD_COLOR)
@@ -165,7 +177,7 @@ class MvPipeline:
                 _emit(progress, key="read", state="skipped", index=i)
             else:
                 _emit(progress, key="read", state="running", index=i)
-                values = link(read_values(bgr, outline, self.reader, self.batch_reader), outline)
+                values = link(read_values(bgr, outline, service), outline)
                 _emit(progress, key="read", state="done", index=i,
                       reads=[{"text": v.reading.text, "value_mm": v.reading.value_mm, "kind": v.reading.kind,
                               "bbox": v.reading.bbox, "confidence": v.reading.confidence} for v in values])
@@ -204,7 +216,7 @@ class MvPipeline:
             try:
                 depth = self.depth(observed.images[k])
                 warnings += apply_depth(observed.observations[k], depth, excluded[k])
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - a failed provider falls back, never breaks the request
                 log.warning("Solaria failed on %s: %s", face, e)
                 warnings.append(f"{face}: depth unavailable")
         return warnings
@@ -287,14 +299,15 @@ def default_pipeline() -> MvPipeline:
     """Qwen-VL, Qwen-Image and Solaria from the environment; TrOCR and TripoSR when the ai extra is installed."""
     reader = provider = None
     try:
-        from s2c.multiview.ocr import trocr_reader
-        reader = trocr_reader()
-    except Exception as e:  # transformers missing
+        from s2c.reading.trocr import TrocrReader
+        reader = TrocrReader()
+        ReadingService([reader]).warm()  # loads the model in the background; the first request does not wait
+    except Exception as e:  # noqa: BLE001 - transformers missing: fall back without TrOCR
         log.warning("TrOCR unavailable: %s", e)
     try:
         from s2c.multiview.hf3d import default_provider
         provider = default_provider()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - a failed provider falls back, never breaks the request
         log.warning("TripoSR unavailable: %s", e)
     read_chat = env_chat(stage="mv_read")
     space = os.environ.get("SOLARIA_SPACE")
