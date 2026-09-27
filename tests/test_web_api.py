@@ -6,12 +6,25 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from s2c.multiview.pipeline import MvPipeline
+from s2c.sketch.models import Dimension, Size, SketchReading, View
+from s2c.sketch.models import Reading as SketchDimReading
 from s2c.web.api import get_pipeline
 from s2c.web.server import app
 
 SK = Path(__file__).resolve().parents[1] / "examples" / "mv" / "sketches"
 app.dependency_overrides[get_pipeline] = lambda: MvPipeline()
 c = TestClient(app, raise_server_exceptions=False)
+
+
+def _fake_sheet_reading() -> SketchReading:
+    front = View(name="front", label_text="FRONT", bbox_px=(0, 0, 200, 100), size_mm=(50.0, 25.0))
+    top = View(name="top", label_text="TOP", bbox_px=(0, 120, 200, 80), size_mm=(50.0, 20.0))
+    width = Dimension(id="w", view="front", kind="linear", value=50.0, text_raw="50",
+                      readings=[SketchDimReading(reader="qwen", text="50", confidence=0.9)], measures=[], axis="a",
+                      badge="written", evidence="reader", bbox_px=(0, 0, 10, 10))
+    return SketchReading(image_size_px=(200, 200), views=[front, top], entities=[], dimensions=[width],
+                         features=[], envelope={a: Size(value=1.0, badge="derived", evidence="geometry")
+                                                for a in "xyz"}, issues=[], timings_ms={})
 
 
 def analyze(values=True):
@@ -289,3 +302,40 @@ def test_an_abstain_carries_the_provenance_of_the_values_it_kept():
     ab = m["abstain"]
     assert ab and ab["partial"]["envelope.x_mm"] == 50
     assert ab["partial_provenance"] == {"envelope.x_mm": "user_edited"}
+
+
+def _wait(jid: str) -> dict:
+    for _ in range(200):
+        job = c.get(f"/api/jobs/{jid}").json()
+        if job["status"] != "running":
+            return job
+        time.sleep(0.05)
+    raise AssertionError("job never finished")
+
+
+def test_analyze_sheet_mode_reads_one_sheet_and_reaches_the_same_fuse_stage(monkeypatch):
+    monkeypatch.setattr("s2c.sketch.read_sketch", lambda image_bytes: _fake_sheet_reading(), raising=False)
+    r = c.post("/api/analyze", files=[("files", ("sheet.png", (SK / "front.png").read_bytes(), "image/png"))],
+              data={"mode": "sheet"})
+    assert r.status_code == 202, r.text
+    job = _wait(r.json()["job_id"])
+    assert [s["key"] for s in job["stages"]] == ["views", "lines", "values", "draw", "fuse"]
+    assert job["stages"][0]["detail"] == "2 views found"
+    assert job["status"] == "done", job
+    assert job["result"]["spec"] or job["result"]["abstain"]
+
+
+def test_analyze_sheet_mode_rejects_more_than_one_file():
+    files = [("files", ("a.png", (SK / "front.png").read_bytes(), "image/png")),
+             ("files", ("b.png", (SK / "top.png").read_bytes(), "image/png"))]
+    r = c.post("/api/analyze", files=files, data={"mode": "sheet"})
+    assert r.status_code == 400
+
+
+def test_analyze_sheet_mode_without_read_sketch_fails_with_a_clear_message():
+    r = c.post("/api/analyze", files=[("files", ("sheet.png", (SK / "front.png").read_bytes(), "image/png"))],
+              data={"mode": "sheet"})
+    assert r.status_code == 202, r.text
+    job = _wait(r.json()["job_id"])
+    assert job["status"] == "failed"
+    assert "per-face photos" in job["error"]
