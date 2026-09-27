@@ -1,5 +1,6 @@
 # tests/test_web_api.py
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -332,7 +333,8 @@ def test_analyze_sheet_mode_rejects_more_than_one_file():
     assert r.status_code == 400
 
 
-def test_analyze_sheet_mode_without_read_sketch_fails_with_a_clear_message():
+def test_analyze_sheet_mode_without_read_sketch_fails_with_a_clear_message(monkeypatch):
+    monkeypatch.setitem(sys.modules, "s2c.sketch", None)  # the sketch package fails to import
     r = c.post("/api/analyze", files=[("files", ("sheet.png", (SK / "front.png").read_bytes(), "image/png"))],
               data={"mode": "sheet"})
     assert r.status_code == 202, r.text
