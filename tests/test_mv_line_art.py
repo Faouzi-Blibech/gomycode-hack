@@ -320,3 +320,19 @@ def test_only_kind_drawing_reads_line_art_and_the_observation_carries_it():
     assert not sketched.line_art and sketched.hidden == []
     direct = Observation(face="front", kind="drawing", outline=extract(dashed_view(), drawing=True))
     assert direct.line_art and direct.hidden == direct.outline.hidden
+
+
+@pytest.mark.parametrize("line", [1, 2])
+@pytest.mark.parametrize("size", [100, 150, 200])
+def test_a_tiny_view_cropped_from_a_sheet_stays_line_art(size, line):
+    """Views on a real sheet can be about 110 px long; blown up to full size their lines look thick."""
+    m = 10
+    img = page(round(0.6 * size) + 2 * m, size + 2 * m)
+    cv2.rectangle(img, (m, m), (m + size, m + round(0.6 * size)), (0, 0, 0), line)
+    r = round(0.15 * size)
+    cv2.circle(img, (m + size // 2, m + round(0.3 * size)), r, (0, 0, 0), line)
+    big = resize_long_side(img)
+    s = big.shape[1] / img.shape[1]
+    o = extract(big, drawing=True)
+    assert o.line_art and len(o.circles) == 1
+    assert o.circles[0].d == pytest.approx(2 * r * s, rel=0.03)

@@ -21,6 +21,8 @@ MIN_THIN_FILL = 0.5        # ...and filled, not a hollow or broken stroke...
 MIN_THIN_MARGIN = 0.01     # ...and fully in frame, not a table edge or ruler crossing the border
 LINE_ART_FILL = 0.35       # a drawing whose ink covers less of its filled outline than this is drawn in lines...
 LINE_ART_STROKE = 0.015    # ...if the ink is also this thin (share of the long side); a thin-walled render is not
+LINE_ART_DARK = 200        # ...or, ink this far from the paper (grey levels, median), a tiny view blown up...
+LINE_ART_DARK_STROKE = 0.05  # ...whose lines grew up to this thick; rendered faces are shaded, not this dark
 SPUR_FRACTION = 0.006      # lines thinner than this share of the long side (and SPUR_MIN_PX) are not the part
 SPUR_MIN_PX = 5
 SPUR_MAX = 0.025           # the kernel widened for thick lines stays under this share of the long side
@@ -121,7 +123,8 @@ def extract(image_bgr: np.ndarray, mask_out=(), band: int = EDGE_BAND_PX,
     cv2.drawContours(filled, [outer], -1, 255, -1)
     if drawing and cv2.countNonZero(cv2.bitwise_and(fg, filled)) < LINE_ART_FILL * cv2.countNonZero(filled):
         stroke = _stroke(cv2.bitwise_and(ink, filled))
-        if stroke <= LINE_ART_STROKE * max(h, w):
+        if stroke <= LINE_ART_STROKE * max(h, w) or (
+                stroke <= LINE_ART_DARK_STROKE * max(h, w) and _contrast(image_bgr, ink, filled) >= LINE_ART_DARK):
             return _line_art(ink, fg, outer, filled, band, stroke)
     edge_band = cv2.subtract(filled, cv2.erode(filled, np.ones((band, band), np.uint8)))
     gaps = cv2.morphologyEx(cv2.bitwise_and(filled, cv2.bitwise_not(fg)), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
@@ -143,6 +146,13 @@ def extract(image_bgr: np.ndarray, mask_out=(), band: int = EDGE_BAND_PX,
     return PixelOutline(outer=cv2.approxPolyDP(outer, 2.0, True).reshape(-1, 2), inner=inner, circles=circles,
                         bbox=tuple(int(v) for v in cv2.boundingRect(outer)),
                         circular=circularity(outer) >= CIRCULARITY, shape=(h, w))
+
+
+def _contrast(image_bgr: np.ndarray, ink: np.ndarray, filled: np.ndarray) -> float:
+    """Median distance of the ink from the paper, in grey levels."""
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    paper = float(np.median(np.concatenate([gray[0], gray[-1], gray[:, 0], gray[:, -1]])))
+    return float(np.median(np.abs(gray[cv2.bitwise_and(ink, filled) > 0].astype(float) - paper)))
 
 
 def _stroke(ink: np.ndarray) -> float:
