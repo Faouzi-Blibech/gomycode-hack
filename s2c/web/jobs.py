@@ -18,6 +18,15 @@ TTL_S = 3600
 STAGES = ("label", "outline", "read", "draw", "fuse")
 TOOLS = {"label": ("Vision model", True), "outline": ("OpenCV", False), "read": ("Vision model", True),
          "draw": ("Qwen-Image", True), "fuse": ("CadQuery", False)}
+# "One sheet (all views)": one photo of a hand-drawn sheet replaces label/outline/read, then joins the
+# same draw/fuse stages a per-face photo analysis uses (s2c/web/sketch_adapter.py).
+SHEET_STAGES = ("views", "lines", "values", "draw", "fuse")
+SHEET_TOOLS = {"views": ("Sketch reader", True), "lines": ("Sketch reader", True),
+               "values": ("Sketch reader", True), "draw": ("Qwen-Image", True), "fuse": ("CadQuery", False)}
+SHEET_LABELS = {"views": "views found", "lines": "lines classified", "values": "values read"}
+ALL_STAGE_KEYS = frozenset({*STAGES, *SHEET_STAGES})
+SHEET_UNAVAILABLE = ("Sheet reading is not available yet. Use per-face photos, or try again once "
+                     "it is deployed.")
 MAX_RUNNING = 3   # analyses running at once; past this /api/analyze answers 429
 MAX_JOBS = 50     # jobs kept in memory; the oldest finished ones go first
 DRAW_TOOLS = {"qwen-image": ("Qwen-Image", True), "triposr": ("TripoSR", True), "mirrored": ("mirror", False),
@@ -46,6 +55,7 @@ class Job:
     lock: threading.Lock = field(default_factory=threading.Lock)
     merge_lock: threading.Lock = field(default_factory=threading.Lock)  # fuse mutates the cached Observed
     pipe: MvPipeline | None = None  # the pipeline configured with this request's AI settings; merge reuses it
+    mode: str = "photos"  # "photos" (per-face) or "sheet" (one sheet, all views)
 
     def stage(self, key: str) -> dict:
         return next(s for s in self.stages if s["key"] == key)
@@ -90,12 +100,31 @@ def new_job(n_images: int, pipe: MvPipeline) -> Job:
     if pipe.image_gen is None or not pipe.draw_faces:
         job.stage("draw").update(tool="TripoSR" if pipe.mesh_provider is not None else "assumed",
                                  ai=pipe.mesh_provider is not None)
+    _register(job)
+    return job
+
+
+def new_sheet_job(pipe: MvPipeline) -> Job:
+    """One image, one job: the sheet replaces label/outline/read with its own three stages, then joins
+    draw/fuse exactly as a per-face photo analysis does."""
+    stages = [{"key": key, "state": "pending", "tool": tool, "ai": ai, "detail": "", "started": None, "ended": None}
+              for key, (tool, ai) in SHEET_TOOLS.items()]
+    job = Job(uuid.uuid4().hex, stages,
+              [{"index": 0, "width": 0, "height": 0, "face": None, "kind": None, "outline": None, "circles": [],
+                "reads": []}], pipe=pipe, mode="sheet")
+    if pipe.image_gen is None or not pipe.draw_faces:
+        job.stage("draw").update(tool="TripoSR" if pipe.mesh_provider is not None else "assumed",
+                                 ai=pipe.mesh_provider is not None)
+    _register(job)
+    return job
+
+
+def _register(job: Job) -> None:
     with _registry_lock:
         idle = sorted((j for jid, j in JOBS.items() if jid not in _ACTIVE), key=lambda j: j.created)
         for old in idle[:max(0, len(JOBS) + 1 - MAX_JOBS)]:
             del JOBS[old.job_id]
         JOBS[job.job_id] = job
-    return job
 
 
 def get_job(job_id: str) -> Job | None:
@@ -152,7 +181,7 @@ def _draw_done(job: Job, filled_by: dict) -> None:
 
 def reduce(job: Job, name: str, data: dict) -> None:
     """Apply one progress event to the job."""
-    if name != "stage" or data.get("key") not in STAGES:
+    if name != "stage" or data.get("key") not in ALL_STAGE_KEYS:
         return
     key, state, now = data["key"], data["state"], time.time()
     with job.lock:
@@ -186,9 +215,11 @@ def reduce(job: Job, name: str, data: dict) -> None:
                                 for c in data.get("circles", [])]
         elif key == "read" and image is not None:
             image["reads"] = [{**r, "bbox": list(r["bbox"])} for r in data.get("reads", [])]
+        elif key in SHEET_LABELS:
+            stage["detail"] = data.get("detail") or f"0 {SHEET_LABELS[key]}"
         if key == "draw":
             _draw_done(job, data.get("filled_by", {}))
-        elif key != "fuse":
+        elif key not in ("fuse", *SHEET_LABELS):
             stage["detail"] = _details(job, key)
 
 
@@ -270,16 +301,82 @@ def run(job: Job, pipe: MvPipeline, images: list[ImageInput], reference: str | N
             _ACTIVE.discard(job.job_id)
 
 
-def start(job: Job, pipe: MvPipeline, images: list[ImageInput], reference: str | None) -> bool:
-    """Run the analysis in the background. False (and the job is dropped) when MAX_RUNNING already run."""
+def _sheet_reading(image_bytes: bytes):
+    """`read_sketch` (s2c/sketch/pipeline.py, Task 12) may not exist yet in this tree: import it lazily so
+    a sheet-mode job fails with a clear message instead of the whole web app failing to start."""
+    try:
+        from s2c.sketch import read_sketch
+    except ImportError as e:
+        raise RuntimeError(SHEET_UNAVAILABLE) from e
+    return read_sketch(image_bytes)
+
+
+def run_sheet(job: Job, pipe: MvPipeline, image: ImageInput) -> None:
+    """One sheet with several views, in place of one photo per face: read it, then join the same
+    draw/fuse stages `run()` uses so Review and Model & Export are unchanged."""
+    from s2c.web.sketch_adapter import observed_from_sketch
+
+    def progress(name: str, data: dict) -> None:
+        if job.cancel:
+            raise JobCancelled()
+        reduce(job, name, data)
+
+    try:
+        progress("stage", {"key": "views", "state": "running"})
+        reading = _sheet_reading(image.data)
+        progress("stage", {"key": "views", "state": "done", "detail": f"{len(reading.views)} views found"})
+        progress("stage", {"key": "lines", "state": "running"})
+        progress("stage", {"key": "lines", "state": "done",
+                           "detail": f"{len(reading.entities)} lines classified"})
+        progress("stage", {"key": "values", "state": "running"})
+        progress("stage", {"key": "values", "state": "done",
+                           "detail": f"{len(reading.dimensions)} values read"})
+        observed = observed_from_sketch(reading)
+        with job.merge_lock:
+            job.observed = observed
+            res = pipe.fuse(observed, progress=progress)
+            _forget_images(observed, res)
+        _finish(job, res, observed.filled_by)
+    except JobCancelled:
+        with job.lock:
+            job.status = "cancelled"
+    except RuntimeError as e:
+        log.warning("sheet analysis %s: %s", job.job_id, e)
+        with job.lock:
+            job.status, job.error = "failed", str(e)
+            for stage in job.stages:
+                if stage["state"] == "running":
+                    stage.update(state="failed", ended=time.time())
+    except Exception:
+        log.exception("sheet analysis %s failed", job.job_id)
+        with job.lock:
+            job.status, job.error = "failed", FAILED
+            for stage in job.stages:
+                if stage["state"] == "running":
+                    stage.update(state="failed", ended=time.time())
+    finally:
+        with _registry_lock:
+            _ACTIVE.discard(job.job_id)
+
+
+def _launch(job: Job, target, args: tuple) -> bool:
+    """Run an analysis in the background. False (and the job is dropped) when MAX_RUNNING already run."""
     with _registry_lock:
         if len(_ACTIVE) >= MAX_RUNNING:
             JOBS.pop(job.job_id, None)
             return False
         _ACTIVE.add(job.job_id)
-    threading.Thread(target=run, args=(job, pipe, images, reference), daemon=True,
-                     name=f"analysis-{job.job_id[:8]}").start()
+    threading.Thread(target=target, args=args, daemon=True, name=f"analysis-{job.job_id[:8]}").start()
     return True
+
+
+def start(job: Job, pipe: MvPipeline, images: list[ImageInput], reference: str | None) -> bool:
+    """Run the analysis in the background. False (and the job is dropped) when MAX_RUNNING already run."""
+    return _launch(job, run, (job, pipe, images, reference))
+
+
+def start_sheet(job: Job, pipe: MvPipeline, image: ImageInput) -> bool:
+    return _launch(job, run_sheet, (job, pipe, image))
 
 
 def merge(job: Job, pipe: MvPipeline, user_values: dict, accepted: list, rejected: list) -> dict:

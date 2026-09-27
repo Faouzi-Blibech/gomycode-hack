@@ -56,15 +56,18 @@ export function getExamples(): Promise<Example[]> {
   return request<Example[]>('/examples');
 }
 
-/** Uploads the images and returns the new job id. */
+/** Uploads the images and returns the new job id. `mode: 'sheet'` sends one sheet image in place
+ * of one photo per face; `faces`/`kinds`/`reference` are ignored server-side in that mode. */
 export async function startAnalysis(
   files: File[], faces: string[], kinds: string[], reference: string, ai?: Partial<AiSettings>,
+  mode: 'photos' | 'sheet' = 'photos',
 ): Promise<string> {
   const fd = new FormData();
   for (const f of files) fd.append('files', f, f.name);
   fd.append('faces', JSON.stringify(faces));
   fd.append('kinds', JSON.stringify(kinds));
   fd.append('reference', reference);
+  fd.append('mode', mode);
   if (ai) fd.append('ai', JSON.stringify(ai));
   const r = await request<{ job_id: string }>('/analyze', { method: 'POST', body: fd });
   return r.job_id;

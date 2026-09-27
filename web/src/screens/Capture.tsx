@@ -4,7 +4,7 @@ import type { AiSettings, Face } from '../api/types';
 import { resetDeadline } from '../components/Shell';
 import { CoverageCube } from '../components/CoverageCube';
 import { StopCard } from '../components/StopCard';
-import { MAX_ITEMS, toCaptureItem, useStore, type CaptureItem, type CaptureKind } from '../state/store';
+import { MAX_ITEMS, toCaptureItem, useStore, type CaptureItem, type CaptureKind, type CaptureMode } from '../state/store';
 
 const MONO = "'Geist Mono', monospace";
 const SILK = "'Silkscreen', monospace";
@@ -12,6 +12,8 @@ const SILK = "'Silkscreen', monospace";
 const FACES: Face[] = ['front', 'back', 'left', 'right', 'top', 'bottom'];
 const FACE_LABELS: Record<Face, string> = { front: 'Front', back: 'Back', left: 'Left', right: 'Right', top: 'Top', bottom: 'Bottom' };
 const KINDS: CaptureKind[] = ['auto', 'sketch', 'photo', 'drawing'];
+const MODES: CaptureMode[] = ['photos', 'sheet'];
+const MODE_LABELS: Record<CaptureMode, string> = { photos: 'Per-face photos', sheet: 'One sheet (all views)' };
 const REFERENCES: { value: string; label: string }[] = [
   { value: '', label: 'None' },
   { value: '1 TND', label: '1 TND coin' },
@@ -79,8 +81,8 @@ function Segmented<T extends string | number>({ options, labels, value, onChange
   );
 }
 
-function Card({ item, onPatch, onRemove }: {
-  item: CaptureItem; onPatch: (patch: Partial<Omit<CaptureItem, 'id'>>) => void; onRemove: () => void;
+function Card({ item, onPatch, onRemove, tags = true }: {
+  item: CaptureItem; onPatch: (patch: Partial<Omit<CaptureItem, 'id'>>) => void; onRemove: () => void; tags?: boolean;
 }) {
   const kindLabels: Record<CaptureKind, string> = { auto: 'Auto', sketch: 'Sketch', photo: 'Photo', drawing: 'Drawing' };
   return (
@@ -94,19 +96,21 @@ function Card({ item, onPatch, onRemove }: {
           ×
         </button>
       </div>
-      <div style={{ padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--muted)' }}>
-          Face
-          <select
-            value={item.face} onChange={(e) => onPatch({ face: e.target.value as Face | 'auto' })}
-            style={{ height: 32, borderRadius: 8, border: '1px solid var(--line)', background: 'var(--inset)', color: 'var(--ink)', font: 'inherit', fontSize: 13, padding: '0 8px' }}
-          >
-            <option value="auto">Auto</option>
-            {FACES.map((f) => <option key={f} value={f}>{FACE_LABELS[f]}</option>)}
-          </select>
-        </label>
-        <Segmented options={KINDS} labels={kindLabels} value={item.kind} onChange={(kind) => onPatch({ kind })} ariaLabel="Image kind" silk />
-      </div>
+      {tags && (
+        <div style={{ padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: 'var(--muted)' }}>
+            Face
+            <select
+              value={item.face} onChange={(e) => onPatch({ face: e.target.value as Face | 'auto' })}
+              style={{ height: 32, borderRadius: 8, border: '1px solid var(--line)', background: 'var(--inset)', color: 'var(--ink)', font: 'inherit', fontSize: 13, padding: '0 8px' }}
+            >
+              <option value="auto">Auto</option>
+              {FACES.map((f) => <option key={f} value={f}>{FACE_LABELS[f]}</option>)}
+            </select>
+          </label>
+          <Segmented options={KINDS} labels={kindLabels} value={item.kind} onChange={(kind) => onPatch({ kind })} ariaLabel="Image kind" silk />
+        </div>
+      )}
     </div>
   );
 }
@@ -121,15 +125,23 @@ export function Capture() {
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const full = state.items.length >= MAX_ITEMS;
-  const room = MAX_ITEMS - state.items.length;
+  const sheet = state.mode === 'sheet';
+  const maxItems = sheet ? 1 : MAX_ITEMS;
+  const full = state.items.length >= maxItems;
+  const room = maxItems - state.items.length;
 
   const addFiles = useCallback((files: FileList | File[]) => {
     const arr = Array.from(files).filter((f) => f.type.startsWith('image/'));
-    if (!arr.length || room <= 0) return;
-    const items = arr.slice(0, room).map((f) => toCaptureItem(f));
-    dispatch({ type: 'ADD_FILES', items });
-  }, [dispatch, room]);
+    if (!arr.length) return;
+    if (sheet) {
+      // One sheet at a time: a new drop replaces whatever was there.
+      for (const it of state.items) dispatch({ type: 'REMOVE_ITEM', id: it.id });
+      dispatch({ type: 'ADD_FILES', items: arr.slice(0, 1).map((f) => toCaptureItem(f)) });
+      return;
+    }
+    if (room <= 0) return;
+    dispatch({ type: 'ADD_FILES', items: arr.slice(0, room).map((f) => toCaptureItem(f)) });
+  }, [dispatch, room, sheet, state.items]);
 
   const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -176,7 +188,7 @@ export function Capture() {
       const files = state.items.map((i) => i.file);
       const faces = state.items.map((i) => i.face);
       const kinds = state.items.map((i) => i.kind);
-      const jobId = await startAnalysis(files, faces, kinds, state.reference, state.ai);
+      const jobId = await startAnalysis(files, faces, kinds, state.reference, state.ai, state.mode);
       resetDeadline();
       dispatch({ type: 'START_JOB', jobId });
     } catch (e) {
@@ -187,6 +199,8 @@ export function Capture() {
   };
 
   const canAnalyze = state.items.length > 0 && !busy;
+  const locked = !sheet && full; // a sheet always accepts a new drop, replacing the one it has
+  const dropTitle = sheet ? 'Drop your sketch sheet, or click to choose' : 'Drop sketches or photos, or click to choose';
 
   return (
     <section data-screen="Capture" style={{ padding: 28, display: 'flex', flexDirection: 'column', gap: 20, flex: 1, minHeight: 0, boxSizing: 'border-box' }}>
@@ -196,14 +210,20 @@ export function Capture() {
           <h1 style={{ margin: 0, fontFamily: SILK, fontWeight: 400, fontSize: 40, lineHeight: 1, letterSpacing: '0.01em' }}>Capture</h1>
         </div>
         <p style={{ margin: '0 0 4px', maxWidth: 420, fontSize: 15, lineHeight: 1.4, color: 'var(--muted)' }}>
-          Drop a sketch or photo of each face. Tag what it shows — the AI only fills in what is missing.
+          {sheet
+            ? 'Drop one photo of your sheet with every view drawn on it. We find the views, the lines and the numbers you wrote.'
+            : 'Drop a sketch or photo of each face. Tag what it shows — the AI only fills in what is missing.'}
         </p>
       </header>
+
+      <div style={{ flex: 'none' }}>
+        <Segmented options={MODES} labels={MODE_LABELS} value={state.mode} onChange={(mode) => dispatch({ type: 'SET_MODE', mode })} ariaLabel="Capture mode" />
+      </div>
 
       <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'minmax(0,3fr) minmax(0,2fr)', gap: 24 }}>
         <section style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}>
           <div
-            onDragOver={(e) => { e.preventDefault(); if (!full) setDragOver(true); }}
+            onDragOver={(e) => { e.preventDefault(); if (!locked) setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
             onDrop={onDrop}
             style={{
@@ -214,27 +234,29 @@ export function Capture() {
               padding: 20, textAlign: 'center', transition: 'border-color 150ms, background 150ms', flex: 'none',
             }}
           >
-            <span style={{ fontSize: 15, fontWeight: 500 }}>Drop sketches or photos, or click to choose</span>
+            <span style={{ fontSize: 15, fontWeight: 500 }}>{dropTitle}</span>
             <span style={{ fontSize: 13, color: 'var(--muted)' }}>
-              {full ? 'Maximum 6 images — remove one to add another' : `${state.items.length} of ${MAX_ITEMS} images`}
+              {sheet
+                ? state.items.length ? 'One sheet — drop another to replace it' : 'One image, with every view drawn on it'
+                : full ? 'Maximum 6 images — remove one to add another' : `${state.items.length} of ${MAX_ITEMS} images`}
             </span>
             <input
-              ref={inputRef} type="file" accept="image/*" multiple disabled={full} onChange={onPick}
-              aria-label="Add sketches or photos" title="Drop sketches or photos, or click to choose"
-              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: full ? 'not-allowed' : 'pointer' }}
+              ref={inputRef} type="file" accept="image/*" multiple={!sheet} disabled={locked} onChange={onPick}
+              aria-label={sheet ? 'Add your sketch sheet' : 'Add sketches or photos'} title={dropTitle}
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: locked ? 'not-allowed' : 'pointer' }}
             />
           </div>
 
           <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
             {state.items.length === 0 ? (
               <div style={{ height: '100%', display: 'grid', placeItems: 'center', color: 'var(--muted)', fontSize: 14, textAlign: 'center', padding: 24 }}>
-                No images yet. Add your sketches or photos above.
+                {sheet ? 'No sheet yet. Add a photo of it above.' : 'No images yet. Add your sketches or photos above.'}
               </div>
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 14 }}>
                 {state.items.map((item) => (
                   <Card
-                    key={item.id} item={item}
+                    key={item.id} item={item} tags={!sheet}
                     onPatch={(patch) => dispatch({ type: 'SET_ITEM', id: item.id, patch })}
                     onRemove={() => dispatch({ type: 'REMOVE_ITEM', id: item.id })}
                   />
@@ -245,19 +267,32 @@ export function Capture() {
         </section>
 
         <section style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0, overflow: 'auto' }}>
-          <div style={panel}>
-            <CoverageCube items={state.items} />
-          </div>
+          {sheet ? (
+            <div style={panel}>
+              <span style={sectionTitle}>One sheet, several views</span>
+              <span style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.4 }}>
+                We find the views drawn on your sheet, classify the lines and read the numbers you wrote — then the
+                same review and export screens a per-face photo uses.
+              </span>
+            </div>
+          ) : (
+            <div style={panel}>
+              <CoverageCube items={state.items} />
+            </div>
+          )}
 
-          <div style={panel}>
+          <div style={{ ...panel, opacity: sheet ? 0.5 : 1 }}>
             <span style={sectionTitle}>Scale reference</span>
             <select
               value={state.reference} onChange={(e) => dispatch({ type: 'SET_REFERENCE', reference: e.target.value })}
-              aria-label="Scale reference in the photos" style={selectStyle}
+              aria-label="Scale reference in the photos" style={selectStyle} disabled={sheet}
             >
               {REFERENCES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
             </select>
-            <span style={{ fontSize: 12, color: 'var(--muted)' }}>Gives real millimetres from a photo — needs a top-down shot with the object flat in frame.</span>
+            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+              {sheet ? 'Not used for a sheet — its own scale comes from the sheet itself.'
+                : 'Gives real millimetres from a photo — needs a top-down shot with the object flat in frame.'}
+            </span>
           </div>
 
           <div style={panel}>
@@ -300,14 +335,16 @@ export function Capture() {
             )}
           </div>
 
-          <div style={panel}>
-            <button
-              type="button" onClick={tryExample} disabled={exampleBusy || full}
-              style={{ height: 44, padding: '0 20px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--raised)', color: 'var(--ink)', font: 'inherit', fontSize: 15, cursor: exampleBusy || full ? 'not-allowed' : 'pointer', boxShadow: 'var(--shadow)', opacity: exampleBusy || full ? 0.6 : 1 }}
-            >
-              {exampleBusy ? 'Loading example…' : 'Try an example'}
-            </button>
-          </div>
+          {!sheet && (
+            <div style={panel}>
+              <button
+                type="button" onClick={tryExample} disabled={exampleBusy || full}
+                style={{ height: 44, padding: '0 20px', borderRadius: 10, border: '1px solid var(--line)', background: 'var(--raised)', color: 'var(--ink)', font: 'inherit', fontSize: 15, cursor: exampleBusy || full ? 'not-allowed' : 'pointer', boxShadow: 'var(--shadow)', opacity: exampleBusy || full ? 0.6 : 1 }}
+              >
+                {exampleBusy ? 'Loading example…' : 'Try an example'}
+              </button>
+            </div>
+          )}
 
           {error && <StopCard title="Could not start analysis" remedy={error} actionLabel="Try again" onAction={analyze} />}
 

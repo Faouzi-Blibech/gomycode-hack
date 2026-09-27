@@ -16,7 +16,11 @@ import type { Face, Job, StageKey, StageState } from '../api/types';
  * `started` stamp, so client/server clock skew cancels out. `startedAt` and `now` are client ms.
  */
 
-export const MIN = { label: 0.9, outline: 1.5, readEach: 0.7, readMin: 0.9, draw: 1.2, fuse: 0.9, skipped: 0.4 } as const;
+export const MIN = {
+  label: 0.9, outline: 1.5, readEach: 0.7, readMin: 0.9, draw: 1.2, fuse: 0.9, skipped: 0.4,
+  // "One sheet (all views)": read_sketch's own three checkpoints, in place of label/outline/read.
+  views: 0.9, lines: 1.2, values: 0.9,
+} as const;
 
 export const FACES: Face[] = ['front', 'top', 'right', 'back', 'left', 'bottom'];
 /** The three faces the part is fused from (Spec.views). */
