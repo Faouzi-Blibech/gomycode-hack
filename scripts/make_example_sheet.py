@@ -1,6 +1,7 @@
 """Draw the Studio's "Try a drawing sheet" example: a flanged angle bracket built in CadQuery, drawn as a first-angle
 ISO sheet (front, top and left views, labels, centre lines, the projection symbol) by the helper the sheet tests use.
 The sheet carries no sizes (rule 2); examples/mv/sheet/README.md gives the true envelope to type.
+Needs the repo's tests folder (tests/sheet_helpers.py), so run it from a checkout, not an installed package.
 Run: uv run python -m scripts.make_example_sheet"""
 from pathlib import Path
 

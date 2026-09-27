@@ -209,11 +209,29 @@ def test_sheet_crops_are_swept_with_the_other_files(studio, tmp_path, views):
     folder = tmp_path / "files" / "sheets" / old
     stale = time.time() - 2 * artifacts.TTL_S
     os.utime(folder, (stale, stale))
+    studio.store.drop(old)  # the session has ended
     studio.add_images(new, [path])
     assert not folder.exists()
     assert all(Path(i.path).exists() for i in studio.store.get(new).items)
     artifacts.sweep(tmp_path / "files")  # the Studio's own sweep never takes the sheets folder while it is in use
     assert all(Path(i.path).exists() for i in studio.store.get(new).items)
+
+
+def test_a_live_sessions_crops_outlive_an_hour(studio, tmp_path, views):
+    """A user can spend over an hour in Review: the crops stay while the session lives."""
+    img, _ = draw_sheet(pick(views, ("front", "top", "left")))
+    path = save(tmp_path, img)
+    live, other = studio.store.new(), studio.store.new()
+    studio.add_images(live, [path])
+    folder = tmp_path / "files" / "sheets" / live
+    stale = time.time() - 2 * artifacts.TTL_S
+    os.utime(folder, (stale, stale))
+    os.utime(folder.parent, (stale, stale))
+    studio.add_images(other, [path])  # sweeps the sheets folder
+    artifacts.sweep(tmp_path / "files")
+    assert all(Path(i.path).exists() for i in studio.store.get(live).items)
+    review = studio.analyze(live, "none", AiSettings())
+    assert review.stage == "review", review.message_html
 
 
 def test_an_inferred_face_has_a_badge():

@@ -74,6 +74,11 @@ class SessionStore:
             session.touched = time.time()
             return session
 
+    def ids(self) -> list[str]:
+        """The sessions still alive: their files must outlive the file sweep."""
+        with self._lock:
+            return list(self._items)
+
     def drop(self, sid: str | None) -> None:
         with self._lock:
             self._items.pop(sid or "", None)

@@ -244,18 +244,26 @@ class Studio:
         return items
 
     def _sheet_folder(self, sid: str) -> Path:
-        """The session's folder of sheet crops. Session folders idle for an hour are swept, as the root's are; the
-        sheets folder is touched, so the root's own sweep never takes it while a session still writes to it."""
-        sheets = self.root / SHEETS
-        sweep(sheets)
-        folder = sheets / sid
+        """The session's folder of sheet crops, created after the sweep."""
+        self._sweep_sheets()
+        folder = self.root / SHEETS / sid
         folder.mkdir(parents=True, exist_ok=True)
-        now = time.time()
-        os.utime(sheets, (now, now))
         return folder
 
+    def _sweep_sheets(self) -> None:
+        """Crops live as long as their session: the folders of live sessions (and the sheets folder holding them)
+        are touched first, so the sweep takes only the folders of sessions the store has dropped."""
+        sheets = self.root / SHEETS
+        now = time.time()
+        for sid in self.store.ids():
+            folder = sheets / sid
+            if folder.is_dir():
+                os.utime(folder, (now, now))
+                os.utime(sheets, (now, now))
+        sweep(sheets)
+
     def _sweep(self) -> None:
-        sweep(self.root / SHEETS)
+        self._sweep_sheets()
         sweep(self.root)
 
     def set_projection(self, sid: str, projection: str) -> None:
