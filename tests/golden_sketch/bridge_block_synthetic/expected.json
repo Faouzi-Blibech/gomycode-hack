@@ -1,0 +1,30 @@
+{
+  "views": ["top", "front", "right"],
+  "envelope": {"x": 100, "y": 50, "z": 25},
+  "dimensions": [
+    {"view": "front", "value": 100, "kind": "linear", "axis": "a", "span_mm": [0, 100]},
+    {"view": "front", "value": 37.5, "kind": "linear", "axis": "a", "span_mm": [0, 37.5]},
+    {"view": "front", "value": 37.5, "kind": "linear", "axis": "a", "span_mm": [62.5, 100]},
+    {"view": "front", "value": 12.5, "kind": "linear", "axis": "a", "span_mm": [25, 37.5]},
+    {"view": "front", "value": 25, "kind": "linear", "axis": "a", "span_mm": [37.5, 62.5]},
+    {"view": "front", "value": 12.5, "kind": "linear", "axis": "a", "span_mm": [62.5, 75]},
+    {"view": "front", "value": 37.5, "kind": "linear", "axis": "b", "span_mm": [12.5, 50]},
+    {"view": "front", "value": 25, "kind": "linear", "axis": "b", "span_mm": [25, 50]},
+    {"view": "front", "value": 12.5, "kind": "linear", "axis": "b", "span_mm": [12.5, 25]},
+    {"view": "front", "value": 12.5, "kind": "linear", "axis": "b", "span_mm": [0, 12.5]},
+    {"view": "top", "value": 12.5, "kind": "diameter"},
+    {"view": "top", "value": 12.5, "kind": "linear", "axis": "a", "span_mm": [0, 12.5]},
+    {"view": "top", "value": 12.5, "kind": "linear", "axis": "b", "span_mm": [12.5, 25]},
+    {"view": "right", "value": 12.5, "kind": "diameter"},
+    {"view": "right", "value": 12.5, "kind": "linear", "axis": "a", "span_mm": [0, 12.5]},
+    {"view": "right", "value": 12.5, "kind": "linear", "axis": "a", "span_mm": [12.5, 25]},
+    {"view": "right", "value": 12.5, "kind": "linear", "axis": "b", "span_mm": [37.5, 50]},
+    {"view": "right", "value": 50, "kind": "linear", "axis": "b", "span_mm": [0, 50]}
+  ],
+  "holes": [
+    {"axis": "y", "diameter": 12.5, "through": true, "at": [12.5, 12.5]},
+    {"axis": "y", "diameter": 12.5, "through": true, "at": [87.5, 12.5]},
+    {"axis": "x", "diameter": 12.5, "through": true, "at": [37.5, 12.5]},
+    {"axis": "x", "diameter": 12.5, "through": true, "at": [37.5, 12.5]}
+  ]
+}

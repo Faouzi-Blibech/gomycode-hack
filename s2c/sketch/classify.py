@@ -129,6 +129,16 @@ def _tip(ink, pts, e, d, reach) -> np.ndarray:
     return e + d * (ts[base + k] + 1)  # the run's last pixel is still inside the head
 
 
+def _head_end(widths: np.ndarray, stroke: float) -> int:
+    """Where the head's own cross-sections end: past its widest point, a stroke crossing it (the circle
+    or outline its tip lands on, merged into the opened blob) widens the section by more than a stroke
+    in one step, while a chained head beyond the tip widens gradually."""
+    for j in range(1, len(widths)):
+        if widths[j] - widths[j - 1] > stroke and widths[j - 1] < widths[:j].max():
+            return j
+    return len(widths)
+
+
 def _filled_arrows(lines, ink, stroke) -> tuple[dict[tuple[str, int], Arrow], set[str]]:
     """Filled heads and the skeleton pieces inside them (spurs, the stretch through the head)."""
     k = max(4, round(1.8 * stroke) + 1)
@@ -198,7 +208,9 @@ def _filled_arrows(lines, ink, stroke) -> tuple[dict[tuple[str, int], Arrow], se
             # the blob's middle points back at the carrier: it belongs to the next dimension in a chain.
             proj = (pts - e) @ d
             ts = np.arange(np.floor(proj.min()), np.ceil(proj.max()) + 1)
-            if ts[int(np.argmax(_axis_widths(ink, pts, e, d, ts)))] > (proj.min() + proj.max()) / 2:
+            widths = _axis_widths(ink, pts, e, d, ts)
+            widths = widths[:_head_end(widths, stroke)]
+            if ts[int(np.argmax(widths))] > (proj.min() + proj.max()) / 2:
                 continue
             cands.append((off, p, end, e, d, gap))
         taken: list[np.ndarray] = []
@@ -271,6 +283,26 @@ def _chains(pieces: list[Prim], stroke: float) -> list[list[Prim]]:
     return [g for g in groups.values() if len(g) >= CHAIN_MIN]
 
 
+def _follow(end: np.ndarray, direction: np.ndarray, pool: list[Prim], stroke: float):
+    """Continue a line past where the vectorizer cut it (a leader crossing an outline edge): collinear
+    pieces starting at its end and running on in the same direction."""
+    d = _unit(direction)
+    beyond: list[Prim] = []
+    while True:
+        nxt = None
+        for q in pool:
+            if any(q.id == b.id for b in beyond) or _angle(q.direction(), d) > ANGLE_TOL:
+                continue
+            for qe, qo in ((q.p0, q.p1), (q.p1, q.p0)):
+                ahead = float(np.dot(qo - end, d)) if np.dot(qo - qe, d) > 0 else -1.0
+                if np.linalg.norm(qe - end) <= 2 * stroke + 1 and ahead > 0:
+                    nxt = (q, qo)
+        if nxt is None:
+            return end, beyond
+        beyond.append(nxt[0])
+        end = nxt[1]
+
+
 def _merge_chain(chain: list[Prim], kind_id: str) -> Prim:
     pts = np.vstack([p.pts for p in chain])
     centre = pts.mean(0)
@@ -317,35 +349,42 @@ def classify(prims: list[Prim], ink: np.ndarray, stroke_px: float, texts: list[T
         ends = [e for e in (0, 1) if (p.id, e) in arrows]
         if len(ends) == 1:
             tail = p.p1 if ends[0] == 0 else p.p0
+            head = p.p0 if ends[0] == 0 else p.p1
+            tail, beyond = _follow(tail, tail - head, [q for q in lines if q.id not in used], s)
             near_text = any(np.hypot(tail[0] - (t.box[0] + t.box[2] / 2),
                                      tail[1] - (t.box[1] + t.box[3] / 2)) <= 1.5 * max(t.box[2], t.box[3])
                             for t in dim_texts)
             if near_text:
-                out.leaders.append(Leader(f"{p.id}-L", arrows[(p.id, ends[0])].tip, tail, [p.id]))
+                out.leaders.append(Leader(f"{p.id}-L", arrows[(p.id, ends[0])].tip, tail,
+                                          [p.id, *[q.id for q in beyond]]))
+                used |= {q.id for q in beyond}
                 continue
         out.dimlines.append(DimLine(f"{p.id}-D", p.p0, p.p1, [arrows[(p.id, e)] for e in ends], [p.id]))
 
     rest = [p for p in lines if p.id not in used]
     ext_ids: set[str] = set()
-    for d in out.dimlines:
-        axis = d.p1 - d.p0
-        for k, end in enumerate((d.p0, d.p1)):
-            tip = next((a.tip for a in d.arrows if np.linalg.norm(a.tip - end) < 6 * s), end)
-            best = None
-            for q in rest:
-                if _angle(q.direction(), axis) < np.radians(70):
-                    continue
-                dist = _point_line_dist(tip, q.p0, q.p1)
-                t = float(np.dot(tip - q.p0, _unit(q.p1 - q.p0)))
-                # an extension line ends at the dimension line; of the pieces there, the long one
-                # runs to the object, the short one is the overshoot past the arrow
-                ends_here = min(np.linalg.norm(q.p0 - tip), np.linalg.norm(q.p1 - tip)) <= 4 * s
-                fits = dist <= 2.5 * s and -3 * s <= t <= q.length + 3 * s and ends_here
-                if fits and (best is None or q.length > best[0]):
-                    best = (q.length, q)
-            if best:
-                out.extensions[f"{d.id}:{k}"] = best[1]
-                ext_ids.add(best[1].id)
+    # where a dimension line (or what is left of one) ends at its arrow tip, the line across it is an
+    # extension line; a leader's tip on the end of a line across it is a dimension line that lost its
+    # other end (text written across it)
+    ends_at_tips = [(f"{d.id}:{k}", d.p1 - d.p0, next((a.tip for a in d.arrows if np.linalg.norm(a.tip - end) < 6 * s),
+                                                       end))
+                    for d in out.dimlines for k, end in enumerate((d.p0, d.p1))]
+    ends_at_tips += [(f"{lead.id}:0", lead.tail - lead.tip, lead.tip) for lead in out.leaders]
+    for key, axis, tip in ends_at_tips:
+        fitting = []
+        for q in rest:
+            if _angle(q.direction(), axis) < np.radians(70):
+                continue
+            dist = _point_line_dist(tip, q.p0, q.p1)
+            t = float(np.dot(tip - q.p0, _unit(q.p1 - q.p0)))
+            ends_here = min(np.linalg.norm(q.p0 - tip), np.linalg.norm(q.p1 - tip)) <= 4 * s
+            if dist <= 2.5 * s and -3 * s <= t <= q.length + 3 * s and ends_here:
+                fitting.append(q)
+        if fitting:
+            # of the pieces there, the long one runs to the object, a short one is the overshoot past
+            # the arrow; a piece between two stacked dimension lines is extension line all the same
+            out.extensions[key] = max(fitting, key=lambda q: q.length)
+            ext_ids |= {q.id for q in fitting}
 
     # stubs: skeleton spurs of arrowheads, and the bit of an extension line that pokes past its
     # dimension line; short lines ending near an arrow tip or a dimension-line end are not edges

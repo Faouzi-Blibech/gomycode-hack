@@ -16,6 +16,8 @@ FULL_FRAME_AREA = 0.95    # a "sheet" this big is the whole photo
 BRIGHT_PAPER = 150
 TOO_DARK = 50
 BLUR_VAR = 8.0            # variance of the Laplacian; set on synthetic tests, re-check on golden photos
+CORE_WIN = 7              # px: the window where a stroke edge finds its dark core
+MIN_SKELETON = 10         # px of skeleton for a piece of ink to count as a stroke (not a speck)
 
 RETAKE_FRAME = "Put the whole sheet in the frame on a darker surface and retake."
 RETAKE_LIGHT = "Retake in good light and hold the phone steady."
@@ -117,7 +119,10 @@ def _flatten(gray: np.ndarray) -> np.ndarray:
 
 def _binarise(flat: np.ndarray) -> np.ndarray:
     thresh = threshold_sauvola(flat, window_size=31, k=0.2)
-    ink = ((flat < thresh) & (flat < 225)).astype(np.uint8) * 255
+    # a stroke's edge lies half-way between its dark core and the paper; Sauvola alone also takes the
+    # soft fringe of an anti-aliased or slightly blurred stroke, a pixel wider on each side
+    core = cv2.erode(flat, np.ones((CORE_WIN, CORE_WIN), np.uint8)).astype(np.float32)
+    ink = ((flat < thresh) & (flat < 225) & (flat < (core + 255) / 2)).astype(np.uint8) * 255
     _, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
     small = np.where(stats[:, cv2.CC_STAT_AREA] < 12)[0]
     ink[np.isin(labels, small[small > 0])] = 0
@@ -125,11 +130,23 @@ def _binarise(flat: np.ndarray) -> np.ndarray:
 
 
 def _stroke_px(ink: np.ndarray) -> float:
+    """The pen width: the median over strokes (connected pieces of ink) of each stroke's own median
+    width, so every glyph, dash and line counts once and a few long thick outlines or thin hairlines
+    do not swing it. A skeleton pixel at distance d from the paper sits in a stroke 2d - 1 wide. Ink
+    touching the border is the sheet's own edge after rectification, not a pen stroke."""
     if not ink.any():
         return 3.0
-    dist = cv2.distanceTransform(ink, cv2.DIST_L2, 3)
-    widths = 2 * dist[skeletonize(ink > 0)]
-    return float(np.median(widths)) if widths.size else 3.0
+    skel = skeletonize(ink > 0)
+    widths = 2 * cv2.distanceTransform(ink, cv2.DIST_L2, 5) - 1
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((ink > 0).astype(np.uint8), connectivity=8)
+    h, w = ink.shape
+    inside = [i for i in range(1, n) if stats[i, 0] > 0 and stats[i, 1] > 0
+              and stats[i, 0] + stats[i, 2] < w and stats[i, 1] + stats[i, 3] < h]
+    per_stroke = [float(np.median(ws)) for ws in (widths[skel & (labels == i)] for i in inside)
+                  if ws.size >= MIN_SKELETON]
+    if per_stroke:
+        return float(np.median(per_stroke))
+    return float(np.median(widths[skel])) if skel.any() else 3.0
 
 
 def capture(image_bgr: np.ndarray) -> Captured | SketchAbstain:
