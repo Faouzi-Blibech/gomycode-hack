@@ -5,7 +5,9 @@ import cv2
 import numpy as np
 import pytest
 
-from s2c.sketch.readers import SYSTEM, Crop, VlmReader, readers_from_env, tile_grid
+from s2c.reading import Crop
+from s2c.reading.env import readers_from_env
+from s2c.reading.vlm import SYSTEM, VlmReader, tile_grid
 from s2c.vision.client import VLMClient
 
 
@@ -80,7 +82,7 @@ def test_unknown_reader_names_are_skipped(monkeypatch):
 
 @pytest.mark.skipif(os.environ.get("SKETCH_MODEL_TESTS") != "1", reason="downloads a model")
 def test_paddle_reader_reads_printed_digits():
-    from s2c.sketch.readers import PaddleReader
+    from s2c.reading.paddle import PaddleReader
     img = np.full((60, 160, 3), 255, np.uint8)
     cv2.putText(img, "40", (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 0), 3)
     out = PaddleReader().read([Crop(img, (0, 0, 160, 60))])
@@ -89,8 +91,14 @@ def test_paddle_reader_reads_printed_digits():
 
 @pytest.mark.skipif(os.environ.get("SKETCH_MODEL_TESTS") != "1", reason="downloads a model")
 def test_trocr_reader_reads_printed_digits():
-    from s2c.sketch.readers import TrocrReader
+    from s2c.reading.trocr import TrocrReader
     img = np.full((60, 160, 3), 255, np.uint8)
     cv2.putText(img, "40", (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 0), 3)
     out = TrocrReader().read([Crop(img, (0, 0, 160, 60))])
     assert out is not None and "40" in out[0].text
+
+
+def test_moved_readers_declare_calibration_budget_and_cache():
+    from s2c.reading.vlm import VlmReader
+    r = VlmReader(client=object())
+    assert (r.name, r.calibrated, r.cache_key) == ("vlm", False, None) and r.timeout_s == 20.0

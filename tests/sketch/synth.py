@@ -4,7 +4,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from s2c.sketch.readers import ReaderResult
+from s2c.reading import ReaderResult
 
 INK = (25, 25, 25)
 FONT = cv2.FONT_HERSHEY_SIMPLEX

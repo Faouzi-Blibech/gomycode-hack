@@ -105,7 +105,7 @@ The `vlm` prompt asks the model to transcribe exactly what is written in each nu
 ### 5.2 Two readers, one badge
 
 - Both readers parse to the same value and kind: the value is `written`, confidence is the higher of the two.
-- They disagree, or only one reader is available, or a confidence is below 0.6: the value is `uncertain` and the JSON keeps both readings. Section 8.2 proposes the most plausible one.
+- They disagree, or only one reader is available, or a calibrated reader's confidence is below 0.7: the value is `uncertain` and the JSON keeps both readings. Section 8.2 proposes the most plausible one.
 - Neither parses: the text is kept as `other` with an issue if it sits where a dimension is expected.
 
 ### 5.3 Text grammar

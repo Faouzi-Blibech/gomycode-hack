@@ -1,5 +1,5 @@
 """Smoke test for synthetic sheets."""
-from s2c.sketch.readers import Crop
+from s2c.reading import Crop
 from tests.sketch.synth import Sheet, TruthReader, bridge_block
 
 

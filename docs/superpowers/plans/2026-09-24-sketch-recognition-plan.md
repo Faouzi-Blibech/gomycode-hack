@@ -18,7 +18,7 @@
 - Units are millimetres. Badges are exactly: `written`, `edited`, `derived`, `uncertain`, `predicted`, `conflict`.
 - A model never produces a coordinate or a size; readers only transcribe text.
 - No model name or provider is hard-coded in logic; readers are chosen by `SKETCH_READERS` (default `paddle,vlm`), the vision model by `VLM_BASE_URL`, `VLM_MODEL`, `VLM_API_KEY`. Local model ids have env overrides with documented defaults.
-- Tolerances (spec): reference merge 1.5 percent of the view extent, at least 4 px; conflict residual 0.5 percent of the value, at least 0.05 mm; reader confidence below 0.6 is `uncertain`; decimal trap at a scale ratio above 3; outline gap closing under 3 percent of the view extent.
+- Tolerances (spec): reference merge 1.5 percent of the view extent, at least 4 px; conflict residual 0.5 percent of the value, at least 0.05 mm; reader confidence below 0.7 (`s2c.reading.MIN_CONFIDENCE`) is `uncertain`; decimal trap at a scale ratio above 3; outline gap closing under 3 percent of the view extent.
 - Work on the rectified sheet at a longest side of 1600 px; report `px` in original photo pixels.
 - Never drop a value that was read: unlinked values become `unplaced` dimensions with an issue.
 - Commit messages are plain, in the team's voice. **No `Co-Authored-By`, no "Generated with", no AI attribution** (repo `CLAUDE.md` overrides any default). **Never push**; commits stay local on `sketch/recognition-design`.
@@ -809,7 +809,9 @@ import cv2
 import numpy as np
 import pytest
 
-from s2c.sketch.readers import SYSTEM, Crop, VlmReader, readers_from_env, tile_grid
+from s2c.reading import Crop
+from s2c.reading.env import readers_from_env
+from s2c.reading.vlm import SYSTEM, VlmReader, tile_grid
 from s2c.vision.client import VLMClient
 
 
@@ -884,7 +886,7 @@ def test_unknown_reader_names_are_skipped(monkeypatch):
 
 @pytest.mark.skipif(os.environ.get("SKETCH_MODEL_TESTS") != "1", reason="downloads a model")
 def test_paddle_reader_reads_printed_digits():
-    from s2c.sketch.readers import PaddleReader
+    from s2c.reading.paddle import PaddleReader
     img = np.full((60, 160, 3), 255, np.uint8)
     cv2.putText(img, "40", (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 0), 3)
     out = PaddleReader().read([Crop(img, (0, 0, 160, 60))])
@@ -893,7 +895,7 @@ def test_paddle_reader_reads_printed_digits():
 
 @pytest.mark.skipif(os.environ.get("SKETCH_MODEL_TESTS") != "1", reason="downloads a model")
 def test_trocr_reader_reads_printed_digits():
-    from s2c.sketch.readers import TrocrReader
+    from s2c.reading.trocr import TrocrReader
     img = np.full((60, 160, 3), 255, np.uint8)
     cv2.putText(img, "40", (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 0), 3)
     out = TrocrReader().read([Crop(img, (0, 0, 160, 60))])
@@ -1124,6 +1126,61 @@ git commit -m "Add swappable handwriting readers: vision model, PaddleOCR, TrOCR
 
 ### Task 5: Synthetic sheets, text boxes and two-reader agreement
 
+#### Amendments (2026-09-27)
+
+The sketch plan's Task 5 is implemented as written, with these changes:
+
+1. `s2c/sketch/text.py` imports `from s2c.reading import MIN_CONFIDENCE, Crop, Reader, ReadingService` and does not define its own `MIN_CONFIDENCE`.
+2. `read_texts` reads through the service and counts configured readers, so a reader that fails makes values `uncertain`:
+
+```python
+def read_texts(sheet_bgr: np.ndarray, boxes, readers: list[Reader]) -> list[TextItem] | SketchAbstain:
+    if not boxes:
+        return []
+    groups = [_crops(sheet_bgr, b) for b in boxes]
+    flat = [c for g in groups for c in g]
+    runs = ReadingService(readers).read(flat)
+    per_reader = [(run.name, run.results) for run in runs if run.results is not None]
+    if not per_reader:
+        return SketchAbstain(stage="text", reason="readers_unavailable",
+                             remedy="Reading service unavailable. Retry in a minute.")
+    items: list[TextItem] = []
+    start = 0
+    for n, (box, group) in enumerate(zip(boxes, groups)):
+        readings = []
+        for name, res in per_reader:
+            text, conf = _best(res[start:start + len(group)])
+            readings.append(Reading(reader=name, text=text, confidence=conf))
+        start += len(group)
+        items.append(_decide(f"t{n}", box, readings, len(readers)))
+    return items
+```
+
+3. In `_decide`, agreement compares values only (TrOCR drops ⌀, so kinds may differ); the kind comes from the first reader:
+
+```python
+        agree = (len(parsed) == n_readers >= 2 and len(values) == 1
+                 and all(r.confidence >= MIN_CONFIDENCE for r, _ in parsed))
+```
+
+4. The Task 5 test `test_disagreement_is_uncertain_with_both_candidates` and the others stay as written; add:
+
+```python
+def test_a_failing_second_reader_makes_values_uncertain():
+    sh = Sheet()
+    bridge_block(sh)
+
+    class Down:
+        name = "down"
+
+        def read(self, crops):
+            return None
+
+    items = read_texts(sh.bgr(), find_text_boxes(sh.ink(), 3.0), [TruthReader(sh.texts, "a"), Down()])
+    dims = [t for t in items if t.role == "dimension"]
+    assert dims and all(t.badge == "uncertain" for t in dims)
+```
+
 **Files:**
 - Create: `tests/sketch/synth.py`, `tests/sketch/conftest.py`, `s2c/sketch/text.py`
 - Test: `tests/sketch/test_text.py`
@@ -1147,7 +1204,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from s2c.sketch.readers import ReaderResult
+from s2c.reading import ReaderResult
 
 INK = (25, 25, 25)
 FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -1490,12 +1547,11 @@ from typing import Literal
 import cv2
 import numpy as np
 
+from s2c.reading import MIN_CONFIDENCE, Crop, Reader, ReadingService
 from s2c.sketch.grammar import Parsed, match_label, parse_text
 from s2c.sketch.models import Reading, SketchAbstain, ViewName
-from s2c.sketch.readers import Crop, Reader
 
 log = logging.getLogger(__name__)
-MIN_CONFIDENCE = 0.6
 PAD = 4
 
 
@@ -3880,13 +3936,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from s2c.reading import Reader, readers_from_env
 from s2c.sketch.capture import Captured, capture, sheet_to_original
 from s2c.sketch.classify import Classified, classify
 from s2c.sketch.features import find_holes
 from s2c.sketch.link import Link, Ref, link_view
 from s2c.sketch.models import (Dimension, Entity, Issue, SketchAbstain, SketchReading, View,
                                ViewName)
-from s2c.sketch.readers import Reader, readers_from_env
 from s2c.sketch.solve import Solved, px_to_mm, solve
 from s2c.sketch.text import TextItem, detect_text_boxes, read_texts
 from s2c.sketch.vectorize import Prim, vectorize
