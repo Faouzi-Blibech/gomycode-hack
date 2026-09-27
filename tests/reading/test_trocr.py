@@ -33,5 +33,6 @@ def test_trocr_reads_a_batch_of_printed_digits():
     reader = TrocrReader()
     reader.warm()
     out = reader.read([digits("60"), digits("125")])
-    assert [r.text.replace(" ", "") for r in out] == ["60", "125"]
+    # TrOCR was trained on sentences and often ends a read with a period; parsing, not the reader, drops it
+    assert [r.text.replace(" ", "").rstrip(".") for r in out] == ["60", "125"]
     assert all(r.confidence > 0.3 for r in out)
