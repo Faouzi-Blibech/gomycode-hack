@@ -95,10 +95,71 @@ def test_the_pipeline_reads_with_qwen_first_then_trocr():
     assert MvPipeline().reading() is None
 
 
+def test_the_qwen_cache_key_includes_the_base_url_so_switching_providers_never_reuses_a_stale_read(monkeypatch):
+    monkeypatch.setenv("VLM_BASE_URL", "http://localhost:9/v1")
+    monkeypatch.setenv("VLM_MODEL", "m")
+    pipe = MvPipeline(batch_reader=lambda crops: [])
+    qwen = next(r for r in pipe.reading().readers if r.name == "qwen")
+    assert qwen.cache_key == "qwen:http://localhost:9/v1:m"
+
+
+def test_the_qwen_cache_key_is_none_when_the_base_url_is_missing(monkeypatch):
+    monkeypatch.delenv("VLM_BASE_URL", raising=False)
+    monkeypatch.setenv("VLM_MODEL", "m")
+    pipe = MvPipeline(batch_reader=lambda crops: [])
+    qwen = next(r for r in pipe.reading().readers if r.name == "qwen")
+    assert qwen.cache_key is None
+
+
 def test_default_pipeline_reads_with_qwen_vl_when_configured(monkeypatch):
     for key, value in {"VLM_BASE_URL": "http://localhost:9/v1", "VLM_MODEL": "m", "VLM_API_KEY": "k"}.items():
         monkeypatch.setenv(key, value)
     assert pipeline.default_pipeline().batch_reader is not None
+
+
+def test_default_pipeline_warms_trocr_then_qwen_in_one_daemon_thread(monkeypatch):
+    import threading
+
+    from s2c.multiview import qwen_reader
+    from s2c.reading.trocr import TrocrReader
+
+    for key, value in {"VLM_BASE_URL": "http://localhost:9/v1", "VLM_MODEL": "m", "VLM_API_KEY": "k"}.items():
+        monkeypatch.setenv(key, value)
+    order = []
+    started, release = threading.Event(), threading.Event()
+
+    def slow_warm(self):
+        started.set()
+        release.wait(timeout=2)
+        order.append("trocr")
+
+    monkeypatch.setattr(TrocrReader, "warm", slow_warm)
+    monkeypatch.setattr(qwen_reader, "warm_chat", lambda chat: order.append("qwen"))
+    pipeline.default_pipeline()
+    assert started.wait(timeout=2)
+    warmups = [t for t in threading.enumerate() if t.name == "reader-warmup"]
+    assert warmups and warmups[0].daemon
+    release.set()
+    warmups[0].join(timeout=5)
+    assert order == ["trocr", "qwen"]  # TrOCR must finish loading before Ollama sees the Qwen warm-up
+
+
+def test_default_pipeline_does_not_warm_qwen_when_unconfigured(monkeypatch):
+    import threading
+
+    from s2c.multiview import qwen_reader
+    from s2c.reading.trocr import TrocrReader
+
+    monkeypatch.delenv("VLM_API_KEY", raising=False)
+    monkeypatch.delenv("VLM_BASE_URL", raising=False)
+    order = []
+    monkeypatch.setattr(TrocrReader, "warm", lambda self: order.append("trocr"))
+    monkeypatch.setattr(qwen_reader, "warm_chat", lambda chat: order.append("qwen"))
+    pipeline.default_pipeline()
+    warmups = [t for t in threading.enumerate() if t.name == "reader-warmup"]
+    if warmups:
+        warmups[0].join(timeout=5)
+    assert order == ["trocr"]
 
 
 def test_two_sketches_of_one_face_merge_into_one_observation(tmp_path):

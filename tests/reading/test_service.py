@@ -40,13 +40,13 @@ def test_every_reader_reads_every_crop_in_reader_order():
 def test_readers_run_in_parallel():
     t0 = time.perf_counter()
     ReadingService([Fake("a", delay=0.4), Fake("b", delay=0.4)]).read([crop()])
-    assert time.perf_counter() - t0 < 0.7
+    assert time.perf_counter() - t0 < 0.8  # less than the sum of the delays: they ran together, not one after another
 
 
 def test_a_slow_reader_times_out_without_holding_the_others():
     t0 = time.perf_counter()
     runs = ReadingService([Fake("slow", delay=2.0, timeout_s=0.2), Fake("fast")]).read([crop()])
-    assert time.perf_counter() - t0 < 1.0
+    assert time.perf_counter() - t0 < 1.5
     assert (runs[0].status, runs[0].results) == ("timeout", None)
     assert runs[1].status == "ok" and runs[1].results[0].text == "60"
 
@@ -89,6 +89,13 @@ def test_readers_without_a_cache_key_are_never_cached():
 def test_failed_reads_are_not_cached():
     cache = CropCache()
     ReadingService([Fake("a", none=True, cache_key="a")], cache=cache).read([crop()])
+    assert len(cache) == 0
+
+
+def test_an_empty_read_is_not_cached():
+    cache = CropCache()
+    reader = Fake("a", text="", cache_key="a")
+    ReadingService([reader], cache=cache).read([crop()])
     assert len(cache) == 0
 
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -12,6 +14,7 @@ import cv2
 import numpy as np
 from pydantic import ValidationError
 
+from s2c.multiview import qwen_reader
 from s2c.multiview import spec as S
 from s2c.multiview.build import BuildError, export
 from s2c.multiview.build import build as build_solid
@@ -101,10 +104,11 @@ class MvPipeline:
 
     def reading(self) -> ReadingService | None:
         """The readers in trust order: the batch (Qwen-VL) reader first, it keeps the ⌀ and R signs; then TrOCR."""
-        model = os.environ.get("VLM_MODEL")
+        base, model = os.environ.get("VLM_BASE_URL"), os.environ.get("VLM_MODEL")
+        qwen_key = f"qwen:{base}:{model}" if base and model and self.batch_reader is not None else None
         readers = [r for r in (
             as_reader(self.batch_reader, "qwen", calibrated=False, batch=True, timeout_s=read_timeout_s(),
-                      cache_key=f"qwen:{model}" if model and self.batch_reader is not None else None),
+                      cache_key=qwen_key),
             as_reader(self.reader, "trocr", calibrated=True, batch=False)) if r is not None]
         return ReadingService(readers) if readers else None
 
@@ -266,13 +270,28 @@ class MvPipeline:
                            views, scores, warnings)
 
 
+def _warm_readers(reader: object | None, read_chat: Chat | None) -> None:
+    """TrOCR first, then Qwen: Ollama only sees TrOCR's GPU share once it has actually claimed it, so it
+    can decide how many layers to keep on the GPU with that share already gone."""
+    if reader is not None:
+        warm = getattr(reader, "warm", None)
+        if warm is not None:
+            t0 = time.perf_counter()
+            try:
+                warm()
+                log.info("reader %s ready in %.1f s", reader.name, time.perf_counter() - t0)
+            except Exception as e:  # noqa: BLE001 - a failed warm-up only means a slower first read
+                log.warning("reader %s warm-up failed: %s", reader.name, e)
+    if read_chat is not None:
+        qwen_reader.warm_chat(read_chat)
+
+
 def default_pipeline() -> MvPipeline:
     """Qwen-VL, Qwen-Image and Solaria from the environment; TrOCR and TripoSR when the ai extra is installed."""
     reader = provider = None
     try:
         from s2c.reading.trocr import TrocrReader
         reader = TrocrReader()
-        ReadingService([reader]).warm()  # loads the model in the background; the first request does not wait
     except Exception as e:  # transformers missing
         log.warning("TrOCR unavailable: %s", e)
     try:
@@ -281,6 +300,9 @@ def default_pipeline() -> MvPipeline:
     except Exception as e:
         log.warning("TripoSR unavailable: %s", e)
     read_chat = env_chat(stage="mv_read")
+    if reader is not None or read_chat is not None:
+        threading.Thread(target=_warm_readers, args=(reader, read_chat), name="reader-warmup",
+                          daemon=True).start()
     space = os.environ.get("SOLARIA_SPACE")
     image_gen = default_gen()
     if image_gen is None:

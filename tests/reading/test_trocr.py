@@ -1,9 +1,12 @@
+import threading
+
 import cv2
 import numpy as np
 import pytest
+import torch
 
 from s2c.reading import Crop
-from s2c.reading.trocr import token_confidences
+from s2c.reading.trocr import ReaderResult, memory_fraction, token_confidences
 
 
 def test_confidence_is_the_geometric_mean_of_the_real_tokens():
@@ -20,9 +23,102 @@ def test_a_row_without_real_tokens_scores_zero():
     assert token_confidences(np.zeros((1, 3)), np.zeros((1, 3))) == [0.0]
 
 
+def test_memory_fraction_scales_the_budget_against_the_total():
+    total = 8 * 1024**3
+    assert memory_fraction(1.0, total) == pytest.approx(1 / 8)
+
+
+def test_memory_fraction_is_clamped_to_at_most_one():
+    assert memory_fraction(100.0, 8 * 1024**3) == 1.0
+
+
+def test_memory_fraction_never_reaches_zero():
+    assert 0.0 < memory_fraction(0.0, 8 * 1024**3) <= 1.0
+    assert 0.0 < memory_fraction(-1.0, 8 * 1024**3) <= 1.0
+
+
+def test_an_out_of_memory_error_moves_the_reader_to_cpu_and_retries_once(monkeypatch):
+    from s2c.reading import trocr
+    from s2c.reading.trocr import TrocrReader
+
+    reader = TrocrReader(device="cuda")
+    calls = []
+
+    def fake_load(model_id, device):
+        calls.append(("load", device))
+        return ("processor", "model")
+
+    def fake_run(processor, model, device, crops, max_new_tokens):
+        calls.append(("run", device))
+        if device == "cuda":
+            raise RuntimeError("CUDA out of memory. Tried to allocate 20.00 MiB")
+        return [ReaderResult(text="60", confidence=0.9)]
+
+    monkeypatch.setattr(trocr, "_load", fake_load)
+    monkeypatch.setattr(trocr, "_run", fake_run)
+    crop = Crop(np.zeros((10, 10, 3), np.uint8), (0, 0, 10, 10))
+    out = reader.read([crop])
+    assert reader.device == "cpu"
+    assert [r.text for r in out] == ["60"]
+    assert calls == [("load", "cuda"), ("run", "cuda"), ("load", "cpu"), ("run", "cpu")]
+
+
+def test_two_concurrent_oom_reads_both_recover_on_cpu(monkeypatch):
+    """One shared reader, two threads both hit a real CUDA OOM: neither must crash, even if the other
+    has already flipped the reader to CPU by the time this one's except block runs."""
+    from s2c.reading import trocr
+    from s2c.reading.trocr import TrocrReader
+
+    reader = TrocrReader(device="cuda")
+    b_registered = threading.Event()
+    a_flipped_to_cpu = threading.Event()
+
+    def fake_load(model_id, device):
+        name = threading.current_thread().name
+        if device == "cuda" and name == "B":
+            b_registered.set()
+        if device == "cpu":
+            a_flipped_to_cpu.set()
+        return ("processor", "model")
+
+    def fake_run(processor, model, device, crops, max_new_tokens):
+        name = threading.current_thread().name
+        if device == "cuda":
+            if name == "A":
+                assert b_registered.wait(timeout=2)  # B must already be in flight before A raises and flips
+                raise RuntimeError("CUDA out of memory. Tried to allocate 20.00 MiB (A)")
+            assert a_flipped_to_cpu.wait(timeout=2)  # A must have already flipped self.device before B raises
+            raise RuntimeError("CUDA out of memory. Tried to allocate 20.00 MiB (B)")
+        return [ReaderResult(text="60", confidence=0.9)]
+
+    monkeypatch.setattr(trocr, "_load", fake_load)
+    monkeypatch.setattr(trocr, "_run", fake_run)
+    crop = Crop(np.zeros((10, 10, 3), np.uint8), (0, 0, 10, 10))
+    results: dict[str, object] = {}
+    errors: dict[str, Exception] = {}
+
+    def worker(name):
+        try:
+            results[name] = reader.read([crop])
+        except Exception as e:  # noqa: BLE001 - the assertion under test is that nothing raises
+            errors[name] = e
+
+    threads = [threading.Thread(target=worker, args=(n,), name=n) for n in ("A", "B")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert errors == {}
+    assert {n: [r.text for r in out] for n, out in results.items()} == {"A": ["60"], "B": ["60"]}
+    assert reader.device == "cpu"
+
+
 @pytest.mark.gpu
-def test_trocr_reads_a_batch_of_printed_digits():
+def test_trocr_reads_a_batch_of_printed_digits(monkeypatch):
     pytest.importorskip("transformers")
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    from s2c.reading import trocr
     from s2c.reading.trocr import TrocrReader
 
     def digits(s):
@@ -31,7 +127,8 @@ def test_trocr_reads_a_batch_of_printed_digits():
         return Crop(img, (0, 0, 200, 80))
 
     reader = TrocrReader()
-    reader.warm()
+    _, model = trocr._load(reader.model_id, reader.device)  # a real load, bypassing warm() which conftest no-ops
+    assert model.dtype == torch.float16  # cuda: half precision keeps GPU memory down alongside Qwen
     out = reader.read([digits("60"), digits("125")])
     # TrOCR was trained on sentences and often ends a read with a period; parsing, not the reader, drops it
     assert [r.text.replace(" ", "").rstrip(".") for r in out] == ["60", "125"]

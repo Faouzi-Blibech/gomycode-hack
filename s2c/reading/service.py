@@ -135,7 +135,8 @@ class ReadingService:
                 return ReaderRun(reader.name, calibrated, None, "none", _ms(t0), len(hits))
             if self.cache is not None and reader_key:
                 for i, result in zip(todo, fresh):
-                    self.cache.put(reader_key, keys[i], result)
+                    if result.text.strip():  # an empty read is not a success worth remembering
+                        self.cache.put(reader_key, keys[i], result)
         merged = {**hits, **dict(zip(todo, fresh))}
         return ReaderRun(reader.name, calibrated, [merged[i] for i in range(len(crops))], "ok", _ms(t0), len(hits))
 

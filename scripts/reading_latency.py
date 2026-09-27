@@ -2,7 +2,7 @@
 Needs the ai extra for TrOCR and VLM_BASE_URL / VLM_MODEL / VLM_API_KEY for Qwen-VL; a reader that is not
 available is skipped. The cache is off, so every run reads for real.
 
-    uv run python scripts/reading_latency.py examples/sketch_front.png --runs 3
+    uv run python scripts/reading_latency.py examples/mv/sketches/front.png --runs 3
 """
 from __future__ import annotations
 

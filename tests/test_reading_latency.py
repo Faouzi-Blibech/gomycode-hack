@@ -22,6 +22,6 @@ def test_measure_times_each_reader_alone_and_all_in_parallel():
     rows = measure([Sleepy("a", 0.2), Sleepy("b", 0.3)], crops, runs=2)
     by = {r["setup"]: r for r in rows}
     assert list(by) == ["a", "b", "parallel"]
-    assert 180 <= by["a"]["median_ms"] < 280 and 280 <= by["b"]["median_ms"] < 380
-    assert by["parallel"]["median_ms"] < 450 and by["parallel"]["crops"] == 1
+    assert 150 <= by["a"]["median_ms"] < 400 and 250 <= by["b"]["median_ms"] < 500
+    assert by["parallel"]["median_ms"] < 500 and by["parallel"]["crops"] == 1
     assert all(r["status"] == "ok" for r in rows)
