@@ -106,3 +106,47 @@ def test_read_stage_names_the_reader_that_runs():
     job = jobs.new_job(1, MvPipeline(batch_reader=lambda *a, **k: None))
     assert job.stage("read")["tool"] == "Qwen-VL"
     assert jobs.new_job(1, MvPipeline()).stage("read")["state"] == "skipped"
+
+
+def _rotated_jpeg() -> bytes:
+    """A 400 x 200 JPEG whose EXIF says 'rotate 90 degrees clockwise to display' (orientation 6)."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    im = Image.new("RGB", (400, 200), "white")
+    ImageDraw.Draw(im).rectangle([60, 40, 340, 160], outline="black", width=6)
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", exif=exif)
+    return buf.getvalue()
+
+
+def test_upright_applies_the_exif_orientation():
+    import io
+
+    from PIL import Image
+
+    from s2c.web.api import upright
+
+    out = upright(_rotated_jpeg())
+    im = Image.open(io.BytesIO(out))
+    assert im.size == (200, 400)
+    assert im.getexif().get(0x0112, 1) == 1
+    plain = (SK / "front.png").read_bytes()
+    assert upright(plain) is plain
+
+
+def test_a_rotated_phone_jpeg_is_measured_the_way_the_browser_shows_it():
+    files = [("files", ("phone.jpg", _rotated_jpeg(), "image/jpeg"))]
+    r = c.post("/api/analyze", files=files, data={"faces": json.dumps(["front"]), "kinds": json.dumps(["sketch"])})
+    assert r.status_code == 202, r.text
+    jid = r.json()["job_id"]
+    for _ in range(200):
+        job = c.get(f"/api/jobs/{jid}").json()
+        if job["status"] != "running":
+            break
+        time.sleep(0.05)
+    img = job["images"][0]
+    assert img["height"] == 2 * img["width"] > 0, img  # portrait, as the browser shows it

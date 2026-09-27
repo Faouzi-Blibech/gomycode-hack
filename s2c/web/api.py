@@ -2,6 +2,7 @@
 ("The API contract"). Every error leaves as {"error": "<plain sentence>"}; no exception text reaches the browser."""
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Requ
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
+from PIL import Image, ImageOps
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -93,6 +95,23 @@ def example_file(file: str) -> FileResponse:
     return FileResponse(EXAMPLES / file, media_type="image/png")
 
 
+def upright(data: bytes) -> bytes:
+    """Phone JPEGs are stored sideways with an EXIF orientation that browsers apply. Re-encode those upright
+    (as PNG) so every stage, the vision model included, sees the pixels the user sees."""
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            if im.getexif().get(0x0112, 1) in (None, 1):
+                return data
+            fixed = ImageOps.exif_transpose(im)
+            if fixed.mode not in ("RGB", "L"):
+                fixed = fixed.convert("RGB")
+            buf = io.BytesIO()
+            fixed.save(buf, "PNG")
+            return buf.getvalue()
+    except Exception:  # noqa: BLE001 - an unreadable header leaves the bytes as they are
+        return data
+
+
 def _json_list(text: str | None, what: str) -> list:
     try:
         value = json.loads(text or "[]")
@@ -123,7 +142,7 @@ def analyze(pipe: Pipe, files: Annotated[list[UploadFile] | None, File()] = None
             raise HTTPException(413, "An image is larger than 10 MB. Use a smaller photo.")
         if not data.startswith(MAGIC):
             raise HTTPException(415, "A file is not a JPEG or PNG image.")
-        datas.append(data)
+        datas.append(upright(data))
     if ai:
         try:
             settings = AiSettings(**json.loads(ai))
