@@ -62,7 +62,7 @@ def draw_sheet(views: dict[str, np.ndarray], layout: str = "first", labels: bool
     `labels` writes LABELS[face] with cv2.putText, centred under each view, one label height below it.
     `symbol` ("first" | "third") draws the ISO projection symbol as its own drawing, far enough right of the views
     that split_sheet's 3 x median gap rule separates it. `border` draws a sheet frame. `centre_lines` draws chain-line
-    crosses on every drawn circle. `hidden` maps a face to dashed segments ("h" | "v", pos, start, end) in the format
+    crosses on every drawn circle, and the symbol's axis and cross. `hidden` maps a face to dashed segments ("h" | "v", pos, start, end) in the format
     of outline.find_hidden_lines: fractions of the view's box from its left and top edges, as in the image; "h" is
     the line y = pos from x = start to x = end.
 
@@ -96,7 +96,7 @@ def draw_sheet(views: dict[str, np.ndarray], layout: str = "first", labels: bool
         if face in texts:
             truth[f"label:{face}"] = _put(ink, texts[face], truth[face])
     if symbol:
-        truth["symbol:side"], truth["symbol:end"] = _draw_symbol(ink, symbol, *sym_at, sym, line)
+        truth["symbol:side"], truth["symbol:end"] = _draw_symbol(ink, symbol, *sym_at, sym, line, centre_lines)
     if border:
         b = max(4, gap // 4)
         cv2.rectangle(ink, (b, b), (w - 1 - b, h - 1 - b), 255, line + 1)
@@ -237,9 +237,12 @@ def _symbol_size(size: int) -> tuple[int, int]:
     return size + size // 2 + size, size  # cone length, space, end view; height is the large diameter
 
 
-def _draw_symbol(ink: np.ndarray, projection: str, x: int, y: int, size: int, line: int) -> tuple[Box, Box]:
+def _draw_symbol(ink: np.ndarray, projection: str, x: int, y: int, size: int, line: int,
+                 centre_lines: bool = False) -> tuple[Box, Box]:
     """ISO 5456-2 projection symbol: a truncated cone (narrow end left) as a trapezoid, and its end view as two
-    concentric circles. First-angle puts the circles beside the cone's large end, third-angle beside its small end."""
+    concentric circles. First-angle puts the circles beside the cone's large end, third-angle beside its small end.
+    `centre_lines` adds the cone's axis and the end view's cross as chain lines, overhanging each view by a twelfth
+    of the symbol size, short enough that the two views stay apart."""
     big, small, length, space = size, size // 2, size, size // 2
     if projection == "first":
         cone_x, end_x = x, x + length + space
@@ -253,5 +256,10 @@ def _draw_symbol(ink: np.ndarray, projection: str, x: int, y: int, size: int, li
     end = np.zeros_like(ink)
     cv2.circle(end, (end_x + big // 2, cy), big // 2, 255, line)
     cv2.circle(end, (end_x + big // 2, cy), small // 2, 255, line)
+    if centre_lines:
+        over, chain, ex = max(3, size // 12), [(8 * line, 1.5 * line), (1.5 * line, 1.5 * line)], end_x + big // 2
+        _dashed(side, (cone_x - over, cy), (cone_x + length + over, cy), chain, line)
+        _dashed(end, (ex - big // 2 - over, cy), (ex + big // 2 + over, cy), chain, line)
+        _dashed(end, (ex, cy - big // 2 - over), (ex, cy + big // 2 + over), chain, line)
     ink |= side | end
     return cv2.boundingRect(side), cv2.boundingRect(end)

@@ -16,7 +16,7 @@ from s2c.multiview.sheet import (
 )
 from s2c.multiview.spec import Envelope
 from tests.mv_helpers import box_mesh, make_spec, outline
-from tests.sheet_helpers import LABELS, draw_sheet, part_views, relabel
+from tests.sheet_helpers import LABELS, _draw_symbol, draw_sheet, part_views, relabel
 
 ENV = Envelope(x_mm=80.0, y_mm=60.0, z_mm=40.0)
 FIVE = ("front", "top", "right", "left", "back")
@@ -84,7 +84,8 @@ def test_labels_name_the_views_when_read(views):
     sheet = split_sheet(img)
     naming = name_views(sheet, img, projection="first", reader=fake_reader(img, truth))
     assert named(sheet, naming, truth, FIVE) == {f: f for f in FIVE}
-    assert not any("does not match" in w for w in naming.warnings)
+    assert (naming.projection, naming.projection_source) == ("third", "labels")
+    assert naming.warnings == ["The labels follow third-angle projection; the setting says first-angle. Used the labels."]
 
 
 def test_a_label_that_does_not_match_its_size_is_overruled(views):
@@ -155,6 +156,98 @@ def test_a_lone_symbol_is_the_part():
     assert (naming.projection, naming.projection_source) == ("first", "symbol")
     faces = named(sheet, naming, truth, ("symbol:side", "symbol:end"))
     assert faces == {"symbol:side": "front", "symbol:end": "left"}
+
+
+def test_a_one_view_part_beside_a_symbol_is_the_part():
+    """A plate drawn in one view with the projection symbol in the title block: the plate is the part, and one
+    named view is not a sheet."""
+    plate = part_views(box_mesh(80.0, 60.0, 4.0), Envelope(x_mm=80.0, y_mm=60.0, z_mm=4.0))
+    img, truth = draw_sheet({"front": plate["front"]}, symbol="first")
+    sheet = split_sheet(img)
+    assert sorted(len(d.views) for d in sheet.drawings) == [1, 2]
+    naming = name_views(sheet, img)
+    assert (naming.projection, naming.projection_source) == ("first", "symbol")
+    assert off(sheet.drawings[naming.drawing].views[0].box, truth["front"]) <= 3
+    assert naming.faces == ["front"]
+    assert named_count(naming) < 2
+
+
+def test_a_symbol_drawn_with_centre_lines_is_still_the_symbol(views):
+    img, truth = draw_sheet(pick(views, FIVE), layout="third", symbol="third", centre_lines=True)
+    sheet = split_sheet(img)
+    assert sorted(len(d.views) for d in sheet.drawings) == [2, 5]
+    naming = name_views(sheet, img, projection="first")
+    assert (naming.projection, naming.projection_source) == ("third", "symbol")
+    assert len(sheet.drawings[naming.drawing].views) == 5
+    assert named(sheet, naming, truth, FIVE) == {f: f for f in FIVE}
+
+    img, _ = draw_sheet({}, symbol="first", centre_lines=True)
+    assert find_symbol(split_sheet(img), img) == (0, "first")
+
+
+@pytest.mark.parametrize("size, line, centre_lines", [(40, 2, True), (60, 3, True), (130, 1, False), (130, 2, True)])
+def test_symbols_of_any_size_and_stroke_are_found(size, line, centre_lines):
+    ink = np.zeros((size + 60, 3 * size + 60), np.uint8)
+    _draw_symbol(ink, "third", 30, 30, size, line, centre_lines)
+    img = cv2.cvtColor(255 - ink, cv2.COLOR_GRAY2BGR)
+    assert find_symbol(split_sheet(img), img) == (0, "third")
+
+
+def test_a_symbol_whose_axis_runs_well_past_the_cone_is_found():
+    """Drawn by hand, the cone's axis often runs a quarter of the symbol past its narrow end."""
+    img, truth = draw_sheet({}, symbol="first")
+    x, y, w, h = truth["symbol:side"]
+    cv2.line(img, (x - h // 4, y + h // 2), (x + w // 2, y + h // 2), (0, 0, 0), 2)
+    assert find_symbol(split_sheet(img), img) == (0, "first")
+
+
+def test_a_flange_beside_a_cone_is_not_the_symbol():
+    """Two concentric circles plus bolt holes: more than the symbol's end view."""
+    img = np.full((220, 420, 3), 255, np.uint8)
+    cv2.polylines(img, [np.array([(30, 80), (130, 30), (130, 190), (30, 140)], np.int32)], True, (0, 0, 0), 2)
+    cv2.circle(img, (260, 110), 80, (0, 0, 0), 2)
+    cv2.circle(img, (260, 110), 30, (0, 0, 0), 2)
+    for dx, dy in ((0, -55), (55, 0), (0, 55), (-55, 0)):
+        cv2.circle(img, (260 + dx, 110 + dy), 8, (0, 0, 0), 2)
+    assert find_symbol(split_sheet(img), img) is None
+
+
+@pytest.mark.parametrize("projection", ["first", "third"])
+def test_a_symbol_with_its_narrow_end_on_the_right(projection):
+    """Mirrored, the circles still sit beside the same end of the cone, so the projection is unchanged."""
+    img, _ = draw_sheet({}, symbol=projection)
+    img = np.ascontiguousarray(img[:, ::-1])
+    sheet = split_sheet(img)
+    assert find_symbol(sheet, img) == (0, projection)
+    assert name_views(sheet, img, projection="third" if projection == "first" else "first").projection == projection
+
+
+def test_a_label_that_fits_its_size_but_not_its_place_wins():
+    """Depth equals height, so the view above the front has the rear's size too: the label is believed, and the
+    warning says the layout disagrees."""
+    faces = ("front", "top", "bottom", "right", "left")
+    box = part_views(box_mesh(80.0, 60.0, 60.0), Envelope(x_mm=80.0, y_mm=60.0, z_mm=60.0))
+    img, truth = draw_sheet(pick(box, faces))
+    relabel(img, truth, "bottom", "REAR VIEW")
+    sheet = split_sheet(img)
+    naming = name_views(sheet, img, reader=fake_reader(img, truth, {**LABELS, "bottom": "REAR VIEW"}))
+    got = named(sheet, naming, truth, faces)
+    assert got == {"front": "front", "top": "top", "bottom": "back", "right": "right", "left": "left"}
+    assert "REAR VIEW is where bottom belongs; used the label" in naming.warnings, naming.warnings
+
+
+@pytest.mark.parametrize("face, text, why", [
+    ("front", "TOP VIEW", "TOP VIEW is on the view read as the front; used as front"),
+    ("back", "FRONT VIEW", "FRONT VIEW names the front, but another view is the front; used as back"),
+])
+def test_an_overruled_label_says_why(views, face, text, why):
+    img, truth = draw_sheet(pick(views, FIVE))
+    relabel(img, truth, face, text)
+    sheet = split_sheet(img)
+    naming = name_views(sheet, img, reader=fake_reader(img, truth, {**LABELS, face: text}))
+    assert named(sheet, naming, truth, FIVE) == {f: f for f in FIVE}
+    assert why in naming.warnings, naming.warnings
+    assert not any("does not match its size" in w for w in naming.warnings)
 
 
 def test_an_unnamable_view_stays_auto(views):

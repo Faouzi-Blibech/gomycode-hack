@@ -43,6 +43,8 @@ SLACK = 0.004           # ... or within this share of the long side, for thin vi
 SPUR = 0.006            # filled rows or columns this thin (share of the long side) are chain lines, not the view
 MARK_AREA = 0.15        # an unnamed view under this share of the largest view's area is a mark: text, balloon, note
 CROP_MARGIN = 0.04
+RING_DIRECTIONS = 36    # directions around a circle's centre
+RING_COVER = 0.85       # a circle inks this share of them at its radius; a centre line's four arms only a few
 AUTO, SKIP = "auto", "skip"
 
 
@@ -340,7 +342,7 @@ class Naming:
     drawing: int                # index into sheet.drawings of the part drawing; -1 when the sheet has none
     faces: list[str]            # per view of that drawing: a face, "auto" (the user picks) or "skip" (a mark)
     projection: str             # "first" | "third"
-    projection_source: str      # "symbol" | "setting"
+    projection_source: str      # "symbol" | "labels" | "setting"; the symbol outranks labels
     warnings: list[str] = field(default_factory=list)
 
 
@@ -354,8 +356,9 @@ def name_views(sheet: Sheet, image_bgr: np.ndarray, projection: str = "first",
                reader: Reader | None = None) -> Naming:
     """The face each view of the part drawing shows (spec 3.2).
 
-    A projection symbol overrides `projection`, and is not the part while another drawing of 2 or more views
-    exists. A read label names its view when the size it implies fits the sheet's shared scale; otherwise the
+    A projection symbol overrides `projection`, and is not the part while any other drawing exists (a one-view
+    plate beside a title-block symbol is the plate). Without a symbol, labels that all follow the other projection's
+    layout switch to it. A read label names its view when the size it implies fits the sheet's shared scale; otherwise the
     layout does, under the same check. A view neither names stays "auto", never a guess; an unnamed view under
     MARK_AREA of the largest is a mark (dimension text, a balloon, a note) and is "skip"."""
     if projection not in ("first", "third"):
@@ -370,9 +373,7 @@ def name_views(sheet: Sheet, image_bgr: np.ndarray, projection: str = "first",
     pool = list(range(len(sheet.drawings)))
     if symbol is not None:
         projection, source = symbol[1], "symbol"
-        rest = [i for i in pool if i != symbol[0]]
-        if any(len(sheet.drawings[i].views) >= 2 for i in rest):
-            pool = rest
+        pool = [i for i in pool if i != symbol[0]] or pool
     part = max(pool, key=lambda i: (len(sheet.drawings[i].views), sum(_area(v.box) for v in sheet.drawings[i].views)))
     views = sheet.drawings[part].views
     if len(pool) > 1:
@@ -381,7 +382,14 @@ def name_views(sheet: Sheet, image_bgr: np.ndarray, projection: str = "first",
 
     texts = [_read_label(image, v.label_box, reader) for v in views]
     boxes = [_body(ink, v.box, long) for v in views]
-    faces, aligned, checked, notes = _name(boxes, texts, projection, _slack(long))
+    faces, aligned, checked, notes, against = _name(boxes, texts, projection, _slack(long))
+    if source == "setting" and against:
+        other = "third" if projection == "first" else "first"
+        alt = _name(boxes, texts, other, _slack(long))
+        if set(alt[4]) < set(against):  # the labels follow the other projection, and switching breaks none
+            warnings.append(f"The labels follow {other}-angle projection; the setting says {projection}-angle. "
+                            "Used the labels.")
+            (faces, aligned, checked, notes, against), projection, source = alt, other, "labels"
     warnings += notes
     largest = max(_area(v.box) for v in views)
     marks = [i for i, f in enumerate(faces)
@@ -405,7 +413,7 @@ def crop_views(sheet: Sheet, image_bgr: np.ndarray, naming: Naming) -> list[tupl
     image = _bgr(image_bgr)
     paper = ink_mask(image) == 0
     out = []
-    for view, face in zip(sheet.drawings[naming.drawing].views, naming.faces):
+    for view, face in zip(sheet.drawings[naming.drawing].views, naming.faces, strict=True):
         if face == SKIP:
             continue
         x, y, w, h = view.box
@@ -423,15 +431,16 @@ def find_symbol(sheet: Sheet, image_bgr: np.ndarray) -> tuple[int, str] | None:
 
     Exactly 2 views: a truncated cone seen side-on (a 4-vertex trapezoid, parallel sides upright) and end-on (a
     circle with one concentric inner circle), on one centre line, the tall and short sides matching the outer and
-    inner diameters within SCALE. Circles beside the large end mean first-angle, beside the small end third-angle."""
+    inner diameters within SCALE. Centre lines drawn through the symbol are allowed. Circles beside the large end
+    mean first-angle, beside the small end third-angle."""
     ink = ink_mask(_bgr(image_bgr))
-    slack = _slack(max(sheet.shape))
-    k = max(3, round(DILATE * max(sheet.shape)))
+    long = max(sheet.shape)
+    slack, k, thin = _slack(long), max(3, round(DILATE * long)), max(5, round(SPUR * long))
     for d, drawing in enumerate(sheet.drawings):
         if len(drawing.views) != 2:
             continue
         for a, b in (drawing.views, drawing.views[::-1]):
-            cone, end = _trapezoid(ink, a.box, k), _rings(ink, b.box)
+            cone, end = _trapezoid(ink, a.box, k, thin), _rings(ink, b.box, _body(ink, b.box, long), slack)
             if cone is None or end is None:
                 continue
             tall, short, tall_x, short_x, axis_y = cone
@@ -497,17 +506,17 @@ def _read_label(image: np.ndarray, box: Box | None, reader: Reader | None) -> st
 
 
 def _name(boxes: list[Box], texts: list[str], projection: str, slack: int):
-    """Faces, whether each view lines up with the front, whether some name for it passed the scale check, and the
-    warnings. Every view is tried as the front; the naming that agrees with the most labels, then names the most
+    """Faces, whether each view lines up with the front, whether some name for it passed the scale check, the
+    warnings, and the views whose label won over their place in the layout. Every view is tried as the front; the naming that agrees with the most labels, then names the most
     view area, wins, and a tie goes to the layout's front (most aligned neighbours, spec 3.2)."""
     hints = [_label_hint(t) for t in texts]
     usual = _layout_front(boxes, slack)
     best = None
     for f in range(len(boxes)):
-        faces, aligned, checked, notes, agreed = _assign(boxes, hints, texts, f, projection, slack)
+        faces, aligned, checked, notes, agreed, against = _assign(boxes, hints, texts, f, projection, slack)
         score = (agreed, sum(_area(boxes[i]) for i, x in enumerate(faces) if x != AUTO), f == usual)
         if best is None or score > best[0]:
-            best = (score, faces, aligned, checked, notes)
+            best = (score, faces, aligned, checked, notes, against)
     return best[1:]
 
 
@@ -516,7 +525,7 @@ def _assign(boxes, hints, texts, f, projection, slack):
     width, height = boxes[f][2], boxes[f][3]
     depth = _depth(boxes, layout, hints, width, height, slack)
     placed = [bool(n) and i != f and _fits(n, boxes[i], width, height, depth, slack) for i, n in enumerate(layout)]
-    faces, notes, agreed = [], [], 0
+    faces, notes, agreed, against = [], {}, 0, []
     for i, box in enumerate(boxes):
         hint = hints[i]
         said = None if hint in (None, "side") else hint
@@ -529,9 +538,17 @@ def _assign(boxes, hints, texts, f, projection, slack):
         faces.append(face)
         if said == face or (hint == "side" and face in ("left", "right")):
             agreed += 1
+            if said and i != f and layout[i] not in (None, face):
+                notes[i] = f"{texts[i]} is where {layout[i]} belongs; used the label"
+                against.append(i)
         elif said:
-            notes.append(f"{texts[i]} does not match its size; "
-                         + (f"used as {face}" if face != AUTO else "left for you to name"))
+            if i == f:
+                why = "is on the view read as the front"
+            elif said == "front":
+                why = "names the front, but another view is the front"
+            else:
+                why = "does not match its size"
+            notes[i] = f"{texts[i]} {why}; " + (f"used as {face}" if face != AUTO else "left for you to name")
     checked = [x != AUTO for x in faces]
     for face in sorted({x for x in faces if x != AUTO}):
         same = [i for i, x in enumerate(faces) if x == face]
@@ -544,9 +561,10 @@ def _assign(boxes, hints, texts, f, projection, slack):
             what = texts[i] if hints[i] == face else f"The view placed as {face}"
             agreed -= hints[i] == face
             faces[i] = layout[i] if placed[i] and layout[i] not in faces else AUTO
-            notes.append(f"{what} is also another view's name; "
-                         + (f"used as {faces[i]}" if faces[i] != AUTO else "left for you to name"))
-    return faces, aligned, checked, notes, agreed
+            notes[i] = (f"{what} is also another view's name; "
+                        + (f"used as {faces[i]}" if faces[i] != AUTO else "left for you to name"))
+    against = [i for i in against if faces[i] == hints[i]]
+    return faces, aligned, checked, [notes[i] for i in sorted(notes)], agreed, against
 
 
 def _layout_front(boxes: list[Box], slack: int) -> int:
@@ -645,10 +663,11 @@ def _bgr(image: np.ndarray) -> np.ndarray:
 
 
 def _filled(ink: np.ndarray, box: Box, k: int) -> np.ndarray:
-    """The box's ink closed over gaps of k px (dashes, chain lines) and filled inside its outer outlines, 0/1."""
+    """The box's ink closed over gaps of k px (dashes, chain lines) and filled inside its outer outlines, 0/1. The
+    kernel is odd: an even one shifts the fill by a pixel."""
     x, y, w, h = box
     sub = cv2.copyMakeBorder(ink[y: y + h, x: x + w], k, k, k, k, cv2.BORDER_CONSTANT, value=0)
-    closed = cv2.morphologyEx(sub, cv2.MORPH_CLOSE, np.ones((k, k), np.uint8))
+    closed = cv2.morphologyEx(sub, cv2.MORPH_CLOSE, np.ones((k | 1, k | 1), np.uint8))
     contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     filled = np.zeros_like(closed)
     cv2.drawContours(filled, contours, -1, 1, cv2.FILLED)
@@ -667,10 +686,11 @@ def _body(ink: np.ndarray, box: Box, long: int) -> Box:
     return box[0] + x0, box[1] + y0, x1 - x0 + 1, y1 - y0 + 1
 
 
-def _trapezoid(ink: np.ndarray, box: Box, k: int) -> tuple[float, float, float, float, float] | None:
-    """A cone seen side-on: a convex 4-vertex outline with two upright parallel sides. Returns the tall and short
-    side lengths, their x (image px) and the axis height."""
-    filled = _filled(ink, box, k).astype(np.uint8)
+def _trapezoid(ink: np.ndarray, box: Box, k: int, thin: int) -> tuple[float, float, float, float, float] | None:
+    """A cone seen side-on: a convex 4-vertex outline with two upright parallel sides, once lines thinner than
+    `thin` (its axis, drawn past both ends) are opened away. Returns the tall and short side lengths (to the outside
+    of the stroke), their x (image px) and the axis height."""
+    filled = cv2.morphologyEx(_filled(ink, box, k), cv2.MORPH_OPEN, np.ones((thin, thin), np.uint8))
     contours, _ = cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if not contours:
         return None
@@ -682,34 +702,39 @@ def _trapezoid(ink: np.ndarray, box: Box, k: int) -> tuple[float, float, float, 
     if len(ends) != 2:
         return None
     (tall, tall_x, axis_y), (short, short_x, _) = sorted(
-        ((abs(float(p[1] - q[1])), (p[0] + q[0]) / 2 + box[0], (p[1] + q[1]) / 2 + box[1]) for p, q in ends),
+        ((abs(float(p[1] - q[1])) + 1, (p[0] + q[0]) / 2 + box[0], (p[1] + q[1]) / 2 + box[1]) for p, q in ends),
         reverse=True)
     return tall, short, tall_x, short_x, axis_y
 
 
-def _rings(ink: np.ndarray, box: Box) -> tuple[float, float, float, float] | None:
-    """A cone seen end-on: exactly two concentric circles and nothing else. Returns the outer and inner diameters
-    (to the outside of each stroke) and the centre (image px)."""
-    x, y = box[0], box[1]
-    contours, _ = cv2.findContours(ink[y: y + box[3], x: x + box[2]].copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
-    circles = []
-    for c in contours:
-        (cx, cy), r = cv2.minEnclosingCircle(c)
-        if r < 3:
-            continue
-        if cv2.contourArea(c) < 0.8 * math.pi * r * r:
-            return None
-        circles.append((r, cx, cy))
-    if not circles:
+def _rings(ink: np.ndarray, box: Box, body: Box, slack: int) -> tuple[float, float, float, float] | None:
+    """A cone seen end-on: two concentric circles, and nothing else but centre lines through their centre.
+
+    A circle inks nearly every direction around the centre at its radius; a centre line inks only a few, so it
+    neither makes nor breaks a ring. The centre is that of `body`, the view without its centre-line spurs. Returns
+    the outer and inner diameters (to the outside of each stroke) and the centre (image px)."""
+    cx, cy = _centre(body)
+    x, y, w, h = box
+    ys, xs = np.nonzero(ink[y: y + h, x: x + w])
+    big = max(body[2], body[3]) / 2
+    if big < 8 or len(xs) == 0:
         return None
-    circles.sort(reverse=True)
-    big, ox, oy = circles[0]
-    if any(math.hypot(cx - ox, cy - oy) > SCALE * big + 1 for _, cx, cy in circles):
-        return None
-    rings = [big]
-    for (r, _, _), (prev, _, _) in zip(circles[1:], circles):
-        if prev - r > max(4.0, 0.15 * big):
-            rings.append(r)
+    dx, dy = xs + x + 0.5 - cx, ys + y + 0.5 - cy
+    r = np.hypot(dx, dy)
+    direction = ((np.arctan2(dy, dx) + math.pi) * RING_DIRECTIONS / (2 * math.pi)).astype(int) % RING_DIRECTIONS
+    hit = np.zeros((int(r.max()) + 3, RING_DIRECTIONS), bool)
+    hit[r.astype(int), direction] = True
+    near = hit.copy()
+    near[1:] |= hit[:-1]
+    near[:-1] |= hit[1:]
+    rings = [(a, b) for a, b in _runs(near.mean(1) >= RING_COVER) if b >= max(4, 0.15 * big)]
     if len(rings) != 2:
         return None
-    return 2 * rings[0], 2 * rings[1], ox + x, oy + y
+    near_ring = [(r >= a - 1) & (r < b + 2) for a, b in rings]  # the pixels behind each run of the 3-px window
+    on_axis = (np.abs(dx) <= slack) | (np.abs(dy) <= slack)
+    if (~(near_ring[0] | near_ring[1]) & ~on_axis).sum() > 0.05 * len(r):
+        return None
+    inner = r[near_ring[0] & ~on_axis]
+    if len(inner) == 0:
+        return None
+    return float(max(body[2], body[3])), 2 * float(inner.max()) + 1, cx, cy
