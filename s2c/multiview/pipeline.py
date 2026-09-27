@@ -161,7 +161,7 @@ class MvPipeline:
 
     def _outline(self, bgr: np.ndarray, mask_out, kind: str) -> tuple[PixelOutline | S.MvAbstain, bool]:
         """The outline, and whether Qwen-Image had to redraw the sketch (spec 2026-09-23 section 8)."""
-        outline = extract(bgr, mask_out)
+        outline = extract(bgr, mask_out, drawing=kind == "drawing")
         if (isinstance(outline, S.MvAbstain) and outline.reason == "no_outline" and kind != "photo"
                 and self.rescue_enabled and self.image_gen is not None):
             fixed = rescue_sketch(bgr, self.image_gen, self.seed)

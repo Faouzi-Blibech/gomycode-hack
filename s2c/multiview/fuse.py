@@ -35,6 +35,13 @@ class Observation:
     depth_ratio: dict[int, float] = field(default_factory=dict)      # circle index -> blind depth / axis length, Solaria
     depth_from_image: set[int] = field(default_factory=set)          # circles whose blind flag came from Solaria
     confidence: float = 0.9
+    line_art: bool = False                      # a drawing in lines (drawing-sheet spec 3.3)
+    hidden: list = field(default_factory=list)  # dashed hidden edges, as PixelOutline.hidden
+
+    def __post_init__(self):
+        """Whoever builds the observation, a line-art outline makes it line art and brings its hidden lines."""
+        self.line_art = self.line_art or self.outline.line_art
+        self.hidden = self.hidden or list(self.outline.hidden)
 
 
 def attach_label(obs: Observation, label) -> None:
