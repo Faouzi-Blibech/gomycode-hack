@@ -101,10 +101,11 @@ class MvPipeline:
 
     def reading(self) -> ReadingService | None:
         """The readers in trust order: the batch (Qwen-VL) reader first, it keeps the ⌀ and R signs; then TrOCR."""
-        model = os.environ.get("VLM_MODEL")
+        base, model = os.environ.get("VLM_BASE_URL"), os.environ.get("VLM_MODEL")
+        qwen_key = f"qwen:{base}:{model}" if base and model and self.batch_reader is not None else None
         readers = [r for r in (
             as_reader(self.batch_reader, "qwen", calibrated=False, batch=True, timeout_s=read_timeout_s(),
-                      cache_key=f"qwen:{model}" if model and self.batch_reader is not None else None),
+                      cache_key=qwen_key),
             as_reader(self.reader, "trocr", calibrated=True, batch=False)) if r is not None]
         return ReadingService(readers) if readers else None
 
