@@ -90,6 +90,26 @@ def test_values_keep_what_most_photos_read_and_warn_about_the_rest():
     assert any("66" in w for w in warnings)
 
 
+def test_a_confirmed_reading_wins_the_merged_value_over_an_unconfirmed_one():
+    imgs = [photo(), photo(shift=(20, 0), seed=1)]
+    confirmed = linear(60)
+    unconfirmed = replace(confirmed, reading=replace(confirmed.reading, value_mm=62, confirmed=False))
+    observations = [obs(imgs[0], 0.95, [confirmed]), obs(imgs[1], values=[unconfirmed])]
+    (merged,), _, _ = merge_same_face(observations, imgs)
+    [lv] = [lv for lv in merged.values if lv.axis == "a"]
+    assert lv.reading.value_mm == 60.0 and lv.reading.confirmed is True
+
+
+def test_two_unconfirmed_readings_merge_to_the_median_and_stay_unconfirmed():
+    imgs = [photo(), photo(shift=(20, 0), seed=1)]
+    a = replace(linear(60), reading=replace(linear(60).reading, confirmed=False))
+    b = replace(linear(62), reading=replace(linear(62).reading, confirmed=False))
+    observations = [obs(imgs[0], 0.95, [a]), obs(imgs[1], values=[b])]
+    (merged,), _, _ = merge_same_face(observations, imgs)
+    [lv] = [lv for lv in merged.values if lv.axis == "a"]
+    assert lv.reading.value_mm == 61.0 and lv.reading.confirmed is False
+
+
 def test_scale_is_the_median_and_a_spread_warns():
     imgs = [photo(), photo(shift=(20, 0), seed=1), photo(shift=(-20, 0), seed=2)]
     observations = [obs(imgs[0], 0.95, mm_per_px=0.1), obs(imgs[1], mm_per_px=0.1), obs(imgs[2], mm_per_px=0.104)]

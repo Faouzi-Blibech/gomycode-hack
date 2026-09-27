@@ -36,6 +36,9 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Reader call log (no image, no text, but not something to commit)
+logs/reading.jsonl
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
