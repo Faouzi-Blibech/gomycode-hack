@@ -21,8 +21,10 @@ def test_a_row_without_real_tokens_scores_zero():
 
 
 @pytest.mark.gpu
-def test_trocr_reads_a_batch_of_printed_digits():
+def test_trocr_reads_a_batch_of_printed_digits(monkeypatch):
     pytest.importorskip("transformers")
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    from s2c.reading import trocr
     from s2c.reading.trocr import TrocrReader
 
     def digits(s):
@@ -31,7 +33,7 @@ def test_trocr_reads_a_batch_of_printed_digits():
         return Crop(img, (0, 0, 200, 80))
 
     reader = TrocrReader()
-    reader.warm()
+    trocr._load(reader.model_id, reader.device)  # a real load, bypassing warm() which conftest patches to no-op
     out = reader.read([digits("60"), digits("125")])
     # TrOCR was trained on sentences and often ends a read with a period; parsing, not the reader, drops it
     assert [r.text.replace(" ", "").rstrip(".") for r in out] == ["60", "125"]
