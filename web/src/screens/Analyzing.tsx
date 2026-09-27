@@ -337,7 +337,11 @@ export function Analyzing() {
         if (!alive) return;
         fails += 1;
         const msg = e instanceof ApiError ? e.message : 'Could not reach the server.';
-        if ((e instanceof ApiError && (e.status === 404 || e.status === 410)) || fails >= MAX_FAILS) { setFatal(msg); return; }
+        if ((e instanceof ApiError && (e.status === 404 || e.status === 410)) || fails >= MAX_FAILS) {
+          setFatal(msg);
+          dispatch({ type: 'JOB_LOST', error: msg });
+          return;
+        }
         setNetErr(msg);
       }
       timer = window.setTimeout(tick, POLL_MS);

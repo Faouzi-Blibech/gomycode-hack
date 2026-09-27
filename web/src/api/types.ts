@@ -21,7 +21,8 @@ export interface Slot { type: 'slot'; face: Face; a_mm: number; b_mm: number; wi
 export interface Spec { version: 'mv1'; envelope: { x_mm: number; y_mm: number; z_mm: number }; views: { front: Outline; top: Outline; right: Outline };
   features: (Hole | Slot)[]; finishes: { type: 'fillet' | 'chamfer'; edges: string; radius_mm: number }[];
   provenance: Record<string, Provenance>; snapped: string[]; warnings: string[]; confidence: number }
-export interface Abstain { stage: string; reason: string; remedy: string; partial: Record<string, number> | null }
+export interface Abstain { stage: string; reason: string; remedy: string; partial: Record<string, number> | null;
+  missing?: string[]; suggested?: Record<string, number> }
 export interface Analysis { request_id: string; spec: Spec | null; abstain: Abstain | null; filled_by: Partial<Record<Face, FilledBy>> }
 
 export interface AiSettings { use_reader: boolean; use_qwen_image: boolean; use_rescue: boolean; use_triposr: boolean; use_solaria: boolean; seed: number; randomize_seed: boolean; attempts: number }

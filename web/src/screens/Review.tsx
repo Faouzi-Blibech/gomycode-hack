@@ -162,12 +162,10 @@ export function Review() {
     );
   }
 
-  // The finished API adds `missing` (every path still required) and `suggested` (placeholder values)
-  // to Abstain, beyond the Abstain type in types.ts. Read them locally rather than editing the contract.
-  const extra = abstain as (Abstain & { missing?: string[]; suggested?: Record<string, number> }) | null;
+  // `missing` lists every path still required; `suggested` holds placeholder values.
   const partial = abstain?.partial ?? {};
-  const suggested = extra?.suggested ?? {};
-  const missingPaths = extra?.missing ?? [];
+  const suggested = abstain?.suggested ?? {};
+  const missingPaths = abstain?.missing ?? [];
   const missingEnvKeys = missingPaths
     .map((p) => /^envelope\.(x|y|z)_mm$/.exec(p)?.[1] as 'x' | 'y' | 'z' | undefined)
     .filter((k): k is 'x' | 'y' | 'z' => !!k);

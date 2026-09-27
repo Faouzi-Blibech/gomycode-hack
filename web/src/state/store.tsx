@@ -12,6 +12,8 @@ export interface State {
   reference: string;
   ai: AiSettings;
   jobId: string | null;
+  /** Set when polling gave up on the job (lost connection or unknown job). */
+  jobError: string | null;
   job: Job | null;
   analysis: Analysis | null;
   typed: Record<string, number>;
@@ -28,6 +30,7 @@ export type Action =
   | { type: 'SET_AI'; patch: Partial<AiSettings> }
   | { type: 'START_JOB'; jobId: string }
   | { type: 'JOB_UPDATE'; job: Job }
+  | { type: 'JOB_LOST'; error: string }
   | { type: 'ANALYSIS'; analysis: Analysis }
   | { type: 'TYPE_VALUE'; path: string; value: number }
   | { type: 'TOGGLE_REJECT'; face: Face }
@@ -48,7 +51,7 @@ export const initialGeometry: GeometrySettings = {
 };
 
 export const initialState: State = {
-  screen: 'capture', items: [], reference: '', ai: initialAi, jobId: null, job: null, analysis: null,
+  screen: 'capture', items: [], reference: '', ai: initialAi, jobId: null, jobError: null, job: null, analysis: null,
   typed: {}, rejected: [], geometry: initialGeometry, model: null,
 };
 
@@ -72,9 +75,11 @@ export function reducer(state: State, action: Action): State {
     case 'SET_AI':
       return { ...state, ai: { ...state.ai, ...action.patch } };
     case 'START_JOB':
-      return { ...state, screen: 'analyzing', jobId: action.jobId, job: null, analysis: null, typed: {}, rejected: [], model: null };
+      return { ...state, screen: 'analyzing', jobId: action.jobId, jobError: null, job: null, analysis: null, typed: {}, rejected: [], model: null };
     case 'JOB_UPDATE':
       return action.job.job_id === state.jobId ? { ...state, job: action.job } : state;
+    case 'JOB_LOST':
+      return { ...state, jobError: action.error };
     case 'ANALYSIS':
       return { ...state, analysis: action.analysis };
     case 'TYPE_VALUE':
