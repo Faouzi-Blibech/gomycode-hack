@@ -6,8 +6,8 @@ import io
 import json
 import logging
 import os
-import random
 import re
+import secrets
 from functools import lru_cache
 from http import HTTPStatus
 from pathlib import Path
@@ -158,7 +158,7 @@ def analyze(pipe: Pipe, files: Annotated[list[UploadFile] | None, File()] = None
         except (ValueError, TypeError) as e:
             raise HTTPException(400, "The AI settings are not valid.") from e
         if settings.randomize_seed:
-            settings = settings.model_copy(update={"seed": random.randint(0, 2**31 - 1)})
+            settings = settings.model_copy(update={"seed": secrets.randbelow(2**31)})
         pipe = pipe.configured(settings)
     images = [ImageInput(d, _tag(face_tags, i), _tag(kind_tags, i)) for i, d in enumerate(datas)]
     job = jobs.new_job(len(images), pipe)
