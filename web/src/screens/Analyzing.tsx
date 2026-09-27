@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 import { ApiError, cancelJob, getJob } from '../api/client';
 import type { Face, Job, JobImage, ReadValue, Spec, StageKey } from '../api/types';
 import { StopCard } from '../components/StopCard';
+import { analyzingCta } from '../lib/abstain';
 import { pace, type FaceShow, type PacedStage, type Playback } from '../lib/pacing';
 import { BADGE, countChecks, envelopeRows, featureRows } from '../lib/provenance';
 import { useStore } from '../state/store';
@@ -64,6 +65,8 @@ interface PaneProps {
   onNatural: (wh: [number, number]) => void;
   trace: number; reads: number; readBase: number; totalReads: number;
   read: PacedStage | undefined;
+  /** The read stage's tool, as the server named it (the configured model, or TrOCR). */
+  readerName: string;
   tagO: number; faceTxt: string; tagTxt: string; tagAi: boolean;
   t: number; rm: boolean;
   corner?: string;
@@ -158,7 +161,7 @@ function SketchPane(p: PaneProps) {
           <span style={{ fontFamily: MONO, fontSize: big ? 18 : 14, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--ink)' }}>
             {r.chip.val}<span style={{ fontWeight: 300, color: 'var(--muted)', fontSize: big ? 14 : 12 }}>{r.chip.locked ? ' mm' : ''}</span>
           </span>
-          <span style={{ fontSize: big ? 13 : 12, fontWeight: 500, color: r.chip.locked ? 'var(--trusted)' : 'var(--ai)' }}>{r.chip.locked ? '✓ Written by you' : 'Qwen-VL reading'}</span>
+          <span style={{ fontSize: big ? 13 : 12, fontWeight: 500, color: r.chip.locked ? 'var(--trusted)' : 'var(--ai)' }}>{r.chip.locked ? '✓ Written by you' : `${p.readerName} reading`}</span>
         </div>
       ))}
       {c0 && (
@@ -309,7 +312,7 @@ function CubeFace({ name, f, bi, pos }: { name: string; f: FaceStyle; bi?: strin
 
 export function Analyzing() {
   const { state, dispatch } = useStore();
-  const { jobId, job, items, analysis } = state;
+  const { jobId, job, jobItems: items, analysis } = state;
   const rm = useReducedMotion();
   const now = useNow();
   const startedAt = useRef(Date.now());
@@ -419,7 +422,7 @@ export function Analyzing() {
     <SketchPane key={i} W={W} H={H} big={big} url={items[i]?.url} image={images[i]} natural={natural[i]}
       onNatural={(wh) => setNatural((m) => (m[i] && m[i][0] === wh[0] && m[i][1] === wh[1] ? m : { ...m, [i]: wh }))}
       trace={pb?.trace[i] ?? 0} reads={pb?.readsShown[i] ?? 0} readBase={readBase[i] ?? 0} totalReads={totalReads}
-      read={read} t={t} rm={rm} {...tagFor(i)} {...extra} />
+      read={read} readerName={read?.tool ?? 'the reader'} t={t} rm={rm} {...tagFor(i)} {...extra} />
   );
 
   // The thumbnail follows whichever later image is being traced or read.
@@ -514,7 +517,8 @@ export function Analyzing() {
     ledgerNote = 'Waiting for your numbers';
   }
 
-  const ctaLabel = !done ? 'Review opens when ready' : abstain ? 'Fix 1 value →' : `Review ${nCheck || nValues} ${(nCheck || nValues) === 1 ? 'value' : 'values'} →`;
+  const stopCta = abstain ? analyzingCta(abstain) : null;
+  const ctaLabel = !done ? 'Review opens when ready' : stopCta ? stopCta.label : `Review ${nCheck || nValues} ${(nCheck || nValues) === 1 ? 'value' : 'values'} →`;
   const readyO = done ? 1 : 0;
   const ready = abstain
     ? { c: 'var(--stop)', icon: '!', text: `Stopped — ${abstain.remedy}` }
@@ -640,7 +644,7 @@ export function Analyzing() {
             <div style={{ opacity: readyO, transition: rm ? undefined : 'opacity 400ms', display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px', borderRadius: 10, border: `1.5px ${ready.c === 'var(--trusted)' ? 'solid' : 'dashed'} ${ready.c}`, background: `color-mix(in oklch, ${ready.c} 12%, transparent)`, fontSize: 14, fontWeight: 500, color: 'var(--ink)' }}>
               <span style={{ width: 20, height: 20, flex: 'none', borderRadius: '50%', border: `1.5px dashed ${ready.c}`, color: ready.c, display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 700, boxSizing: 'border-box' }}>{ready.icon}</span>{ready.text}
             </div>
-            <button type="button" aria-disabled={!done} disabled={!done} onClick={() => dispatch({ type: 'GOTO', screen: 'review' })}
+            <button type="button" aria-disabled={!done} disabled={!done} onClick={() => dispatch({ type: 'GOTO', screen: stopCta?.to ?? 'review' })}
               style={{ height: 52, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 12, border: 'none', background: done ? 'var(--accent)' : 'var(--inset)', color: done ? 'var(--on-accent)' : 'var(--muted)', boxShadow: done ? 'var(--shadow)' : 'none', font: 'inherit', fontSize: 16, fontWeight: 600, cursor: done ? 'pointer' : 'default' }}>
               {ctaLabel}
             </button>

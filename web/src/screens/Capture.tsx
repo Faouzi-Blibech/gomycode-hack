@@ -270,7 +270,7 @@ export function Capture() {
             </button>
             {aiOpen && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <Toggle label="Read handwriting with Qwen-VL" checked={state.ai.use_reader} onChange={(v) => setAi({ use_reader: v })} />
+                <Toggle label="Read handwriting with the vision model" checked={state.ai.use_reader} onChange={(v) => setAi({ use_reader: v })} />
                 <Toggle label="Draw missing faces with Qwen-Image" checked={state.ai.use_qwen_image} onChange={(v) => setAi({ use_qwen_image: v })} />
                 <Toggle label="Rescue sketches with an open outline" checked={state.ai.use_rescue} onChange={(v) => setAi({ use_rescue: v })} />
                 <Toggle label="TripoSR fallback for missing faces" checked={state.ai.use_triposr} onChange={(v) => setAi({ use_triposr: v })} />
