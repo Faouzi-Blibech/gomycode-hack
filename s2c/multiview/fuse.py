@@ -304,7 +304,7 @@ def classify_drawn_circles(observations: list[Observation], env: S.Envelope) -> 
     """Drawing-sheet spec 3.4: which circles of a line drawing are edges, as observation index -> circle indices,
     and the warnings. A circle is a hole when another line-art view draws its sides hidden, an edge when another
     view's silhouette is that wide there, and otherwise a hole: a visible circle must be some edge. Filled renders
-    and sketches keep every circle."""
+    and sketches keep every circle. Holes no view explains share one warning per face, so a plate stays readable."""
     edges: dict[int, set[int]] = {}
     warnings = []
     for k, o in enumerate(observations):
@@ -312,14 +312,20 @@ def classify_drawn_circles(observations: list[Observation], env: S.Envelope) -> 
             continue
         others = [g for g in observations if g.line_art and S.CANONICAL_OF[g.face] != S.CANONICAL_OF[o.face]]
         sa, sb = _scales(o, env)
+        lone = []
         for i, c in enumerate(o.outline.circles):
             kind, by = _verdict(o, i, others, env)
-            name = f"Circle Ø{round(c.d * (sa + sb) / 2, 1):g} on {o.face}"
+            d = round(c.d * (sa + sb) / 2, 1)
             if kind == "edge":
                 edges.setdefault(k, set()).add(i)
-                warnings.append(f"{name}: read as an edge (step in {by})")
+                warnings.append(f"Circle Ø{d:g} on {o.face}: read as an edge (step in {by})")
             elif by is None:
-                warnings.append(f"{name}: read as a hole, no other view explains it")
+                lone.append(d)
+        if len(lone) == 1:
+            warnings.append(f"Circle Ø{lone[0]:g} on {o.face}: read as a hole, no other view explains it")
+        elif lone:
+            sizes = ", ".join(f"Ø{d:g}" for d in sorted(lone))
+            warnings.append(f"{len(lone)} circles on {o.face} ({sizes}): read as holes, no other view explains them")
     return edges, warnings
 
 

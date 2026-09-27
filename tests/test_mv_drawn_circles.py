@@ -119,6 +119,21 @@ def test_hidden_lines_make_a_hole(face, view):
     assert len(feats) == 1 and feats[0]["diameter_mm"] == pytest.approx(8, rel=0.05)
 
 
+def test_a_lone_plate_drawing_warns_once_for_all_its_holes():
+    """Four holes no other view explains: one warning for the face, with the diameters smallest first."""
+    img = page()
+    cv2.rectangle(img, (350, 300), (1250, 900), INK, 2)
+    for (x, y), d in zip([(10, 10), (50, 10), (10, 30), (50, 30)], (10, 6, 6, 10)):
+        cv2.circle(img, (350 + x * PX, 900 - y * PX), d * PX // 2, INK, 2)
+    front = drawn("front", img)
+    assert len(front.outline.circles) == 4
+    edges, warnings = classify_drawn_circles([front], envelope(60, 40, 10))
+    assert edges == {} and len(warnings) == 1
+    m = re.fullmatch(r"4 circles on front \((.+)\): read as holes, no other view explains them", warnings[0])
+    assert m
+    assert [float(d.removeprefix("Ø")) for d in m.group(1).split(", ")] == pytest.approx([6, 6, 10, 10], abs=0.5)
+
+
 def bracket_front():
     """A 60 wide base, 8 high, and an upright lug 20 wide whose top is rounded about (30, 40) mm, with a Ø8 hole
     there. 50 mm high overall."""
