@@ -70,14 +70,14 @@ class Sheet:
         np.minimum(region, tile, out=region)
         self.texts.append((s, (x0, y0, w, h)))
 
-    def hdim(self, x1, x2, y_obj, y_line, text):
+    def hdim(self, x1, x2, y_obj, y_line, text, scale=0.8):
         sgn = 1 if y_line > y_obj else -1
         for x in (x1, x2):
             self.line((x, y_obj + sgn * 6), (x, y_line + sgn * 8), 1)
         self.line((x1, y_line), (x2, y_line), 1)
         self.arrowhead((x1, y_line), (-1, 0))
         self.arrowhead((x2, y_line), (1, 0))
-        self.text(text, ((x1 + x2) / 2, y_line - 16))
+        self.text(text, ((x1 + x2) / 2, y_line - 16), scale=scale)
 
     def vdim(self, y1, y2, x_obj, x_line, text, rotate=False):
         sgn = 1 if x_line > x_obj else -1
@@ -88,10 +88,10 @@ class Sheet:
         self.arrowhead((x_line, y2), (0, 1))
         self.text(text, (x_line + sgn * (20 if rotate else 36), (y1 + y2) / 2), rotate=rotate)
 
-    def leader(self, tip, tail, text):
+    def leader(self, tip, tail, text, scale=0.8):
         self.line(tail, tip, 1)
         self.arrowhead(tip, np.float64(tip) - np.float64(tail))
-        self.text(text, (tail[0], tail[1] - 16))
+        self.text(text, (tail[0], tail[1] - 16), scale=scale)
 
     def bgr(self):
         return self.img.copy()
@@ -163,10 +163,10 @@ def bridge_block(sh: Sheet, labels: bool = True) -> Sheet:
         sh.dashed(R(a, 0), R(a, 12.5))
     sh.circle(R(12.5, 37.5), S * 6.25)
     tip = np.float64(R(12.5, 37.5)) + S * 6.25 * np.array([-0.707, -0.707])
-    sh.leader(tip, (tip[0] - 45, tip[1] - 60), "Ø12.5")
+    sh.leader(tip, (tip[0] - 64, tip[1] - 60), "Ø12.5", scale=0.6)
     stop, sright = R(0, 50)[1], R(25, 0)[0]
     for a0, a1 in ((0, 12.5), (12.5, 25)):
-        sh.hdim(R(a0, 0)[0], R(a1, 0)[0], stop, stop - 40, "12.5")
+        sh.hdim(R(a0, 0)[0], R(a1, 0)[0], stop, stop - 40, "12.5", scale=0.6)
     sh.vdim(R(0, 50)[1], R(0, 37.5)[1], sright, sright + 50, "12.5")
     sh.vdim(R(0, 50)[1], R(0, 0)[1], sright, sright + 110, "50")
     if labels:
