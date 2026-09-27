@@ -11,9 +11,10 @@ import trimesh
 from PIL import Image
 
 from s2c.multiview import spec as S
-from s2c.multiview.benchmark import RefPart, load_part, score_part, summarize, summary_markdown
+from s2c.multiview.benchmark import RefPart, load_part, part_sheet, score_part, summarize, summary_markdown
 from s2c.multiview.pipeline import MvPipeline
 from s2c.multiview.raster import Mesh, face_mask, solid_mesh
+from s2c.multiview.sheet import Naming, Sheet, split_sheet
 
 RE_DATASET = os.environ.get("RE_DATASET")
 
@@ -153,7 +154,61 @@ def test_summary_markdown_states_clean_renders():
     text = summary_markdown(summarize(rows))
     assert "clean renders, true envelope given as user values" in text
     assert "overall" in text
+    assert "named correctly" not in text
 
+
+@pytest.mark.parametrize("name", ["boxes/box_001", "boxes/box_002"], ids=["unlabelled", "labelled"])
+def test_sheet_mode_scores_a_synthetic_part(tmp_path, name):
+    """The front, top and right renders as one first-angle line-art sheet split, name and build like per-face
+    uploads. Even-numbered parts carry view labels, which must not disturb the split."""
+    ref = load_part(make_part(tmp_path, name, _box_with_hole(40, 20, 10)))
+    row = score_part(ref, MvPipeline(), tmp_path / "out", sheet=True)
+    assert row["result"] == "built", row["result"]
+    assert row["named_ok"] is True
+    assert row["voxel_iou"] > 0.85
+
+
+def test_even_numbered_parts_get_view_labels(tmp_path):
+    for name, labelled in (("boxes/box_001", False), ("boxes/box_002", True)):
+        image, truth = part_sheet(load_part(make_part(tmp_path, name, _box_with_hole(40, 20, 10))))
+        assert set(truth) == {"front", "top", "right"}
+        views = [v for d in split_sheet(image).drawings for v in d.views]
+        assert len(views) == 3, name
+        assert all((v.label_box is not None) == labelled for v in views), name
+
+
+@pytest.mark.parametrize("stage", ["split", "naming"])
+def test_a_sheet_without_three_named_views_abstains(tmp_path, monkeypatch, stage):
+    ref = load_part(make_part(tmp_path, "boxes/box_001", _box_with_hole(40, 20, 10)))
+    if stage == "split":
+        monkeypatch.setattr("s2c.multiview.benchmark.split_sheet", lambda image: Sheet([], image.shape[:2]))
+    else:
+        monkeypatch.setattr("s2c.multiview.benchmark.name_views",
+                            lambda sheet, image: Naming(0, ["front", "auto", "auto"], "first", "setting"))
+    row = score_part(ref, MvPipeline(), tmp_path / "out", sheet=True)
+    assert row["result"] == f"abstain sheet:{stage}"
+    assert row["named_ok"] is False
+
+
+def test_sheet_summary_reports_named_correctly():
+    def row(result, named_ok, **kw):
+        base = {"part": "a/1", "category": "a", "result": result, "named_ok": named_ok, "frame_iou": None,
+                "vol_true": None, "vol_built": None, "vol_err": None, "voxel_iou": None, "view_iou": None,
+                "features": None, "secs": 1.0}
+        base.update(kw)
+        return base
+
+    rows = [row("built", True, vol_err=0.01, voxel_iou=0.9, view_iou={f: 0.9 for f in S.FACES}),
+            row("built", False, vol_err=0.2, voxel_iou=0.5, view_iou={f: 0.5 for f in S.FACES}),
+            row("abstain sheet:split", False),
+            row("skipped timeout", None)]
+    summary = summarize(rows)
+    assert summary["overall"]["named_ok"] == pytest.approx(1 / 3)
+    assert summary["overall"]["abstained"] == {"sheet:split": 1}
+    text = summary_markdown(summary)
+    assert "sheet" in text.splitlines()[0]
+    assert "named correctly" in text
+    assert "33.3%" in text
 
 def test_cli_writes_results_and_summary(tmp_path):
     from scripts import re_benchmark
@@ -201,6 +256,29 @@ def test_cli_with_two_jobs_writes_two_rows_and_both_summaries(tmp_path):
     assert (out / "summary.md").exists()
     assert (out / "summary.json").exists()
 
+
+def test_cli_sheet_mode_writes_named_ok(tmp_path):
+    from scripts import re_benchmark
+
+    dataset = tmp_path / "dataset"
+    make_part(dataset, "boxes/box_002", _box_with_hole(40, 20, 10))
+    out = tmp_path / "out"
+    re_benchmark.main(["--dataset", str(dataset), "--out", str(out), "--jobs", "1", "--sheet"])
+    rows = [json.loads(line) for line in (out / "results.jsonl").read_text().strip().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["result"] == "built", rows[0]["result"]
+    assert rows[0]["named_ok"] is True
+    assert "named correctly" in (out / "summary.md").read_text()
+
+
+def test_per_category_takes_parts_round_robin(tmp_path):
+    from scripts import re_benchmark
+
+    for name in ("a/a_001", "a/a_002", "a/a_003", "b/b_001", "c/c_001", "c/c_002"):
+        (tmp_path / name).mkdir(parents=True)
+        (tmp_path / name / "model.stl").write_text("")
+    picked = re_benchmark._find_parts(tmp_path, None, per_category=2)
+    assert [f"{p.parent.name}/{p.name}" for p in picked] == ["a/a_001", "b/b_001", "c/c_001", "a/a_002", "c/c_002"]
 
 @pytest.mark.dataset
 @pytest.mark.skipif(not RE_DATASET, reason="set RE_DATASET to run against the real dataset")

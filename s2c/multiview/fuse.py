@@ -11,6 +11,7 @@ from s2c.multiview import spec as S
 from s2c.multiview.ocr import Linked, Reading
 from s2c.multiview.outline import PixelOutline, to_face_mm
 from s2c.multiview.raster import iou, outline_mask
+from s2c.multiview.turned import _extents
 
 CLEARANCE_CLASSES = {  # ISO 273 clearance holes for M2, M2.5, M3, M4, M5, M6, M8, M10
     "fine": (2.2, 2.7, 3.2, 4.3, 5.3, 6.4, 8.4, 10.5),
@@ -36,6 +37,14 @@ class Observation:
     depth_ratio: dict[int, float] = field(default_factory=dict)      # circle index -> blind depth / axis length, Solaria
     depth_from_image: set[int] = field(default_factory=set)          # circles whose blind flag came from Solaria
     confidence: float = 0.9
+    line_art: bool = False                      # a drawing in lines (drawing-sheet spec 3.3)
+    hidden: list[tuple[str, float, float, float]] = field(default_factory=list)  # as PixelOutline.hidden
+    stroke: float = 0.0                         # line width of a line drawing in px, 0 when not measured
+
+    def __post_init__(self):
+        """Whoever builds the observation, a line-art outline makes it line art and brings its hidden lines."""
+        self.line_art = self.line_art or self.outline.line_art
+        self.hidden = self.hidden or list(self.outline.hidden)
 
 
 def attach_label(obs: Observation, label) -> None:
@@ -235,26 +244,33 @@ def _duplicate_through(feats: list[dict], face: str, a: float, b: float, env: S.
     return False
 
 
-def features_from(observations: list[Observation], env: S.Envelope):
-    """Every circle becomes a hole on its own face; a through hole seen from both sides is kept once."""
+def _diameter(o: Observation, i: int, sa: float, sb: float) -> tuple[float, str]:
+    """Circle i's diameter in mm and its provenance: written next to it (inferred when unconfirmed or off scale), else
+    measured on a photo, else scaled."""
+    c = o.outline.circles[i]
+    drawn = c.d * o.mm_per_px if o.mm_per_px else c.d * (sa + sb) / 2
+    written = [(_value(lv.reading), lv.reading.confirmed) for lv in o.values if lv.hole_index == i]
+    if written:
+        d, confirmed = written[-1]
+        off = drawn > 0 and max(d / drawn, drawn / d) > SCALE_TRAP
+        return float(d), "user_written" if confirmed and not off else "inferred"
+    return float(drawn), "measured" if o.mm_per_px else "scaled"
+
+
+def features_from(observations: list[Observation], env: S.Envelope, edges: dict[int, set[int]] | None = None):
+    """Every circle becomes a hole on its own face, except those `edges` (observation index -> circle indices, from
+    classify_drawn_circles) reads as edges; a through hole seen from both sides is kept once."""
     feats: list[dict] = []
     prov: dict[str, str] = {}
-    for o in observations:
+    edges = edges or {}
+    for k_obs, o in enumerate(observations):
         sa, sb = _scales(o, env)
-        written = {lv.hole_index: (_value(lv.reading), lv.reading.confirmed)
-                   for lv in o.values if lv.hole_index is not None}
         axis_len = env.length(S.FACE_AXES[o.face][2])
         for i, c in enumerate(o.outline.circles):
+            if i in edges.get(k_obs, ()):
+                continue
             (a, b), = to_face_mm(np.array([[c.cx, c.cy]]), o.outline.bbox, sa, sb)
-            drawn = c.d * o.mm_per_px if o.mm_per_px else c.d * (sa + sb) / 2
-            if i in written:
-                d, confirmed = written[i]
-                off = drawn > 0 and max(d / drawn, drawn / d) > SCALE_TRAP
-                d_prov = "user_written" if confirmed and not off else "inferred"
-            elif o.mm_per_px:
-                d, d_prov = c.d * o.mm_per_px, "measured"
-            else:
-                d, d_prov = c.d * (sa + sb) / 2, "scaled"
+            d, d_prov = _diameter(o, i, sa, sb)
             depth, depth_prov = None, None
             if o.blind.get(i):
                 if i in o.depth_ratio:
@@ -264,13 +280,117 @@ def features_from(observations: list[Observation], env: S.Envelope):
             elif _duplicate_through(feats, o.face, a, b, env):
                 continue
             k = len(feats)
-            feats.append({"type": "hole", "face": o.face, "a_mm": a, "b_mm": b, "diameter_mm": float(d),
+            feats.append({"type": "hole", "face": o.face, "a_mm": a, "b_mm": b, "diameter_mm": d,
                           "depth_mm": depth})
             pos = _outline_prov(o)
             prov.update({f"features[{k}].a_mm": pos, f"features[{k}].b_mm": pos, f"features[{k}].diameter_mm": d_prov})
             if depth is not None:
                 prov[f"features[{k}].depth_mm"] = depth_prov
     return feats, prov
+
+
+# ---- drawn circles: holes or edges (drawing-sheet spec 3.4) ---------------------
+
+HIDDEN_TOL = 0.03  # a hidden line lies this close to a circle's side, as a share of the view
+EDGE_TOL = 0.04    # a silhouette as wide as a circle, within this share of its diameter, explains it
+STATION = 1e-3     # widths are read this share of the length either side of each outline corner
+CORNER_DEG = 30.0  # an outline vertex turning less than this lies on a curve, where a width is no step or end
+
+
+def _hidden_along(g: Observation, s: str, look: str, env: S.Envelope) -> list[float]:
+    """Where g's hidden lines that run along `look` lie on axis s, in mm. Their positions are fractions of g's
+    bbox from its left and top edges, as drawn."""
+    a_axis, b_axis, _ = S.FACE_AXES[g.face]
+    a_len, b_len = S.face_size(g.face, env)
+    out = []
+    for kind, pos, _, _ in g.hidden:
+        if kind == "h":  # runs along a; pos runs down from the bbox top, b runs up
+            run, across, a, b = a_axis, b_axis, 0.0, (1 - pos) * b_len
+        else:
+            run, across, a, b = b_axis, a_axis, pos * a_len, 0.0
+        if run == look and across == s:
+            out.append(S.to_global(g.face, a, b, env)[s])
+    return out
+
+
+def _corners(outer) -> np.ndarray:
+    """Which vertices of a pixel outline are corners. The outline follows a curve in short chords that each turn
+    a little, so a vertex on a curve is no corner."""
+    p = np.asarray(outer, np.float64).reshape(-1, 2)
+    before, after = p - np.roll(p, 1, axis=0), np.roll(p, -1, axis=0) - p
+    turn = np.arctan2(before[:, 0] * after[:, 1] - before[:, 1] * after[:, 0], (before * after).sum(axis=1))
+    return np.degrees(np.abs(turn)) > CORNER_DEG
+
+
+def _widths(g: Observation, s: str, look: str, env: S.Envelope) -> list[tuple[float, float]]:
+    """The extent on axis s of g's outer silhouette just either side of each outline corner along `look`: a step,
+    a shoulder or a taper end, never the middle of a taper or a curve. The outline runs along the outside of its
+    line and a circle along the middle of its line, so the extent loses half a line width on each side."""
+    sa, sb = _scales(g, env)
+    pts = [S.to_global(g.face, a, b, env) for a, b in to_face_mm(g.outline.outer, g.outline.bbox, sa, sb)]
+    poly = np.array([(p[look], p[s]) for p in pts])
+    length = env.length(look)
+    at = poly[_corners(g.outline.outer), 0]
+    hs = np.unique(np.concatenate([at - STATION * length, at + STATION * length]))
+    lo, hi = _extents(poly, hs[(hs > 0) & (hs < length)])
+    half = g.stroke * (sa if s == S.FACE_AXES[g.face][0] else sb) / 2
+    return [(float(a) + half, float(b) - half) for a, b in zip(lo, hi) if np.isfinite(a) and np.isfinite(b)]
+
+
+def _verdict(o: Observation, i: int, others: list[Observation], env: S.Envelope) -> tuple[str, str | None]:
+    """("hole" | "edge", the view that decided it, or None when no view explains the circle)."""
+    c = o.outline.circles[i]
+    sa, sb = _scales(o, env)
+    a_axis, b_axis, look = S.FACE_AXES[o.face]
+    (a, b), = to_face_mm(np.array([[c.cx, c.cy]]), o.outline.bbox, sa, sb)
+    at = S.to_global(o.face, a, b, env)
+    pairs = []  # (view, the axis it shares with o, the circle's diameter along that axis)
+    for g in others:
+        s = next(ax for ax in (a_axis, b_axis) if ax in S.FACE_AXES[g.face][:2])
+        pairs.append((g, s, c.d * (sa if s == a_axis else sb)))
+    for g, s, d in pairs:
+        tol = HIDDEN_TOL * env.length(s)
+        qs = _hidden_along(g, s, look, env)
+        low = {k for k, q in enumerate(qs) if abs(q - (at[s] - d / 2)) <= tol}
+        high = {k for k, q in enumerate(qs) if abs(q - (at[s] + d / 2)) <= tol}
+        if low and high and len(low | high) >= 2:
+            return "hole", g.face
+    for g, s, d in pairs:
+        if g.outline.circular:
+            continue  # every chord of a round silhouette is some width, centred on its axis: none is a step
+        if any(abs(hi - lo - d) <= EDGE_TOL * d and abs((hi + lo) / 2 - at[s]) <= EDGE_TOL * d
+               for lo, hi in _widths(g, s, look, env)):
+            return "edge", g.face
+    return "hole", None
+
+
+def classify_drawn_circles(observations: list[Observation], env: S.Envelope) -> tuple[dict[int, set[int]], list[str]]:
+    """Drawing-sheet spec 3.4: which circles of a line drawing are edges, as observation index -> circle indices,
+    and the warnings. A circle is a hole when another line-art view draws its sides hidden, an edge when another
+    view's silhouette is that wide there, and otherwise a hole: a visible circle must be some edge. Filled renders
+    and sketches keep every circle. Holes no view explains share one warning per face, so a plate stays readable."""
+    edges: dict[int, set[int]] = {}
+    warnings = []
+    for k, o in enumerate(observations):
+        if not o.line_art:
+            continue
+        others = [g for g in observations if g.line_art and S.CANONICAL_OF[g.face] != S.CANONICAL_OF[o.face]]
+        sa, sb = _scales(o, env)
+        lone = []
+        for i in range(len(o.outline.circles)):
+            kind, by = _verdict(o, i, others, env)
+            d = round(_diameter(o, i, sa, sb)[0], 1)
+            if kind == "edge":
+                edges.setdefault(k, set()).add(i)
+                warnings.append(f"Circle Ø{d:g} on {o.face}: read as an edge (step in {by})")
+            elif by is None:
+                lone.append(d)
+        if len(lone) == 1:
+            warnings.append(f"Circle Ø{lone[0]:g} on {o.face}: read as a hole, no other view explains it")
+        elif lone:
+            sizes = ", ".join(f"Ø{d:g}" for d in sorted(lone))
+            warnings.append(f"{len(lone)} circles on {o.face} ({sizes}): read as holes, no other view explains them")
+    return edges, warnings
 
 
 # ---- snapping -----------------------------------------------------------------

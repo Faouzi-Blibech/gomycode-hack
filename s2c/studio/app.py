@@ -21,7 +21,9 @@ from s2c.studio.status import header_html, provider_status
 from s2c.studio.theme import CSS, THEME, card
 
 NOTE = ("**Photos of real parts:** shoot straight on, the part lying flat on a plain surface, with a coin, a card or "
-        "an A4 sheet in frame. **Sketches:** dark pen on white paper, one face per sheet, sizes in mm.")
+        "an A4 sheet in frame. **Sketches:** dark pen on white paper, one face per sheet, sizes in mm. "
+        "**Drawing sheets:** drop the whole sheet; its views are split and named, and you type the sizes.")
+PROJECTION_CHOICES = [("First-angle (ISO)", "first"), ("Third-angle (US)", "third")]
 TEMPERATURES = "PLA 210/60 · PETG 240/80 · ABS 250/100 · ASA 255/100 · TPU 225/50 °C"
 PATTERNS = ["grid", "gyroid", "rectilinear", "honeycomb", "cubic", "lightning"]
 
@@ -80,14 +82,20 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
                                                [face, sid], [coverage])
                                     kind.input(lambda v, s, i=item.id: studio.set_kind(s, i, v), [kind, sid], None)
                                     remove.click(lambda s, n, i=item.id: (studio.remove(s, i), n + 1,
-                                                                          studio.coverage_html(s))[1:],
-                                                 [sid, version], [version, coverage])
+                                                                          studio.coverage_html(s),
+                                                                          studio.sheet_html(s))[1:],
+                                                 [sid, version], [version, coverage, sheet_card])
                     with gr.Column(scale=2, min_width=320):
                         coverage = gr.HTML()
+                        sheet_card = gr.HTML()
                         reference = gr.Dropdown(REFERENCES, value="none", label="Reference object in the photos",
                                                 info="Gives real millimetres from a photo")
+                        projection = gr.Radio(PROJECTION_CHOICES, value="first", label="Projection of drawing sheets",
+                                              info="A projection symbol on the sheet overrides this")
                         gr.Markdown(NOTE)
-                        example = gr.Button("Try an example", variant="secondary")
+                        with gr.Row():
+                            example = gr.Button("Try an example", variant="secondary")
+                            sheet_example = gr.Button("Try a drawing sheet", variant="secondary")
                         with gr.Accordion("Reading & AI", open=False):
                             use_reader = gr.Checkbox(True, label="Read handwriting with Qwen-VL",
                                                      info="Off: TrOCR only", interactive=status["Qwen-VL"])
@@ -193,11 +201,19 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
 
         def on_upload(paths, s, n):
             studio.add_images(s, paths)
-            return None, n + 1, studio.coverage_html(s)
+            return None, n + 1, studio.coverage_html(s), studio.sheet_html(s)
 
         def on_example(s, n):
             studio.load_examples(s)
-            return n + 1, studio.coverage_html(s)
+            return n + 1, studio.coverage_html(s), studio.sheet_html(s)
+
+        def on_sheet_example(s, n):
+            studio.load_sheet_example(s)
+            return n + 1, studio.coverage_html(s), studio.sheet_html(s)
+
+        def on_projection(p, s, n):
+            studio.set_projection(s, p)
+            return n + 1, studio.coverage_html(s), studio.sheet_html(s)
 
         def on_analyze(s, ref, *v, progress=gr.Progress()):  # noqa: B008 - how Gradio injects a progress bar
             progress(0.1, desc="Reading your images, then drawing any missing faces…")
@@ -258,8 +274,10 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
 
         ai_inputs = [use_reader, use_qwen, use_rescue, use_triposr, use_solaria, seed, randomize, attempts]
         geometry_inputs = [snap, clearance, finish, finish_mm, finish_edges]
-        drop.upload(on_upload, [drop, sid, version], [drop, version, coverage])
-        example.click(on_example, [sid, version], [version, coverage])
+        drop.upload(on_upload, [drop, sid, version], [drop, version, coverage, sheet_card])
+        example.click(on_example, [sid, version], [version, coverage, sheet_card])
+        sheet_example.click(on_sheet_example, [sid, version], [version, coverage, sheet_card])
+        projection.input(on_projection, [projection, sid, version], [version, coverage, sheet_card])
         app.load(studio.coverage_html, [sid], [coverage])
         analyzing = analyze.click(on_analyze, [sid, reference, *ai_inputs], [walk, capture_msg, *review_outputs],
                                   concurrency_id="models", concurrency_limit=2)

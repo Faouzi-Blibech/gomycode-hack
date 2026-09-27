@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
+import os
 import random
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +31,7 @@ from s2c.multiview.settings import (
     PrintSettings,
     filament_metres,
 )
+from s2c.multiview.sheet import SKIP, name_views, sheet_crops
 from s2c.studio.session import Item, SessionStore
 from s2c.studio.theme import FACE_BADGES, TRUSTED, bullet_html, card, chip, source_chip, stats_html
 
@@ -37,9 +41,16 @@ REFERENCES = ["none", "1 TND", "1 EUR", "2 EUR", "card", "a4"]
 AXES = ("x", "y", "z")
 AXIS_LABEL = {"x": "Width (X)", "y": "Height (Y)", "z": "Depth (Z)"}
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "mv" / "sketches"
+SHEET_EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "mv" / "sheet" / "sheet.png"
+SHEETS = "sheets"  # crops of split drawing sheets: <root>/sheets/<session id>/<sheet id>_<view>.png
+PROJECTIONS = {"first": "first-angle (ISO)", "third": "third-angle (US)"}
+_PROJECTION_SOURCE = {"symbol": "set by the projection symbol on the sheet, which overrides the switch",
+                      "labels": "set by the view labels, which override the switch",
+                      "setting": "from the projection switch"}
 _FEATURE = re.compile(r"(features|finishes)\[(\d+)\]\.(\w+)")
 _FIELD_WORDS = {"a_mm": "position a", "b_mm": "position b", "diameter_mm": "diameter", "depth_mm": "depth",
                 "width_mm": "width", "length_mm": "length", "angle_deg": "angle", "radius_mm": "size"}
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -120,6 +131,42 @@ def _reason_words(reason: str) -> str:
     return _REASON_WORDS.get(reason, reason.replace("_", " ").capitalize())
 
 
+def _read_image(path) -> np.ndarray | None:
+    try:
+        data = np.fromfile(str(path), np.uint8)
+    except OSError:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
+
+
+def _sheet_notes(session) -> list[str]:
+    """What the Capture card says about each sheet: its views, the projection used and what set it, and the
+    split's and the naming's warnings."""
+    notes = []
+    for path, sheet, naming in session.sheets.values():
+        views = sum(f != SKIP for f in naming.faces)
+        notes.append(f"{Path(path).name}: {views} views, {PROJECTIONS[naming.projection]} projection, "
+                     f"{_PROJECTION_SOURCE[naming.projection_source]}.")
+        notes += sheet.warnings + naming.warnings
+    return notes
+
+
+def _rename(session, sheet_id: str, naming) -> None:
+    """New names for a sheet's views, except those the user picked by hand. A name a hand-picked view already
+    holds is never given to a second view of that sheet: that view is left for the user."""
+    items = [i for i in session.items if i.sheet_id == sheet_id]
+    picked = {i.face for i in items if i.hand_face and i.face != "auto"}
+    for item in items:
+        if item.hand_face:
+            continue
+        face = naming.faces[item.view]
+        if face in picked:
+            naming.warnings.append(f"View {item.view + 1} would be the {face}, which you gave another view by hand; "
+                                   "pick its face.")
+            face = "auto"
+        item.face = "auto" if face == SKIP else face
+
+
 def _abstain_card(a: S.MvAbstain) -> str:
     return card(f"Stopped at {a.stage}: {_reason_words(a.reason)}", a.remedy, "stop")
 
@@ -132,15 +179,90 @@ class Studio:
         self.pipe, self.store, self.root = pipe, store or SessionStore(), Path(root)
 
     # ---- capture -----------------------------------------------------------------------------------------
-    def add_images(self, sid: str, paths) -> None:
+    def add_images(self, sid: str, paths, face: str = "auto") -> None:
+        """An image whose face is "auto" and that is a drawing sheet becomes one item per view (drawing-sheet spec
+        3.6); any other image is one item."""
         session = self.store.get(sid)
+        face = face if face in FACE_CHOICES else "auto"
         for p in paths or []:
-            session.items.append(Item(uuid.uuid4().hex[:8], str(p), Path(p).name))
+            views = None
+            if face == "auto":
+                try:
+                    views = self._split(session, str(p))
+                except Exception:  # the split is a refinement: an upload must never be lost to it
+                    log.warning("sheet split failed for %s", p, exc_info=True)
+            session.items += views or [Item(uuid.uuid4().hex[:8], str(p), Path(p).name, face)]
+        session.sheet_notes = _sheet_notes(session)
+
+    def _split(self, session, path: str) -> list[Item] | None:
+        """One "drawing" item per view of a sheet, cropped at the sheet's scale, or None when the image is not a
+        sheet. A sheet needs two aligned line-drawn views (is_sheet), two of them named under the scale check (two
+        unrelated sketches can line up) and one named view that is not round (holes left by a tight crop)."""
+        image = _read_image(path)
+        if image is None:
+            return None
+        found = sheet_crops(image, session.projection, reader=self.pipe.reader)
+        if found is None:
+            return None
+        sheet, naming, crops = found
+        sheet_id, folder = uuid.uuid4().hex[:8], self._sheet_folder(session.id)
+        items = []
+        for i, png, face in crops:
+            crop = folder / f"{sheet_id}_{i}.png"
+            crop.write_bytes(png)
+            items.append(Item(uuid.uuid4().hex[:8], str(crop), f"{Path(path).name} · view {i + 1}", face, "drawing",
+                              sheet_id, i))
+        session.sheets[sheet_id] = (path, sheet, naming)
+        return items
+
+    def _sheet_folder(self, sid: str) -> Path:
+        """The session's folder of sheet crops, created after the sweep."""
+        self._sweep_sheets()
+        folder = self.root / SHEETS / sid
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def _sweep_sheets(self) -> None:
+        """Crops live as long as their session: the folders of live sessions (and the sheets folder holding them)
+        are touched first, so the sweep takes only the folders of sessions the store has dropped."""
+        sheets = self.root / SHEETS
+        now = time.time()
+        for sid in self.store.ids():
+            folder = sheets / sid
+            if folder.is_dir():
+                os.utime(folder, (now, now))
+                os.utime(sheets, (now, now))
+        sweep(sheets)
+
+    def _sweep(self) -> None:
+        self._sweep_sheets()
+        sweep(self.root)
+
+    def set_projection(self, sid: str, projection: str) -> None:
+        """Rename the views of every sheet under `projection`, except the faces the user picked by hand. A sheet's
+        projection symbol, or labels that all follow one projection, still decide, and the notes say so."""
+        if projection not in PROJECTIONS:
+            return
+        session = self.store.get(sid)
+        session.projection = projection
+        for sheet_id, (path, sheet, _) in list(session.sheets.items()):
+            image = _read_image(path)
+            if image is None:  # the upload has expired; its views keep their names
+                continue
+            naming = name_views(sheet, image, projection, reader=self.pipe.reader)
+            session.sheets[sheet_id] = (path, sheet, naming)
+            _rename(session, sheet_id, naming)
+        session.sheet_notes = _sheet_notes(session)
+
+    def sheet_html(self, sid: str) -> str:
+        session = self.store.get(sid)
+        warned = any(sheet.warnings or naming.warnings for _, sheet, naming in session.sheets.values())
+        return bullet_html("Drawing sheet", session.sheet_notes, "check" if warned else "info")
 
     def set_face(self, sid: str, item_id: str, face: str) -> None:
         for item in self.store.get(sid).items:
             if item.id == item_id and face in FACE_CHOICES:
-                item.face = face
+                item.face, item.hand_face = face, True
 
     def set_kind(self, sid: str, item_id: str, kind: str) -> None:
         for item in self.store.get(sid).items:
@@ -150,13 +272,22 @@ class Studio:
     def remove(self, sid: str, item_id: str) -> None:
         session = self.store.get(sid)
         session.items = [i for i in session.items if i.id != item_id]
+        kept = {i.sheet_id for i in session.items}
+        session.sheets = {k: v for k, v in session.sheets.items() if k in kept}
+        session.sheet_notes = _sheet_notes(session)
 
     def load_examples(self, sid: str) -> None:
         session = self.store.get(sid)
-        session.items = []
+        session.items, session.sheets, session.sheet_notes = [], {}, []
         for entry in json.loads((EXAMPLES / "examples.json").read_text()):
             session.items.append(Item(uuid.uuid4().hex[:8], str(EXAMPLES / entry["file"]), entry["file"],
                                       entry["face"], entry["kind"]))
+
+    def load_sheet_example(self, sid: str) -> None:
+        """A first-angle sheet drawn by our own code from a known part; its README gives the sizes to type."""
+        session = self.store.get(sid)
+        session.items, session.sheets = [], {}
+        self.add_images(sid, [SHEET_EXAMPLE])
 
     def coverage_html(self, sid: str) -> str:
         items = self.store.get(sid).items
@@ -343,7 +474,7 @@ class Studio:
         return review, self._model(session)
 
     def _model(self, session) -> Model:
-        sweep(self.root)
+        self._sweep()
         part = build_part(session.spec, session.geometry, self.root)
         if isinstance(part, S.MvAbstain):
             # A finish that cannot be built is fixed with the Geometry controls, which live in step 3 (index 2);
@@ -386,7 +517,7 @@ class Studio:
         session = self.store.get(sid)
         if session.part is None:
             return Exported(card("Nothing to export", "Build the part first.", "check"))
-        sweep(self.root)
+        self._sweep()
         res = export_part(session.part, export.formats, mesh, printing, self.pipe.slicer, self.pipe.profile)
         session.exported = res
         settings = {"mesh": mesh.model_dump(), "printing": printing.model_dump(), "ai": session.ai.model_dump(),

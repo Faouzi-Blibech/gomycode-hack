@@ -9,6 +9,9 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+import cv2
+import numpy as np
+
 from s2c.multiview.pipeline import ImageInput, MvPipeline, Observed
 from s2c.multiview.routes import _forget_images
 from s2c.multiview.spec import FACES, MvAbstain
@@ -311,6 +314,31 @@ def _sheet_reading(image_bytes: bytes):
     return read_sketch(image_bytes)
 
 
+def _drawn_sheet(image_bytes: bytes, pipe: MvPipeline):
+    """(naming, [(view index, PNG crop, face)]) when the image is a clean orthographic drawing sheet, else None,
+    so hand sketches still go to the sketch reader."""
+    from s2c.multiview.sheet import sheet_crops
+    image = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        return None
+    try:
+        found = sheet_crops(image, "first", reader=pipe.reader)
+    except Exception:
+        log.exception("drawing-sheet split failed")
+        return None
+    if found is None:
+        return None
+    naming, crops = found[1], found[2]
+    # The web app has no per-view face picker: a view the reader cannot name (an isometric view, a detail) is left
+    # out with a warning instead of stopping the whole analysis at "which face is this".
+    named = [c for c in crops if c[2] != "auto"]
+    if len(named) < len(crops):
+        n = len(crops) - len(named)
+        naming.warnings.append(f"{n} view{'s' if n > 1 else ''} could not be named (an isometric or detail view?) "
+                               f"and {'were' if n > 1 else 'was'} left out.")
+    return naming, named
+
+
 def run_sheet(job: Job, pipe: MvPipeline, image: ImageInput) -> None:
     """One sheet with several views, in place of one photo per face: read it, then join the same
     draw/fuse stages `run()` uses so Review and Model & Export are unchanged."""
@@ -321,8 +349,45 @@ def run_sheet(job: Job, pipe: MvPipeline, image: ImageInput) -> None:
             raise JobCancelled()
         reduce(job, name, data)
 
+    def fused(name: str, data: dict) -> None:
+        """observe() reports per-image label/outline/read stages a sheet job does not have; keep draw and fuse."""
+        if job.cancel:
+            raise JobCancelled()
+        if data.get("key") in ("draw", "fuse"):
+            reduce(job, name, data)
+
     try:
         progress("stage", {"key": "views", "state": "running"})
+        found = _drawn_sheet(image.data, pipe)
+        if found is not None:
+            naming, crops = found
+            with job.lock:
+                for key in ("views", "lines", "values"):
+                    job.stage(key).update(tool="Drawing reader", ai=False)
+                job.images = [{"index": k, "width": 0, "height": 0, "face": face,
+                               "kind": "drawing", "outline": None, "circles": [], "reads": []}
+                              for k, (_, _, face) in enumerate(crops)]
+                for _, _, face in crops:
+                    if face in job.coverage:
+                        job.coverage[face] = "observed"
+            angle = "first-angle" if naming.projection == "first" else "third-angle"
+            progress("stage", {"key": "views", "state": "done",
+                               "detail": f"{len(crops)} views found ({angle}, from the {naming.projection_source})"})
+            progress("stage", {"key": "lines", "state": "running"})
+            images = [ImageInput(png, face, "drawing") for _, png, face in crops]
+            observed = pipe.observe(images, None, progress=fused)
+            progress("stage", {"key": "lines", "state": "done", "detail": "centre and hidden lines read"})
+            progress("stage", {"key": "values", "state": "skipped"})
+            if isinstance(observed, MvAbstain):
+                _finish(job, observed, {})
+                return
+            observed.warnings[:0] = naming.warnings
+            with job.merge_lock:
+                job.observed = observed
+                res = pipe.fuse(observed, progress=progress)
+                _forget_images(observed, res)
+            _finish(job, res, observed.filled_by)
+            return
         reading = _sheet_reading(image.data)
         progress("stage", {"key": "views", "state": "done", "detail": f"{len(reading.views)} views found"})
         progress("stage", {"key": "lines", "state": "running"})

@@ -26,6 +26,7 @@ from s2c.multiview.fuse import (
     assemble,
     attach_label,
     canonical_outlines,
+    classify_drawn_circles,
     features_from,
     fuse_envelope,
     outline_kinds,
@@ -33,7 +34,7 @@ from s2c.multiview.fuse import (
 from s2c.multiview.label import Chat, MvLabel, env_chat, hint_label, label_image
 from s2c.multiview.merge_views import merge_same_face
 from s2c.multiview.ocr import BatchReader, Reader, link, read_values
-from s2c.multiview.outline import PixelOutline, extract, resize_long_side
+from s2c.multiview.outline import PixelOutline, _stroke, extract, ink_mask, resize_long_side
 from s2c.multiview.qwen_faces import RESCUE_PENALTY, SEED, TRIES, rescue_sketch
 from s2c.multiview.qwen_image import MAX_REFS, ImageGen, default_gen
 from s2c.multiview.qwen_reader import qwen_batch_reader
@@ -42,7 +43,7 @@ from s2c.multiview.reference import find_reference
 from s2c.multiview.settings import AiSettings, GeometrySettings
 from s2c.multiview.slice import slice_solid
 from s2c.multiview.turned import WARNING as TURNED_WARNING
-from s2c.multiview.turned import turned_axis
+from s2c.multiview.turned import complete_turned, turned_axis
 from s2c.reading import ReadingService, as_reader, read_timeout_s
 
 log = logging.getLogger(__name__)
@@ -90,12 +91,21 @@ class BuildResult:
     warnings: list[str]
 
 
-def input_mask(outline: PixelOutline) -> np.ndarray:
-    """The input silhouette of one image: outer outline filled, openings and circles cut out, normalised."""
+def input_mask(outline: PixelOutline, edges=()) -> np.ndarray:
+    """The input silhouette of one image: outer outline filled, openings and circles cut out, normalised.
+    Circles read as edges (their indices in `edges`) are not holes, so they stay filled."""
     holes = list(outline.inner)
     holes += [cv2.ellipse2Poly((round(c.cx), round(c.cy)), (round(c.d / 2), round(c.d / 2)), 0, 0, 360, 5)
-              for c in outline.circles]
+              for i, c in enumerate(outline.circles) if i not in edges]
     return normalize_mask(polygon_mask(outline.outer, holes, outline.shape))
+
+
+def line_width(bgr: np.ndarray, outline: PixelOutline, mask_out=()) -> float:
+    """A line drawing's line width in px, measured as the outline stage does: the ink inside the outline, its area
+    over half its edge length."""
+    filled = np.zeros(outline.shape, np.uint8)
+    cv2.fillPoly(filled, [np.asarray(outline.outer, np.int32).reshape(-1, 1, 2)], 255)
+    return _stroke(cv2.bitwise_and(ink_mask(bgr, mask_out), filled))
 
 
 class MvPipeline:
@@ -185,7 +195,8 @@ class MvPipeline:
                       reads=[{"text": v.reading.text, "value_mm": v.reading.value_mm, "kind": v.reading.kind,
                               "bbox": v.reading.bbox, "confidence": v.reading.confidence} for v in values])
             obs = Observation(face=label.face, kind=label.input_kind, outline=outline, values=values,
-                              mm_per_px=mm_per_px, confidence=label.confidence * (RESCUE_PENALTY if rescued else 1.0))
+                              mm_per_px=mm_per_px, confidence=label.confidence * (RESCUE_PENALTY if rescued else 1.0),
+                              stroke=line_width(bgr, outline, mask_out) if outline.line_art and not rescued else 0.0)
             attach_label(obs, label)
             if rescued:
                 observed.warnings.append(f"{label.face}: sketch cleaned by Qwen-Image, check it")
@@ -199,7 +210,7 @@ class MvPipeline:
 
     def _outline(self, bgr: np.ndarray, mask_out, kind: str) -> tuple[PixelOutline | S.MvAbstain, bool]:
         """The outline, and whether Qwen-Image had to redraw the sketch (spec 2026-09-23 section 8)."""
-        outline = extract(bgr, mask_out)
+        outline = extract(bgr, mask_out, drawing=kind == "drawing")
         if (isinstance(outline, S.MvAbstain) and outline.reason == "no_outline" and kind != "photo"
                 and self.rescue_enabled and self.image_gen is not None):
             fixed = rescue_sketch(bgr, self.image_gen, self.seed)
@@ -243,6 +254,15 @@ class MvPipeline:
         env, env_prov, warnings = env_result
         outlines, more = canonical_outlines(observed.observations, env)
         warnings = observed.warnings + warnings + more
+        if all(o.line_art for o in observed.observations):  # drawing-sheet spec 3.5, for line drawings only
+            turned_views, more = complete_turned({f: ol for f, (ol, _) in outlines.items()}, env)
+            outlines.update({f: (ol, "inferred") for f, ol in turned_views.items() if f not in outlines})
+            warnings += more
+        edges, more = classify_drawn_circles(observed.observations, env)
+        warnings += more
+        for k, o in enumerate(observed.observations):
+            if o.line_art:  # on every fuse, so a circle read as a hole again gets its hole back
+                observed.masks[o.face] = input_mask(o.outline, edges.get(k, ()))
         best = max(range(len(observed.observations)), key=lambda i: observed.observations[i].confidence)
         target = observed.observations[best]
         image = observed.images[best] if best < len(observed.images) else None  # None once routes dropped them
@@ -259,7 +279,7 @@ class MvPipeline:
         _emit(progress, key="draw", state="done", filled_by=dict(observed.filled_by))
         with_prov = {f: (ol, outlines[f][1] if f in outlines else ("inferred" if ol.source == "inferred" else "default"))
                      for f, ol in full.items()}
-        feats, feat_prov = features_from(observed.observations, env)
+        feats, feat_prov = features_from(observed.observations, env, edges)
         _emit(progress, key="fuse", state="running")
         try:
             spec = assemble(env, env_prov, with_prov, feats, feat_prov, warnings, user_values, accepted,

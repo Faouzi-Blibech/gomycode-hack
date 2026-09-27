@@ -2,6 +2,9 @@
 
   uv run python scripts/re_benchmark.py --dataset "C:/Users/moham/Desktop/GoMyCode/Reverce engineering" --jobs 4
 
+--sheet scores each part from one first-angle line-art sheet instead (split, named, cropped as the Studio does);
+--per-category 4 --limit 40 spreads 40 parts over the categories.
+
 Each part is scored in its own subprocess (the hidden --one mode below), so a hang, a native crash (an
 OCCT segfault) or a bad metadata.json/STL can only ever take down that one part, never the whole run.
 """
@@ -16,44 +19,48 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 
-from s2c.multiview.benchmark import bare_row, load_part, score_part, summarize, summary_markdown
+from s2c.multiview.benchmark import bare_row, load_part, score_part, sheet_fields, summarize, summary_markdown
 from s2c.multiview.pipeline import MvPipeline
 
 
-def _find_parts(dataset: Path, categories: list[str] | None) -> list[Path]:
+def _find_parts(dataset: Path, categories: list[str] | None, per_category: int | None = None) -> list[Path]:
+    """Parts in category order; with `per_category`, up to that many from each category taken round-robin, so a
+    --limit after it still spreads over the categories."""
     cats = categories or sorted(p.name for p in dataset.iterdir() if p.is_dir())
-    out = []
+    by_cat = []
     for cat in cats:
         cat_dir = dataset / cat
         if not cat_dir.is_dir():
             continue
-        out += sorted(p for p in cat_dir.iterdir() if p.is_dir() and (p / "model.stl").exists())
-    return out
+        by_cat.append(sorted(p for p in cat_dir.iterdir() if p.is_dir() and (p / "model.stl").exists()))
+    if per_category is None:
+        return [p for parts in by_cat for p in parts]
+    return [parts[i] for i in range(per_category) for parts in by_cat if i < len(parts)]
 
 
 def _name(part_dir: Path) -> tuple[str, str]:
     return f"{part_dir.parent.name}/{part_dir.name}", part_dir.parent.name
 
 
-def _score_one(part_dir: Path, root: Path, timeout_s: float) -> dict:
+def _score_one(part_dir: Path, root: Path, timeout_s: float, sheet: bool = False) -> dict:
     """Runs inside the --one subprocess: whatever goes wrong, including in load_part, becomes one row."""
     name, category = _name(part_dir)
     try:
         ref = load_part(part_dir)
-        return score_part(ref, MvPipeline(), root, timeout_s)
+        return score_part(ref, MvPipeline(), root, timeout_s, sheet=sheet)
     except Exception as e:  # noqa: BLE001 - this process's only job is to always print exactly one row
-        return bare_row(name, category, f"error {type(e).__name__}")
+        return bare_row(name, category, f"error {type(e).__name__}") | sheet_fields(sheet)
 
 
-def _run_one(part_dir: Path, parts_root: Path, timeout_s: float) -> dict:
+def _run_one(part_dir: Path, parts_root: Path, timeout_s: float, sheet: bool = False) -> dict:
     """Scores one part in its own process. A parent-side timeout or a non-zero exit never touches the run."""
     name, category = _name(part_dir)
+    cmd = [sys.executable, __file__, "--one", str(part_dir), "--out", str(parts_root), "--timeout", str(timeout_s)]
     try:
-        proc = subprocess.run(
-            [sys.executable, __file__, "--one", str(part_dir), "--out", str(parts_root), "--timeout", str(timeout_s)],
-            capture_output=True, text=True, timeout=timeout_s + 30, check=False)
+        proc = subprocess.run(cmd + (["--sheet"] if sheet else []),
+                              capture_output=True, text=True, timeout=timeout_s + 30, check=False)
     except subprocess.TimeoutExpired:
-        return bare_row(name, category, "skipped timeout")
+        return bare_row(name, category, "skipped timeout") | sheet_fields(sheet)
     row = None
     if proc.returncode == 0:
         try:
@@ -61,7 +68,7 @@ def _run_one(part_dir: Path, parts_root: Path, timeout_s: float) -> dict:
         except (ValueError, IndexError):
             row = None
     if row is None:
-        row = bare_row(name, category, "error crash")
+        row = bare_row(name, category, "error crash") | sheet_fields(sheet)
         row["detail"] = proc.stderr[-300:]
     return row
 
@@ -73,13 +80,17 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--category", action="append", default=None, help="repeat for several")
     ap.add_argument("--parts", default=None, help="comma list of <category>/<dir>")
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--per-category", type=int, default=None,
+                    help="take up to N parts from each category, round-robin, before --limit")
+    ap.add_argument("--sheet", action="store_true",
+                    help="score each part from one first-angle line-art sheet of its front, top and right renders")
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--timeout", type=float, default=120.0)
     ap.add_argument("--one", default=None, help=argparse.SUPPRESS)  # internal: score exactly one part
     args = ap.parse_args(argv)
 
     if args.one:
-        print(json.dumps(_score_one(Path(args.one), Path(args.out), args.timeout)), flush=True)
+        print(json.dumps(_score_one(Path(args.one), Path(args.out), args.timeout, args.sheet)), flush=True)
         os._exit(0)  # a timed-out scoring thread may still run; the row is out, so do not wait on it
         return
 
@@ -90,7 +101,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.parts:
         part_dirs = [dataset / p for p in args.parts.split(",")]
     else:
-        part_dirs = _find_parts(dataset, args.category)
+        part_dirs = _find_parts(dataset, args.category, args.per_category)
     if args.limit is not None:
         part_dirs = part_dirs[: args.limit]
 
@@ -101,14 +112,14 @@ def main(argv: list[str] | None = None) -> None:
     rows: list[dict] = []
     with (out / "results.jsonl").open("w", encoding="utf-8") as f, \
          ThreadPoolExecutor(max_workers=args.jobs) as ex:
-        futures = {ex.submit(_run_one, d, parts_root, args.timeout): d for d in part_dirs}
+        futures = {ex.submit(_run_one, d, parts_root, args.timeout, args.sheet): d for d in part_dirs}
         for future in as_completed(futures):
             d = futures[future]
             try:
                 row = future.result()
             except Exception as e:  # noqa: BLE001 - a dispatch-side failure must not stop the whole run
                 name, category = _name(d)
-                row = bare_row(name, category, f"error {type(e).__name__}")
+                row = bare_row(name, category, f"error {type(e).__name__}") | sheet_fields(args.sheet)
             rows.append(row)
             f.write(json.dumps(row) + "\n")
             f.flush()
