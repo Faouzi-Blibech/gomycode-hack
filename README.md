@@ -125,10 +125,11 @@ Accuracy numbers, updated as tests land:
 | Coin scale error | pending |
 | OCR value accuracy | pending |
 | Reference parts, multi-view path (400 parts with known STLs, clean renders, true size given; 2026-09-26) | built 95 % (381 of 400), median volume error 10.3 %, median 3D IoU 0.91, 31 % of parts within 5 % volume. Before the fixes of 2026-09-26: 89 %, 15.6 %, 0.87, 21 %. Not a phone-photo number: that is still unmeasured |
+| Drawing sheets (one first-angle line-art sheet per part: front, top and right views, labels on half; 44 reference parts, 4 per category; 2026-09-27) | built 100 % (44 of 44), views named correctly 100 %, median volume error 13.1 %, median 3D IoU 0.89 (same parts per-face: IoU 0.92 on a 6-part check). Weakest: brackets (IoU 0.59) and hinges (0.77), where closed pockets drawn as lines are read as edges |
 | Median sketch-to-STL latency | pending full-pipeline measurement; one measured vision-model call (`gemma3:4b` via Ollama) took about 17.8 s, logged in `logs/vlm.jsonl` — this is a single sample of model latency only, not a pipeline median |
 
 Reference-part benchmark:
-- **Command:** `uv run python scripts/re_benchmark.py --dataset <folder> --jobs 6 --timeout 300`.
+- **Command:** `uv run python scripts/re_benchmark.py --dataset <folder> --jobs 6 --timeout 300`. Add `--sheet --per-category 4` for the drawing-sheet mode.
 - **Dataset:** about 400 printable parts with STLs and six renders each. It is kept outside the repository because of its non-commercial licences.
 - **What is measured:** the multi-view path gets the six renders, tagged by face, and the true size typed in. Each rebuilt part is scored against its STL, and the output is a per-category table.
 - **Main remaining error:** material that no view can see (open boxes and trays, three-plate corner brackets, blind pockets). The visual hull fills it in, which is why brackets (median 24 %) and bearing holders (17 %) are worst, and washers (2.8 %) and shaft collars (2.3 %) best.
