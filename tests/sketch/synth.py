@@ -18,6 +18,7 @@ class Sheet:
     def __init__(self, w: int = 1600, h: int = 1131):
         self.img = np.full((h, w, 3), 250, np.uint8)
         self.texts: list[tuple[str, tuple[int, int, int, int]]] = []
+        self.dims: list[tuple[tuple[float, float], tuple[float, float]]] = []  # arrow tips of each dimension
 
     def line(self, p, q, t=3):
         cv2.line(self.img, _i(p), _i(q), INK, t, cv2.LINE_AA)
@@ -75,6 +76,7 @@ class Sheet:
         for x in (x1, x2):
             self.line((x, y_obj + sgn * 6), (x, y_line + sgn * 8), 1)
         self.line((x1, y_line), (x2, y_line), 1)
+        self.dims.append(((x1, y_line), (x2, y_line)))
         self.arrowhead((x1, y_line), (-1, 0))
         self.arrowhead((x2, y_line), (1, 0))
         self.text(text, ((x1 + x2) / 2, y_line - 16), scale=scale)
@@ -84,6 +86,7 @@ class Sheet:
         for y in (y1, y2):
             self.line((x_obj + sgn * 6, y), (x_line + sgn * 8, y), 1)
         self.line((x_line, y1), (x_line, y2), 1)
+        self.dims.append(((x_line, y1), (x_line, y2)))
         self.arrowhead((x_line, y1), (0, -1))
         self.arrowhead((x_line, y2), (0, 1))
         self.text(text, (x_line + sgn * (20 if rotate else 36), (y1 + y2) / 2), rotate=rotate)
