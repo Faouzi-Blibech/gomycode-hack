@@ -382,3 +382,24 @@ def test_analyze_sheet_mode_leaves_out_a_view_it_cannot_name(monkeypatch):
     assert job["stages"][0]["tool"] == "Drawing reader"
     assert all(i["face"] for i in job["images"])
     assert job["result"]["abstain"] is None or job["result"]["abstain"]["reason"] != "face_unknown"
+
+def test_analyze_sheet_mode_surfaces_the_abstain_reason_and_remedy(monkeypatch):
+    from s2c.sketch.models import SketchAbstain
+    empty = _fake_sheet_reading().model_copy(update={"views": [], "dimensions": [], "abstain": SketchAbstain(
+        stage="text", reason="readers_unavailable", remedy="Reading service unavailable. Retry in a minute.")})
+    monkeypatch.setattr("s2c.sketch.read_sketch", lambda image_bytes: empty, raising=False)
+    r = c.post("/api/analyze", files=[("files", ("sheet.png", (SK / "front.png").read_bytes(), "image/png"))],
+              data={"mode": "sheet"})
+    job = _wait(r.json()["job_id"])
+    assert job["status"] == "failed"
+    assert "Retry in a minute" in job["error"] and "readers_unavailable" in job["error"]
+    assert job["stages"][0]["state"] == "failed"
+
+
+def test_analyze_sheet_mode_with_no_views_fails_with_a_remedy(monkeypatch):
+    empty = _fake_sheet_reading().model_copy(update={"views": [], "dimensions": []})
+    monkeypatch.setattr("s2c.sketch.read_sketch", lambda image_bytes: empty, raising=False)
+    r = c.post("/api/analyze", files=[("files", ("sheet.png", (SK / "front.png").read_bytes(), "image/png"))],
+              data={"mode": "sheet"})
+    job = _wait(r.json()["job_id"])
+    assert job["status"] == "failed" and "no views" in job["error"].lower()

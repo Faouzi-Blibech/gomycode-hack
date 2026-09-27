@@ -389,6 +389,11 @@ def run_sheet(job: Job, pipe: MvPipeline, image: ImageInput) -> None:
             _finish(job, res, observed.filled_by)
             return
         reading = _sheet_reading(image.data)
+        if reading.abstain is not None or not reading.views:
+            # say why and what to do; falling through would leave Review asking for a width with no views
+            a = reading.abstain
+            raise RuntimeError(f"{a.remedy} ({a.stage}: {a.reason})" if a is not None else
+                               "No views found on the sheet. Draw the views with a dark pen and retake.")
         progress("stage", {"key": "views", "state": "done", "detail": f"{len(reading.views)} views found"})
         progress("stage", {"key": "lines", "state": "running"})
         progress("stage", {"key": "lines", "state": "done",
