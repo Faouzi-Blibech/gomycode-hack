@@ -6,12 +6,12 @@ import io
 import json
 import logging
 import os
-import random
 import re
+import secrets
 from functools import lru_cache
 from http import HTTPStatus
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import cv2
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -30,7 +30,7 @@ from s2c.multiview.reference import REFERENCES
 from s2c.multiview.settings import AiSettings, GeometrySettings, StudioSettings
 from s2c.multiview.spec import MultiViewSpec, MvAbstain
 from s2c.silhouette import iou
-from s2c.web import jobs
+from s2c.web import chat, jobs
 
 log = logging.getLogger(__name__)
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "mv" / "sketches"
@@ -162,7 +162,7 @@ def analyze(pipe: Pipe, files: Annotated[list[UploadFile] | None, File()] = None
         except (ValueError, TypeError) as e:
             raise HTTPException(400, "The AI settings are not valid.") from e
         if settings.randomize_seed:
-            settings = settings.model_copy(update={"seed": random.randint(0, 2**31 - 1)})
+            settings = settings.model_copy(update={"seed": secrets.randbelow(2**31)})
         pipe = pipe.configured(settings)
     if mode == "sheet":
         job = jobs.new_sheet_job(pipe)
@@ -264,6 +264,35 @@ def export(body: ExportBody) -> dict:
     return {"files": files, "zip_url": f"{base}/{zip_path.name}", "print_time_s": res.print_time_s,
             "filament_g": res.filament_g, "warnings": list(dict.fromkeys([*part.spec.warnings, *res.warnings])),
             "abstain": None}
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ChatBody(BaseModel):
+    messages: list[ChatMessage]
+
+
+@router.post("/chat")
+def chat_route(body: ChatBody,
+               transport: Annotated[chat.ChatTransport | None, Depends(chat.get_chat_transport)]) -> dict:
+    if not 1 <= len(body.messages) <= chat.MAX_MESSAGES:
+        raise HTTPException(400, f"Send between 1 and {chat.MAX_MESSAGES} messages.")
+    if any(len(m.content) > chat.MAX_CHARS for m in body.messages):
+        raise HTTPException(400, f"A message is longer than {chat.MAX_CHARS} characters.")
+    if transport is None:
+        raise HTTPException(503, "The chat model is not configured. Add CHAT_API_KEY to .env.")
+    try:
+        return chat.run_chat([m.model_dump() for m in body.messages], transport)
+    except chat.ChatUnavailable as e:
+        detail = {
+            "model_not_found": f"The chat model '{transport.model}' is not available on this provider. "
+                               "Set CHAT_MODEL in .env to a model your key can use.",
+            "auth": "The chat provider rejected the API key. Check CHAT_API_KEY in .env.",
+        }.get(e.reason, "The chat model did not answer. Try again.")
+        raise HTTPException(502, detail) from e
 
 
 @router.get("/artifacts/{key}/{path:path}")

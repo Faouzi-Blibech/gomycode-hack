@@ -33,3 +33,9 @@ export interface ModelResult { key: string | null; glb_url: string | null; volum
   iou: Partial<Record<Face, number>>; iou_mean: number | null; views: Partial<Record<Face, string>>; warnings: string[]; abstain: Abstain | null }
 export interface ExportFile { url: string; name: string; size_bytes: number }
 export interface ExportResult { files: Record<string, ExportFile>; zip_url: string | null; print_time_s: number | null; filament_g: number | null; warnings: string[]; abstain: Abstain | null }
+
+export type ChatRole = 'user' | 'assistant';
+export interface ChatMessage { role: ChatRole; content: string }
+export type PartType = 'plate' | 'l_bracket' | 'spacer' | 'flange';
+export interface PartRequest { type: PartType; values: Record<string, number>; holes: { a_mm: number; b_mm: number; diameter_mm: number }[] }
+export interface ChatResponse { reply: string; options: string[]; part: PartRequest | null; missing: string[]; spec: Spec | null; model: string }

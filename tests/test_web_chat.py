@@ -1,0 +1,113 @@
+import json
+
+from fastapi.testclient import TestClient
+
+from s2c.multiview.pipeline import MvPipeline
+from s2c.multiview.spec import MultiViewSpec
+from s2c.web import chat
+from s2c.web.api import get_pipeline
+from s2c.web.server import app
+
+app.dependency_overrides[get_pipeline] = lambda: MvPipeline()
+c = TestClient(app, raise_server_exceptions=False)
+
+
+def fake(*replies):
+    queue = [json.dumps(r) if isinstance(r, dict) else r for r in replies]
+    return chat.ChatTransport(model="fake-chat", provider="fake", send=lambda m: (queue.pop(0), {}))
+
+
+def post(transport, *user):
+    app.dependency_overrides[chat.get_chat_transport] = lambda: transport
+    try:
+        return c.post("/api/chat", json={"messages": [{"role": "user", "content": u} for u in user]})
+    finally:
+        app.dependency_overrides.pop(chat.get_chat_transport, None)
+
+
+def test_plate_with_written_sizes_builds_a_spec():
+    r = post(fake({"reply": "Here is your plate.", "options": [],
+                   "part": {"type": "plate", "values": {"width_mm": 60, "height_mm": 40, "thickness_mm": 5}}}),
+             "A 60 x 40 mm plate, 5 mm thick")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["missing"] == [] and body["model"] == "fake-chat"
+    spec = MultiViewSpec.model_validate(body["spec"])
+    assert (spec.envelope.x_mm, spec.envelope.y_mm, spec.envelope.z_mm) == (60, 40, 5)
+    assert set(spec.provenance.values()) == {"user_written"}
+
+
+def test_size_the_user_never_wrote_is_dropped():
+    r = post(fake({"reply": "ok", "options": ["3 mm", "5 mm"],
+                   "part": {"type": "plate", "values": {"width_mm": 60, "height_mm": 40, "thickness_mm": 5}}}),
+             "A plate 60 by 40")
+    body = r.json()
+    assert "thickness_mm" not in body["part"]["values"]
+    assert "thickness_mm" in body["missing"] and body["spec"] is None
+    assert body["options"] == ["3 mm", "5 mm"]
+
+
+def test_flange_builds_bolt_holes_on_the_circle():
+    values = {"outer_diameter_mm": 100, "inner_diameter_mm": 40, "thickness_mm": 10,
+              "bolt_circle_diameter_mm": 75, "bolt_hole_diameter_mm": 8, "bolt_count": 4}
+    r = post(fake("not json", {"reply": "Flange ready.", "options": [], "part": {"type": "flange", "values": values}}),
+             "Flange 100 mm outside, 40 mm bore, 10 thick, 4 holes of 8 mm on a 75 mm circle")
+    body = r.json()
+    assert body["missing"] == [], body
+    spec = MultiViewSpec.model_validate(body["spec"])
+    assert len(spec.features) == 4
+    for i, f in enumerate(spec.features):
+        assert abs(((f.a_mm - 50) ** 2 + (f.b_mm - 50) ** 2) ** 0.5 - 37.5) < 1e-3
+        assert spec.provenance[f"features[{i}].a_mm"] == "scaled"
+    assert abs(spec.features[0].a_mm - 50) < 1e-3 and abs(spec.features[0].b_mm - 87.5) < 1e-3
+
+
+def test_off_topic_reply_passes_through_without_a_part():
+    r = post(fake({"reply": "I only help design parts here.", "options": [], "part": None}), "What is the weather?")
+    body = r.json()
+    assert body["reply"] == "I only help design parts here."
+    assert body["part"] is None and body["spec"] is None
+
+
+def test_no_provider_configured_is_503(monkeypatch):
+    for k in ("CHAT_BASE_URL", "CHAT_MODEL", "CHAT_API_KEY", "VLM_BASE_URL", "VLM_MODEL", "VLM_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    r = c.post("/api/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 503 and "CHAT_API_KEY" in r.json()["error"]
+
+
+def test_too_many_messages_is_400():
+    r = post(fake(), *["hi"] * 21)
+    assert r.status_code == 400 and r.json()["error"]
+
+
+def test_ollama_behind_the_docker_host_needs_no_key(monkeypatch):
+    from s2c.web.chat import get_chat_transport
+    for k in ("CHAT_BASE_URL", "CHAT_MODEL", "CHAT_API_KEY", "VLM_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("VLM_BASE_URL", "http://host.docker.internal:11434/v1")
+    monkeypatch.setenv("VLM_MODEL", "gemma3:4b")
+    assert get_chat_transport() is not None
+
+
+def test_a_missing_model_says_which_model_and_how_to_fix_it():
+    from fastapi.testclient import TestClient
+
+    from s2c.web import chat
+    from s2c.web.server import app
+
+    class Missing(Exception):
+        status_code = 404
+
+    def send(messages):
+        raise Missing("secret provider text")
+
+    app.dependency_overrides[chat.get_chat_transport] = lambda: chat.ChatTransport(
+        model="gone-model", provider="https://example.test/v1", send=send)
+    try:
+        r = TestClient(app).post("/api/chat", json={"messages": [{"role": "user", "content": "a plate"}]})
+    finally:
+        app.dependency_overrides.pop(chat.get_chat_transport, None)
+    assert r.status_code == 502
+    assert "gone-model" in r.json()["error"] and "CHAT_MODEL" in r.json()["error"]
+    assert "secret provider text" not in r.text

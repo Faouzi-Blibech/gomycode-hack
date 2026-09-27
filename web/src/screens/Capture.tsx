@@ -214,6 +214,12 @@ export function Capture() {
             ? 'Drop one photo of your sheet with every view drawn on it. We find the views, the lines and the numbers you wrote.'
             : 'Drop a sketch or photo of each face. Tag what it shows — the AI only fills in what is missing.'}
         </p>
+        <button
+          type="button" onClick={() => dispatch({ type: 'GOTO', screen: 'describe' })}
+          style={{ marginLeft: 'auto', marginBottom: 4, height: 40, padding: '0 16px', borderRadius: 10, border: '1.5px dashed var(--ai)', background: 'color-mix(in oklch, var(--ai) 8%, var(--surface))', color: 'var(--ink)', font: 'inherit', fontSize: 14, fontWeight: 500, whiteSpace: 'nowrap', cursor: 'pointer' }}
+        >
+          Describe it instead →
+        </button>
       </header>
 
       <div style={{ flex: 'none' }}>

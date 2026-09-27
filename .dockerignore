@@ -1,0 +1,35 @@
+.git
+.github
+.claude
+.superpowers
+.venv
+.pytest_cache
+.ruff_cache
+**/__pycache__
+**/*.py[cod]
+
+# Local configuration and generated output
+.env
+.env.*
+!.env.example
+tmp/*
+logs/*
+vendor/*
+web/node_modules
+web/dist
+web/*.tsbuildinfo
+
+# Development-only material and large local datasets
+tests
+docs
+design
+scripts
+uploads
+assets
+stl_dataset
+stl_dataset.zip
+Analyzing hero screen review
+*.dc.html
+support.js
+.thumbnail
+

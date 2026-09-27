@@ -49,6 +49,30 @@ Supported part types: `plate`, `l_bracket`, `flange`, `spacer`, `profile_extrusi
 
 Requirements: Python 3.11, [uv](https://docs.astral.sh/uv/), Node 20.
 
+### Docker (recommended)
+
+Docker runs the built React app and FastAPI backend together on one port. The local `.env` is loaded at runtime but is never copied into the image. If `.env` is missing, the offline path still works.
+
+```bash
+docker compose up --build
+```
+
+Open `http://localhost:8000`. To use another host port, set `APP_PORT` when starting Compose (for example, `APP_PORT=8080 docker compose up --build` in Bash or `$env:APP_PORT=8080; docker compose up --build` in PowerShell).
+
+The container automatically translates an Ollama URL using `localhost` or `127.0.0.1` to `host.docker.internal`, so the same `.env` works both locally and in Docker. Hosted model URLs are unchanged. Generated files and call logs use Docker volumes; the app still removes generated artifacts after one hour.
+
+Useful commands:
+
+```bash
+docker compose ps
+docker compose logs -f app
+docker compose down
+```
+
+Use `docker compose down --volumes` only when you also want to delete the generated-file and log volumes.
+
+### Local development
+
 ```bash
 cp .env.example .env            # add a vision model key, see docs/models.md
 uv sync

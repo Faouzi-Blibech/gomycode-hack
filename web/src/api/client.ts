@@ -1,5 +1,5 @@
 import type {
-  AiSettings, Analysis, Example, ExportResult, Face, GeometrySettings, Job, ModelResult, PrintSettings, Spec, Status,
+  AiSettings, Analysis, ChatMessage, ChatResponse, Example, ExportResult, Face, GeometrySettings, Job, ModelResult, PrintSettings, Spec, Status,
 } from './types';
 
 export class ApiError extends Error {
@@ -98,4 +98,8 @@ export interface ExportSettings {
 
 export function exportFiles(body: { spec: Spec; settings: ExportSettings }): Promise<ExportResult> {
   return request<ExportResult>('/export', json(body));
+}
+
+export function chat(messages: ChatMessage[]): Promise<ChatResponse> {
+  return request<ChatResponse>('/chat', json({ messages }));
 }
