@@ -49,19 +49,15 @@ export function useTheme(): [Theme, (t: Theme) => void] {
   return [theme, setTheme];
 }
 
-const pad = (n: number) => String(Math.floor(n)).padStart(2, '0');
 
 /** App frame: the sidebar from Analyzing v2.dc.html (<aside>) plus a scrolling <main>. */
 export function Shell({ nav, onNav, onAbout, children }: ShellProps) {
   const [sb, setSb] = useState(() => readLS('s2c_sb') !== '0');
   const [theme, setTheme] = useTheme();
-  const { remaining: rem } = useDeadline();
   const ex = sb;
   const dark = theme !== 'light';
   const toggleSb = () => { writeLS('s2c_sb', ex ? '0' : '1'); setSb(!ex); };
   const jc = ex ? 'flex-start' : 'center';
-  const timer = `${pad(rem / 60)}:${pad(rem % 60)}`;
-  const timerRing = `conic-gradient(var(--accent) ${(rem / 3600) * 360}deg, var(--line) 0)`;
 
   return (
     <div className="s2c-app" style={{ width: '100%', height: '100vh', display: 'flex', overflow: 'hidden', background: 'var(--bg)', backgroundImage: 'radial-gradient(ellipse 70% 60% at 60% 45%, var(--surface), transparent 70%)', fontFamily: "'Geist', system-ui, sans-serif", color: 'var(--ink)' }}>
@@ -131,15 +127,6 @@ export function Shell({ nav, onNav, onAbout, children }: ShellProps) {
               <span style={{ width: 16, height: 16, borderRadius: '50%', border: '1.5px solid var(--ink)', boxSizing: 'border-box', background: 'linear-gradient(90deg, var(--ink) 50%, transparent 50%)' }} />
             </button>
           )}
-          <div title="Your images and files are deleted automatically" style={{ display: 'flex', flexDirection: ex ? 'row' : 'column', alignItems: 'center', gap: 10, padding: '12px 10px', borderRadius: 12, background: 'var(--raised)', boxShadow: 'var(--shadow)' }}>
-            <div style={{ width: 28, height: 28, flex: 'none', borderRadius: '50%', background: timerRing, display: 'grid', placeItems: 'center' }}>
-              <div style={{ width: 20, height: 20, borderRadius: '50%', background: 'var(--raised)' }} />
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: ex ? 'flex-start' : 'center', whiteSpace: 'nowrap' }}>
-              {ex && <span style={{ fontSize: 12, color: 'var(--muted)' }}>Files deleted in</span>}
-              <span style={{ fontFamily: MONO, fontVariantNumeric: 'tabular-nums', fontSize: ex ? '18px' : '11px', fontWeight: 500 }}>{timer}</span>
-            </div>
-          </div>
         </div>
       </aside>
       <main style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'auto' }}>{children}</main>
