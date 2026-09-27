@@ -76,25 +76,20 @@ def _ends(lines: list[Prim]):
         yield p, 1, p.p1, _unit(p.p1 - p.p0)
 
 
-def _tip(ink, pts, e, d, reach) -> np.ndarray:
-    """Walk the original ink along the carrier axis through the head: the tip is the narrowest
-    cross-section past the widest one (the head's base). The opening erased the thin tip itself;
-    an extension line crossing at the tip reads as a full cross-section and never wins; two heads
-    meeting tip to tip narrow to the same point."""
+def _axis_widths(ink, pts, e, d, ts) -> np.ndarray:
+    """Width of the ink run through the axis e + t*d at each t, across a window as wide as the blob
+    `pts`: other strokes inside the window do not count."""
     n = np.array([-d[1], d[0]])
     half = float(np.abs((pts - e) @ n).max()) + 2
-    proj = (pts - e) @ d
     us = np.arange(-half, half + 1)
     h, w = ink.shape
     mid = len(us) // 2
     widths = []
-    ts = np.arange(np.floor(proj.min()) - 1, proj.max() + reach + 1)
     for t in ts:
         q = np.round(e + t * d + us[:, None] * n).astype(int)
         q[:, 0] = np.clip(q[:, 0], 0, w - 1)
         q[:, 1] = np.clip(q[:, 1], 0, h - 1)
         on = ink[q[:, 1], q[:, 0]] > 0
-        # only the ink run through the axis: other strokes inside the window do not count
         seed = next((mid + o for o in (0, -1, 1) if on[mid + o]), None)
         if seed is None:
             widths.append(0)
@@ -105,7 +100,17 @@ def _tip(ink, pts, e, d, reach) -> np.ndarray:
         while hi < len(on) - 1 and on[hi + 1]:
             hi += 1
         widths.append(hi - lo + 1)
-    widths = np.array(widths)
+    return np.array(widths)
+
+
+def _tip(ink, pts, e, d, reach) -> np.ndarray:
+    """Walk the original ink along the carrier axis through the head: the tip is the narrowest
+    cross-section past the widest one (the head's base). The opening erased the thin tip itself;
+    an extension line crossing at the tip reads as a full cross-section and never wins; two heads
+    meeting tip to tip narrow to the same point."""
+    proj = (pts - e) @ d
+    ts = np.arange(np.floor(proj.min()) - 1, proj.max() + reach + 1)
+    widths = _axis_widths(ink, pts, e, d, ts)
     # the base is the widest cross-section of the head itself (the opened blob), not a line
     # crossing near the tip
     base = int(np.argmax(np.where(ts <= proj.max(), widths, -1)))
@@ -172,6 +177,12 @@ def _filled_arrows(lines, ink, stroke) -> tuple[dict[tuple[str, int], Arrow], se
 
     claims: dict[tuple[str, int], tuple[float, int, np.ndarray, np.ndarray]] = {}
     for b, (pts, thick, near, _) in enumerate(blobs):
+        # a corner of the outline: two lines at least as thick as the blob end in it at an angle. A thin
+        # leader crossing the corner makes it wider than the leader, not an arrowhead
+        edges = [d for p, _, _, d, gap in near
+                 if p.id not in all_parts and gap <= stroke and thick < 1.5 * p.width]
+        if any(np.dot(u, v) > -0.9 for i, u in enumerate(edges) for v in edges[i + 1:]):
+            continue
         c = pts.mean(0)
         cands = []
         for p, end, e, d, gap in near:
@@ -179,8 +190,17 @@ def _filled_arrows(lines, ink, stroke) -> tuple[dict[tuple[str, int], Arrow], se
             if p.id in all_parts or thick < 1.5 * width_near(p, pts):
                 continue
             off = _point_line_dist(c, p.p0, p.p1)
-            if off <= 1.5 * stroke and np.dot(c - e, d) >= -stroke:
-                cands.append((off, p, end, e, d, gap))
+            if off > 1.5 * stroke:
+                continue
+            # The head's base (its widest cross-section) comes before its tip along the carrier. The
+            # blob may lie behind the carrier's end: where text erased half a head, the skeleton runs
+            # through it to the tip or into the extension-line corner. A head whose base lies beyond
+            # the blob's middle points back at the carrier: it belongs to the next dimension in a chain.
+            proj = (pts - e) @ d
+            ts = np.arange(np.floor(proj.min()), np.ceil(proj.max()) + 1)
+            if ts[int(np.argmax(_axis_widths(ink, pts, e, d, ts)))] > (proj.min() + proj.max()) / 2:
+                continue
+            cands.append((off, p, end, e, d, gap))
         taken: list[np.ndarray] = []
         for _, p, end, e, d, gap in sorted(cands, key=lambda t: t[0]):
             # one carrier per blob, or two opposite ones where two chained heads merged

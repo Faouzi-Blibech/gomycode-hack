@@ -4,7 +4,7 @@ import numpy as np
 from s2c.sketch.classify import classify
 from s2c.sketch.text import erase_mask, find_text_boxes, read_texts
 from s2c.sketch.vectorize import vectorize
-from tests.sketch.synth import Sheet, TruthReader
+from tests.sketch.synth import FRONT_OUTLINE, F, R, Sheet, T, TruthReader, bridge_block
 
 
 def run(draw):
@@ -85,3 +85,33 @@ def test_open_v_arrowheads_count():
 def test_a_lone_short_edge_is_visible_not_hidden():
     c = run(lambda sh: box(sh, 300, 300, 330, 320))
     assert c.hidden == [] and len(c.visible) == 4
+
+
+def outline_corners():
+    """Corners of the part outline in the three views of `bridge_block`."""
+    front = [F(*p) for p in FRONT_OUTLINE]
+    top = [T(x, b) for x in (0, 25, 37.5, 62.5, 75, 100) for b in (0, 25)]
+    side = [R(a, y) for a in (0, 25) for y in (0, 12.5, 50)]
+    return np.float64(front + top + side)
+
+
+def test_full_sheet_keeps_its_short_dimensions():
+    """Text boxes that swallowed the short dimensions next to their text erased them: 5 of the 16
+    drawn dimensions came out. Counted by matching both arrow tips, so a false dimension line does
+    not make up for a lost one. The SIDE "12.5" is written across the "50" line, so erasing it cuts
+    that line: the one accepted loss."""
+    drawn = bridge_block(Sheet()).dims
+    c = run(bridge_block)
+
+    def found(p, q):
+        return any(len(d.arrows) == 2 and min(
+            max(np.hypot(*(a.tip - p)), np.hypot(*(b.tip - q))),
+            max(np.hypot(*(a.tip - q)), np.hypot(*(b.tip - p)))) < 6
+            for d in c.dimlines for a, b in [d.arrows])
+
+    assert len(drawn) == 16
+    assert sum(found(np.float64(p), np.float64(q)) for p, q in drawn) >= 15
+    corners = outline_corners()
+    for d in c.dimlines:  # a corner of the outline is not an arrowhead
+        for a in d.arrows:
+            assert np.min(np.hypot(*(corners - a.tip).T)) > 6, (d.id, a.tip)

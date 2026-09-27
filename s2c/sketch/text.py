@@ -59,21 +59,88 @@ def _dash_members(stats: np.ndarray, idx: list[int], stroke: float) -> set[int]:
     return out
 
 
+def _strip_lines(ink: np.ndarray, length: int) -> tuple[np.ndarray, np.ndarray]:
+    """Remove straight horizontal and vertical runs of at least `length` px. Returns what is left and
+    the removed band (the runs grown by one pixel)."""
+    lines = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((1, length), np.uint8)) | \
+        cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((length, 1), np.uint8))
+    band = cv2.dilate(lines, np.ones((3, 3), np.uint8))
+    return cv2.bitwise_and(ink, cv2.bitwise_not(band)), band
+
+
+def _cut_from_line(pts: np.ndarray, ink: np.ndarray, band: np.ndarray, near_band: np.ndarray,
+                   stroke: float) -> bool:
+    """A thin piece touching a removed line was cut out of line geometry when it runs along that line
+    (an arrowhead half) or when its ink goes on past the line (an extension line or a leader crossing
+    it). A glyph stroke that only ends at the line (a "1" standing on it) is neither. The walk past the
+    end is long enough to cross a thick outline at 45 degrees."""
+    if near_band[pts[:, 1], pts[:, 0]].mean() >= 0.3:
+        return True
+    centre = pts.mean(0)
+    _, _, vt = np.linalg.svd(pts - centre, full_matrices=False)
+    u, v = vt[0], vt[1]
+    t = (pts - centre) @ u
+    h, w = ink.shape
+    for end, sign in ((pts[np.argmin(t)], -1), (pts[np.argmax(t)], 1)):
+        crossed = False
+        for step in range(1, int(5 * stroke) + 1):
+            q = np.round(end + sign * step * u + np.outer((-1, 0, 1), v)).astype(int)
+            q = q[(q[:, 0] >= 0) & (q[:, 0] < w) & (q[:, 1] >= 0) & (q[:, 1] < h)]
+            if band[q[:, 1], q[:, 0]].any():
+                crossed = True
+            elif crossed and ink[q[:, 1], q[:, 0]].any():
+                return True
+    return False
+
+
+def _line_debris(labels: np.ndarray, stats: np.ndarray, idx: list[int], ink: np.ndarray, band: np.ndarray,
+                 stroke: float) -> set[int]:
+    """Thin pieces cut out of line geometry by the line removal: arrowhead halves left when the line
+    through the head is removed, extension-line or outline stubs cut off by a crossing line, and the
+    end of a slanted leader cut off by the outline it crosses (thin in its own direction, not in x or
+    y)."""
+    near_band = cv2.dilate(band, np.ones((5, 5), np.uint8)) > 0
+    touching = set(np.unique(labels[cv2.dilate(band, np.ones((3, 3), np.uint8)) > 0]).tolist())
+    out = set()
+    for i in idx:
+        if i not in touching:
+            continue
+        x, y, w, h = stats[i, :4]
+        ys, xs = np.nonzero(labels[y:y + h, x:x + w] == i)
+        pts = np.stack([xs + x, ys + y], 1)
+        (_, _), (a, b), _ = cv2.minAreaRect(pts.astype(np.float32))
+        thin = _line_like(stats[i, 2], stats[i, 3], stroke) or _line_like(max(a, b) + 1, min(a, b) + 1, stroke)
+        if thin and _cut_from_line(pts, ink, band > 0, near_band, stroke):
+            out.add(i)
+    return out
+
+
+def _pieces(ink: np.ndarray, length: int, char_max: float, stroke: float):
+    """Components left after removing straight runs of at least `length` px, split into glyph
+    candidates and the ones that are not glyphs (dash pieces, line debris)."""
+    rest, band = _strip_lines(ink, length)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(rest, connectivity=8)
+    idx = [i for i in range(1, n) if stats[i, 4] >= 10 and stats[i, 3] <= char_max
+           and stats[i, 2] <= 1.5 * char_max]
+    drop = _dash_members(stats, idx, stroke) | _line_debris(labels, stats, idx, ink, band, stroke)
+    return labels, stats, [i for i in idx if i not in drop]
+
+
 def find_text_boxes(ink: np.ndarray, stroke_px: float) -> list[tuple[int, int, int, int]]:
     h, w = ink.shape
     long_side = max(h, w)
     L = max(40, int(0.04 * long_side))
-    lines = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((1, L), np.uint8)) | \
-        cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((L, 1), np.uint8))
-    rest = cv2.bitwise_and(ink, cv2.bitwise_not(cv2.dilate(lines, np.ones((3, 3), np.uint8))))
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(rest, connectivity=8)
     char_max = 0.06 * long_side
-    idx = [i for i in range(1, n) if stats[i, 4] >= 10 and stats[i, 3] <= char_max
-           and stats[i, 2] <= 1.5 * char_max]
-    dashes = _dash_members(stats, idx, stroke_px)
-    glyphs = np.isin(labels, [i for i in idx if i not in dashes]).astype(np.uint8) * 255
-    heights = [stats[i, 3] for i in idx if i not in dashes]
-    k = max(5, int(0.6 * np.median(heights))) if heights else 5
+    labels, stats, cand = _pieces(ink, L, char_max, stroke_px)
+    heights = [stats[i, 3] for i in cand]
+    glyph_h = float(np.median(heights)) if heights else 0.0
+    if heights and 2 * glyph_h < L:
+        # Deliberate second pass, from the original ink: now the glyph height is known, straight runs
+        # longer than two glyphs are lines too (the lines of a short dimension, the extension lines a
+        # digit touches), all shorter than L.
+        labels, stats, cand = _pieces(ink, int(2 * glyph_h), char_max, stroke_px)
+    glyphs = np.isin(labels, cand).astype(np.uint8) * 255
+    k = max(5, int(0.6 * glyph_h)) if heights else 5
     glued = cv2.dilate(glyphs, np.ones((k, k), np.uint8))
     m, _, st, _ = cv2.connectedComponentsWithStats(glued, connectivity=8)
     boxes = []
