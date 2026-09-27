@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
+from scipy import ndimage
 from skimage.filters import threshold_sauvola
 from skimage.morphology import skeletonize
 
@@ -17,6 +18,8 @@ BRIGHT_PAPER = 150
 TOO_DARK = 50
 BLUR_VAR = 8.0            # variance of the Laplacian; set on synthetic tests, re-check on golden photos
 CORE_WIN = 7              # px: the window where a stroke edge finds its dark core
+PAPER_SAT = 26            # HSV saturation below which a pixel may be paper (a wooden desk is far above)
+EDGE_BAND = 15            # px: ink reaching this close to the paper's edge is not the drawing
 MIN_SKELETON = 10         # px of skeleton for a piece of ink to count as a stroke (not a speck)
 
 RETAKE_FRAME = "Put the whole sheet in the frame on a darker surface and retake."
@@ -65,6 +68,83 @@ def _find_sheet(gray: np.ndarray) -> np.ndarray | None:
     if not _edges_are_sharp(blur, approx.astype(np.float32)):
         return None  # a shadow boundary, not a paper edge
     return _order(approx.astype(np.float32) / f)
+
+
+def _paper_outline(image: np.ndarray) -> np.ndarray | None:
+    """Convex outline (photo pixels) of a sheet that has no clean four-corner edge: it runs off the photo, or
+    has a spiral binding on one side. The paper is bright and nearly grey; a desk is saturated. A binding is
+    a column of similar dark holes along one side and is cut off with everything beyond it."""
+    f = 512 / max(image.shape[:2])
+    small = cv2.resize(image, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    hsv = cv2.cvtColor(cv2.medianBlur(small, 5), cv2.COLOR_BGR2HSV)
+    s, v = hsv[..., 1].astype(int), hsv[..., 2].astype(int)
+    p95 = float(np.percentile(v, 95))
+    paper = ((s < PAPER_SAT) & (v > 0.35 * p95)).astype(np.uint8)
+    dark = (v < 0.6 * p95).astype(np.uint8)
+    for flip in range(4):  # right, left, bottom, top binding
+        d = _turn(dark, flip)
+        cut = _binding(d)
+        if cut is not None:
+            p = _turn(paper, flip)
+            p[:, max(cut - 4, 0):] = 0
+            paper = _turn(p, flip, back=True)
+    paper = cv2.morphologyEx(paper, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    n, lab, st, _ = cv2.connectedComponentsWithStats(paper, connectivity=4)
+    if n < 2:
+        return None
+    k = 1 + int(np.argmax(st[1:, cv2.CC_STAT_AREA]))
+    sheet = ndimage.binary_fill_holes(lab == k).astype(np.uint8)
+    cs, _ = cv2.findContours(sheet, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    hull = cv2.convexHull(max(cs, key=cv2.contourArea))
+    if not MIN_SHEET_AREA <= cv2.contourArea(hull) / sheet.size <= FULL_FRAME_AREA:
+        return None  # no sheet, or the whole photo is paper: nothing to crop
+    return hull.reshape(-1, 2).astype(np.float32) / f
+
+
+def _turn(a: np.ndarray, k: int, back: bool = False) -> np.ndarray:
+    """Rotate so side k (0 right, 1 left, 2 bottom, 3 top) becomes the right side, or back."""
+    ops = [lambda x: x, lambda x: x[:, ::-1], lambda x: x.T, lambda x: x.T[:, ::-1]]
+    inv = [lambda x: x, lambda x: x[:, ::-1], lambda x: x.T, lambda x: x[:, ::-1].T]
+    return np.ascontiguousarray((inv if back else ops)[k](a))
+
+
+def _binding(dark: np.ndarray) -> int | None:
+    """Left edge x of a column of at least 10 evenly spaced small dark holes in the outer tenth on the right."""
+    h, w = dark.shape
+    n, _, st, cen = cv2.connectedComponentsWithStats(dark, connectivity=8)
+    ok = [i for i in range(1, n) if 3 <= st[i, cv2.CC_STAT_AREA] <= 0.002 * h * w and st[i, 3] < 0.05 * h
+          and cen[i][0] > 0.9 * w]
+    if len(ok) < 10:
+        return None
+    xs = np.array([cen[i][0] for i in ok])
+    col = [i for i, x in zip(ok, xs) if abs(x - np.median(xs)) < 0.03 * w]
+    ys = np.sort([cen[i][1] for i in col])
+    gaps = np.diff(ys)
+    if len(col) < 10 or np.ptp(ys) < 0.4 * h or np.std(gaps) > 0.35 * np.mean(gaps):
+        return None  # a binding's holes are evenly spaced; dashes of a drawn line are not this regular
+    return int(min(st[i, 0] for i in col))
+
+
+def _crop_to_outline(image: np.ndarray, outline: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The outline's bounding box at LONG_SIDE, the outline mask in it and the homography back to the photo."""
+    x, y, w, h = cv2.boundingRect(outline.astype(np.int32))
+    k = LONG_SIDE / max(w, h)
+    sheet = cv2.resize(image[y:y + h, x:x + w], None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
+    mask = np.zeros(sheet.shape[:2], np.uint8)
+    cv2.fillConvexPoly(mask, ((outline - [x, y]) * k).astype(np.int32), 255)
+    to_original = np.array([[1 / k, 0, x], [0, 1 / k, y], [0, 0, 1]], np.float64)
+    return sheet, mask, to_original
+
+
+def _keep_inside(ink: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Drop ink off the paper and every piece of ink reaching the paper's edge (binding, desk, other covers)."""
+    ink = ink.copy()
+    ink[mask == 0] = 0
+    inner = cv2.erode(mask, np.ones((EDGE_BAND, EDGE_BAND), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0)
+    _, labels = cv2.connectedComponents(ink, connectivity=8)
+    touch = np.unique(labels[(ink > 0) & (inner == 0)])
+    ink[np.isin(labels, touch[touch > 0])] = 0
+    return ink
 
 
 def _edges_are_sharp(img: np.ndarray, quad: np.ndarray, min_step: float = 30.0) -> bool:
@@ -158,7 +238,12 @@ def capture(image_bgr: np.ndarray) -> Captured | SketchAbstain:
             return SketchAbstain(stage="capture", reason="image_quality", remedy=RETAKE_LIGHT)
         if mean < BRIGHT_PAPER:
             return SketchAbstain(stage="capture", reason="sheet_not_found", remedy=RETAKE_FRAME)
-    sheet, to_original = _rectify(image_bgr, corners)
+    mask = None
+    outline = _paper_outline(image_bgr) if corners is None else None
+    if outline is not None:
+        sheet, mask, to_original = _crop_to_outline(image_bgr, outline)
+    else:
+        sheet, to_original = _rectify(image_bgr, corners)
     sheet_gray = cv2.cvtColor(sheet, cv2.COLOR_BGR2GRAY)
     # a blank page has no contrast at all and must reach the views stage (no_views_found);
     # a blurred drawing still has some contrast but no sharp edges
@@ -168,4 +253,6 @@ def capture(image_bgr: np.ndarray) -> Captured | SketchAbstain:
         return SketchAbstain(stage="capture", reason="image_quality", remedy=RETAKE_LIGHT)
     flat = _flatten(sheet_gray)
     ink = _binarise(flat)
+    if mask is not None:
+        ink = _keep_inside(ink, mask)
     return Captured(sheet=sheet, gray=flat, ink=ink, to_original=to_original, stroke_px=_stroke_px(ink))
