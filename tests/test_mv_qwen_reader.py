@@ -30,11 +30,11 @@ def test_reads_come_back_in_crop_order():
     assert qwen_batch_reader(chat)([CROP, CROP]) == [("⌀6", 0.9), ("40", 0.9)]
 
 
-def test_one_message_holds_every_crop():
+def test_one_message_holds_every_crop_in_a_single_tiled_image():
     chat = chat_returning(reads())
     qwen_batch_reader(chat)([CROP, CROP, CROP])
     content = chat.calls[0][0]["content"]
-    assert sum(part["type"] == "image_url" for part in content) == 3
+    assert sum(part["type"] == "image_url" for part in content) == 1
     assert "Never guess" in content[0]["text"]
 
 

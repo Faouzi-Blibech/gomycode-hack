@@ -5,18 +5,19 @@ from __future__ import annotations
 import base64
 import logging
 
-import cv2
 import numpy as np
 from pydantic import BaseModel, ConfigDict
 
 from s2c.multiview.label import Chat, _strip_fences
 from s2c.multiview.ocr import BatchReader
+from s2c.reading.tiles import tile_grid
 
 log = logging.getLogger(__name__)
 READ_CONFIDENCE = 0.9
-PROMPT = ("Each image is a crop of handwriting from a mechanical sketch. Return exactly what is written in each crop, "
-          'as JSON only: {"reads": [{"i": 1, "text": "⌀6"}, ...]}. Use ⌀ for a diameter sign and R for a radius. '
-          'Return "" when a crop is unreadable. Never guess a value that is not written.')
+PROMPT = ("The image holds numbered tiles #1..#n, one crop of handwriting from a mechanical sketch each. Return "
+          'exactly what is written in each tile, as JSON only: {"reads": [{"i": 1, "text": "⌀6"}, ...]}, `i` the '
+          'tile number. Use ⌀ for a diameter sign and R for a radius. Return "" when a tile is unreadable. '
+          "Never guess a value that is not written.")
 
 
 class _Read(BaseModel):
@@ -30,18 +31,16 @@ class _Reads(BaseModel):
     reads: list[_Read]
 
 
-def _png_url(crop: np.ndarray) -> str:
-    return "data:image/png;base64," + base64.b64encode(cv2.imencode(".png", crop)[1].tobytes()).decode()
+def _png_url(png: bytes) -> str:
+    return "data:image/png;base64," + base64.b64encode(png).decode()
 
 
 def qwen_batch_reader(chat: Chat) -> BatchReader:
     def read(crops: list[np.ndarray]) -> list[tuple[str, float]] | None:
         if not crops:
             return []
-        content = [{"type": "text", "text": PROMPT}]
-        for k, crop in enumerate(crops, 1):
-            content += [{"type": "text", "text": f"Crop {k}:"},
-                        {"type": "image_url", "image_url": {"url": _png_url(crop)}}]
+        content = [{"type": "text", "text": PROMPT},
+                   {"type": "image_url", "image_url": {"url": _png_url(tile_grid(crops))}}]
         messages = [{"role": "user", "content": content}]
         for _ in range(2):
             try:
