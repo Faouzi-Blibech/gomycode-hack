@@ -177,6 +177,12 @@ def _filled_arrows(lines, ink, stroke) -> tuple[dict[tuple[str, int], Arrow], se
 
     claims: dict[tuple[str, int], tuple[float, int, np.ndarray, np.ndarray]] = {}
     for b, (pts, thick, near, _) in enumerate(blobs):
+        # a corner of the outline: two lines at least as thick as the blob end in it at an angle. A thin
+        # leader crossing the corner makes it wider than the leader, not an arrowhead
+        edges = [d for p, _, _, d, gap in near
+                 if p.id not in all_parts and gap <= stroke and thick < 1.5 * p.width]
+        if any(np.dot(u, v) > -0.9 for i, u in enumerate(edges) for v in edges[i + 1:]):
+            continue
         c = pts.mean(0)
         cands = []
         for p, end, e, d, gap in near:
@@ -184,8 +190,17 @@ def _filled_arrows(lines, ink, stroke) -> tuple[dict[tuple[str, int], Arrow], se
             if p.id in all_parts or thick < 1.5 * width_near(p, pts):
                 continue
             off = _point_line_dist(c, p.p0, p.p1)
-            if off <= 1.5 * stroke and np.dot(c - e, d) >= -stroke:
-                cands.append((off, p, end, e, d, gap))
+            if off > 1.5 * stroke:
+                continue
+            # The head's base (its widest cross-section) comes before its tip along the carrier. The
+            # blob may lie behind the carrier's end: where text erased half a head, the skeleton runs
+            # through it to the tip or into the extension-line corner. A head whose base lies beyond
+            # the blob's middle points back at the carrier: it belongs to the next dimension in a chain.
+            proj = (pts - e) @ d
+            ts = np.arange(np.floor(proj.min()), np.ceil(proj.max()) + 1)
+            if ts[int(np.argmax(_axis_widths(ink, pts, e, d, ts)))] > (proj.min() + proj.max()) / 2:
+                continue
+            cands.append((off, p, end, e, d, gap))
         taken: list[np.ndarray] = []
         for _, p, end, e, d, gap in sorted(cands, key=lambda t: t[0]):
             # one carrier per blob, or two opposite ones where two chained heads merged
