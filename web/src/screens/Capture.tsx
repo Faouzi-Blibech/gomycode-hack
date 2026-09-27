@@ -14,25 +14,12 @@ const FACE_LABELS: Record<Face, string> = { front: 'Front', back: 'Back', left: 
 const KINDS: CaptureKind[] = ['auto', 'sketch', 'photo', 'drawing'];
 const MODES: CaptureMode[] = ['photos', 'sheet'];
 const MODE_LABELS: Record<CaptureMode, string> = { photos: 'Per-face photos', sheet: 'One sheet (all views)' };
-const REFERENCES: { value: string; label: string }[] = [
-  { value: '', label: 'None' },
-  { value: '1 TND', label: '1 TND coin' },
-  { value: '1 EUR', label: '1 EUR coin' },
-  { value: '2 EUR', label: '2 EUR coin' },
-  { value: 'card', label: 'Bank card' },
-  { value: 'a4', label: 'A4 sheet' },
-];
 
 const panel: CSSProperties = {
   borderRadius: 14, background: 'var(--surface)', boxShadow: 'var(--shadow)', padding: '16px 18px',
   display: 'flex', flexDirection: 'column', gap: 12, boxSizing: 'border-box',
 };
 const sectionTitle: CSSProperties = { fontSize: 15, fontWeight: 600 };
-const selectStyle: CSSProperties = {
-  height: 40, borderRadius: 9, border: '1px solid var(--line)', background: 'var(--inset)', color: 'var(--ink)',
-  font: 'inherit', fontSize: 14, padding: '0 10px', boxSizing: 'border-box', width: '100%',
-};
-
 function Toggle({ label, hint, checked, onChange, disabled }: {
   label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void; disabled?: boolean;
 }) {
@@ -287,19 +274,6 @@ export function Capture() {
             </div>
           )}
 
-          <div style={{ ...panel, opacity: sheet ? 0.5 : 1 }}>
-            <span style={sectionTitle}>Scale reference</span>
-            <select
-              value={state.reference} onChange={(e) => dispatch({ type: 'SET_REFERENCE', reference: e.target.value })}
-              aria-label="Scale reference in the photos" style={selectStyle} disabled={sheet}
-            >
-              {REFERENCES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-            </select>
-            <span style={{ fontSize: 12, color: 'var(--muted)' }}>
-              {sheet ? 'Not used for a sheet — its own scale comes from the sheet itself.'
-                : 'Gives real millimetres from a photo — needs a top-down shot with the object flat in frame.'}
-            </span>
-          </div>
 
           <div style={panel}>
             <button
