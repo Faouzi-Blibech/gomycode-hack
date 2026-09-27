@@ -14,6 +14,7 @@ from s2c.reading.base import Crop, ReaderResult
 DEFAULT_MODEL = "microsoft/trocr-base-handwritten"
 _LOADED: dict[tuple[str, str], tuple] = {}
 _LOCK = threading.Lock()
+_READ_LOCK = threading.Lock()  # concurrent batches queue instead of thrashing the same model and device
 
 
 def token_confidences(logprobs: np.ndarray, mask: np.ndarray) -> list[float]:
@@ -65,12 +66,13 @@ class TrocrReader:
 
         processor, model = _load(self.model_id, self.device)
         images = [Image.fromarray(cv2.cvtColor(c.image, cv2.COLOR_BGR2RGB)) for c in crops]
-        pixels = processor(images=images, return_tensors="pt").pixel_values.to(self.device)
-        with torch.no_grad():
-            out = model.generate(pixels, max_new_tokens=self.max_new_tokens, num_beams=1, output_scores=True,
-                                 return_dict_in_generate=True)
-        texts = processor.batch_decode(out.sequences, skip_special_tokens=True)
-        scores = model.compute_transition_scores(out.sequences, out.scores, normalize_logits=True)
+        with _READ_LOCK:
+            pixels = processor(images=images, return_tensors="pt").pixel_values.to(self.device)
+            with torch.no_grad():
+                out = model.generate(pixels, max_new_tokens=self.max_new_tokens, num_beams=1, output_scores=True,
+                                     return_dict_in_generate=True)
+            texts = processor.batch_decode(out.sequences, skip_special_tokens=True)
+            scores = model.compute_transition_scores(out.sequences, out.scores, normalize_logits=True)
         generated = out.sequences[:, -scores.shape[1]:]  # the tokens the scores describe
         pad = model.generation_config.pad_token_id
         if pad is None:
