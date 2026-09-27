@@ -164,12 +164,16 @@ def _merge_values(face: str, group, transforms, circle_index) -> tuple[list[Link
         for g in _clusters([lv.reading.value_mm for _, lv in items]):
             members = [items[i][1] for i in g]
             support = len({items[i][0] for i in g})
-            value = float(np.median([lv.reading.value_mm for lv in members]))
             if 2 * support < photos:
+                value = float(np.median([lv.reading.value_mm for lv in members]))
                 warnings.append(f"{face}: {value:g} mm was read on only {support} of {photos} photos, ignored")
                 continue
-            best = max(members, key=lambda lv: lv.reading.confidence)
-            out.append(Linked(replace(best.reading, value_mm=value), best.axis, best.hole_index))
+            trusted = [lv for lv in members if lv.reading.confirmed]
+            pool = trusted or members
+            value = float(np.median([lv.reading.value_mm for lv in pool]))
+            best = max(pool, key=lambda lv: lv.reading.confidence)
+            out.append(Linked(replace(best.reading, value_mm=value, confirmed=bool(trusted)),
+                              best.axis, best.hole_index))
     return out, warnings
 
 
