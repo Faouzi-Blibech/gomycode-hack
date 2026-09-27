@@ -179,7 +179,7 @@ class ModelBody(BaseModel):
 
 def _empty_model(abstain: MvAbstain) -> dict:
     return {"key": None, "glb_url": None, "volume_cm3": None, "bbox_mm": None, "iou": {}, "iou_mean": None,
-            "views": {}, "warnings": [], "abstain": abstain.model_dump()}
+            "views": {}, "warnings": [], "abstain": jobs.abstain_json(abstain)}
 
 
 @router.post("/model")
@@ -216,7 +216,7 @@ def export(body: ExportBody) -> dict:
     part = build_part(body.spec, s.geometry, ARTIFACT_ROOT)
     if isinstance(part, MvAbstain):
         return {"files": {}, "zip_url": None, "print_time_s": None, "filament_g": None, "warnings": [],
-                "abstain": part.model_dump()}
+                "abstain": jobs.abstain_json(part)}
     res = export_part(part, s.export.formats, s.mesh, s.printing)
     zip_path = bundle(part, res, s.model_dump(mode="json"))
     base = f"/api/artifacts/{part.key}"

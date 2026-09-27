@@ -69,7 +69,11 @@ def new_job(n_images: int, pipe: MvPipeline) -> Job:
         for i in range(n_images)])
     if pipe.chat is None:
         job.stage("label").update(tool="Your face tags", ai=False)
-    if pipe.reader is None and pipe.batch_reader is None:
+    if pipe.batch_reader is not None:
+        job.stage("read").update(tool="Qwen-VL", ai=True)
+    elif pipe.reader is not None:
+        job.stage("read").update(tool="TrOCR", ai=True)
+    else:
         job.stage("read").update(state="skipped", detail="No reader configured: type the sizes")
     if pipe.image_gen is None or not pipe.draw_faces:
         job.stage("draw").update(tool="TripoSR" if pipe.mesh_provider is not None else "assumed",
@@ -173,9 +177,29 @@ def reduce(job: Job, name: str, data: dict) -> None:
             stage["detail"] = _details(job, key)
 
 
+def _numbers(d) -> dict[str, float]:
+    if not isinstance(d, dict):
+        return {}
+    return {str(k): v for k, v in d.items() if isinstance(v, int | float) and not isinstance(v, bool)}
+
+
+def abstain_json(res: MvAbstain) -> dict:
+    """The contract's Abstain: `partial` is a flat {path: number} map (the known values), with the missing paths
+    and the suggested values as their own keys, whatever shape MvAbstain.partial has."""
+    out = res.model_dump()
+    partial = out.get("partial")
+    if isinstance(partial, dict) and {"known", "missing", "suggested"} & partial.keys():
+        missing = partial.get("missing")
+        out.update(partial=_numbers(partial.get("known")), suggested=_numbers(partial.get("suggested")),
+                   missing=[str(m) for m in missing] if isinstance(missing, list) else [])
+    else:
+        out.update(partial=None if partial is None else _numbers(partial), missing=[], suggested={})
+    return out
+
+
 def _analysis(job: Job, res, filled_by: dict) -> dict:
     spec = None if isinstance(res, MvAbstain) else res.model_dump(mode="json")
-    abstain = res.model_dump() if isinstance(res, MvAbstain) else None
+    abstain = abstain_json(res) if isinstance(res, MvAbstain) else None
     return {"request_id": job.job_id, "spec": spec, "abstain": abstain, "filled_by": dict(filled_by)}
 
 

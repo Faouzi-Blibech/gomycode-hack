@@ -78,3 +78,31 @@ def test_upload_limits():
 
 def test_artifact_traversal_is_404():
     assert c.get("/api/artifacts/" + "a" * 20 + "/..%2F..%2Fpyproject.toml").status_code == 404
+
+
+def _flat_abstain(ab):
+    assert ab["partial"] is None or all(isinstance(v, (int, float)) for v in ab["partial"].values()), ab
+    assert isinstance(ab["missing"], list) and isinstance(ab["suggested"], dict)
+    assert all(isinstance(v, (int, float)) for v in ab["suggested"].values())
+
+
+def test_missing_x_abstain_has_a_flat_partial_and_the_missing_paths():
+    job = analyze()
+    ab = job["result"]["abstain"]
+    assert ab and ab["reason"] == "missing_x"
+    _flat_abstain(ab)
+    assert "envelope.x_mm" in ab["missing"]
+    m = c.post("/api/merge", json={"request_id": job["job_id"], "user_values": {}, "accepted": [], "rejected": []})
+    ab = m.json()["abstain"]
+    _flat_abstain(ab)
+    assert "envelope.x_mm" in ab["missing"]
+
+
+def test_read_stage_names_the_reader_that_runs():
+    from s2c.web import jobs
+    job = jobs.new_job(1, MvPipeline(reader=lambda *a, **k: None))
+    read = job.stage("read")
+    assert (read["tool"], read["ai"], read["state"]) == ("TrOCR", True, "pending")
+    job = jobs.new_job(1, MvPipeline(batch_reader=lambda *a, **k: None))
+    assert job.stage("read")["tool"] == "Qwen-VL"
+    assert jobs.new_job(1, MvPipeline()).stage("read")["state"] == "skipped"
