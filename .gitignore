@@ -218,9 +218,11 @@ __marimo__/
 .streamlit/secrets.toml
 
 # SDD scratch workspace (git-ignored)
-.superpowers/
+.superpowers/*
+!.superpowers/.gitkeep
 
-logs/
 .env
-tmp/
-vendor/
+tmp/*
+!tmp/.gitkeep
+vendor/*
+!vendor/.gitkeep
