@@ -498,7 +498,12 @@ def _read_label(image: np.ndarray, box: Box | None, reader: Reader | None) -> st
     m = max(2, h // 4)
     crop = image[max(0, y - m): y + h + m, max(0, x - m): x + w + m]
     try:
-        text, _ = reader(crop)
+        if hasattr(reader, "read"):  # s2c.reading.Reader: a batch of Crops -> ReaderResults, or None on failure
+            from s2c.reading.base import Crop
+            out = reader.read([Crop(crop, (x, y, w, h))])
+            text = out[0].text if out else ""
+        else:
+            text, _ = reader(crop)
     except Exception:  # an OCR failure must not stall the sheet: the layout still names the view
         log.warning("label reader failed", exc_info=True)
         return ""

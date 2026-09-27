@@ -326,7 +326,17 @@ def _drawn_sheet(image_bytes: bytes, pipe: MvPipeline):
     except Exception:
         log.exception("drawing-sheet split failed")
         return None
-    return None if found is None else (found[1], found[2])
+    if found is None:
+        return None
+    naming, crops = found[1], found[2]
+    # The web app has no per-view face picker: a view the reader cannot name (an isometric view, a detail) is left
+    # out with a warning instead of stopping the whole analysis at "which face is this".
+    named = [c for c in crops if c[2] != "auto"]
+    if len(named) < len(crops):
+        n = len(crops) - len(named)
+        naming.warnings.append(f"{n} view{'s' if n > 1 else ''} could not be named (an isometric or detail view?) "
+                               f"and {'were' if n > 1 else 'was'} left out.")
+    return naming, named
 
 
 def run_sheet(job: Job, pipe: MvPipeline, image: ImageInput) -> None:
@@ -354,7 +364,7 @@ def run_sheet(job: Job, pipe: MvPipeline, image: ImageInput) -> None:
             with job.lock:
                 for key in ("views", "lines", "values"):
                     job.stage(key).update(tool="Drawing reader", ai=False)
-                job.images = [{"index": k, "width": 0, "height": 0, "face": None if face == "auto" else face,
+                job.images = [{"index": k, "width": 0, "height": 0, "face": face,
                                "kind": "drawing", "outline": None, "circles": [], "reads": []}
                               for k, (_, _, face) in enumerate(crops)]
                 for _, _, face in crops:
@@ -364,7 +374,7 @@ def run_sheet(job: Job, pipe: MvPipeline, image: ImageInput) -> None:
             progress("stage", {"key": "views", "state": "done",
                                "detail": f"{len(crops)} views found ({angle}, from the {naming.projection_source})"})
             progress("stage", {"key": "lines", "state": "running"})
-            images = [ImageInput(png, None if face == "auto" else face, "drawing") for _, png, face in crops]
+            images = [ImageInput(png, face, "drawing") for _, png, face in crops]
             observed = pipe.observe(images, None, progress=fused)
             progress("stage", {"key": "lines", "state": "done", "detail": "centre and hidden lines read"})
             progress("stage", {"key": "values", "state": "skipped"})

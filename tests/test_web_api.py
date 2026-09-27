@@ -359,3 +359,26 @@ def test_analyze_sheet_mode_splits_a_drawn_sheet_and_builds(monkeypatch):
     assert job["result"]["spec"] or job["result"]["abstain"]
     assert {i["face"] for i in job["images"]} >= {"front", "top"}
     assert job["coverage"]["front"] == job["coverage"]["top"] == "observed"
+
+
+def test_analyze_sheet_mode_leaves_out_a_view_it_cannot_name(monkeypatch):
+    """An isometric view beside the orthographic views is left out with a warning, not asked about."""
+    import cv2
+    import numpy as np
+    monkeypatch.setattr("s2c.sketch.read_sketch", lambda image_bytes: _fake_sheet_reading(), raising=False)
+    sheet = Path(__file__).resolve().parents[1] / "examples" / "mv" / "sheet" / "sheet.png"
+    img = cv2.imdecode(np.frombuffer(sheet.read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+    h, w = img.shape[:2]
+    img = cv2.copyMakeBorder(img, 0, 0, 0, w // 2, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+    cx, cy, r = w + w // 4, h // 4, min(w, h) // 8
+    iso = np.array([[cx, cy - r], [cx + r, cy - r // 2], [cx + r, cy + r // 2], [cx, cy + r],
+                    [cx - r, cy + r // 2], [cx - r, cy - r // 2]], np.int32)
+    cv2.polylines(img, [iso], True, (0, 0, 0), 2)
+    cv2.line(img, (cx, cy), (cx, cy + r), (0, 0, 0), 2)
+    ok, png = cv2.imencode(".png", img)
+    r_ = c.post("/api/analyze", files=[("files", ("sheet.png", png.tobytes(), "image/png"))], data={"mode": "sheet"})
+    job = _wait(r_.json()["job_id"])
+    assert job["status"] == "done", job
+    assert job["stages"][0]["tool"] == "Drawing reader"
+    assert all(i["face"] for i in job["images"])
+    assert job["result"]["abstain"] is None or job["result"]["abstain"]["reason"] != "face_unknown"
