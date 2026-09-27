@@ -137,13 +137,17 @@ def _tag(items: list, i: int) -> str | None:
 @router.post("/analyze", status_code=202)
 def analyze(pipe: Pipe, files: Annotated[list[UploadFile] | None, File()] = None,
             faces: Annotated[str, Form()] = "[]", kinds: Annotated[str, Form()] = "[]",
-            reference: Annotated[str | None, Form()] = None, ai: Annotated[str | None, Form()] = None) -> dict:
+            reference: Annotated[str | None, Form()] = None, ai: Annotated[str | None, Form()] = None,
+            mode: Annotated[str, Form()] = "photos") -> dict:
     files = files or []
+    if mode not in ("photos", "sheet"):
+        raise HTTPException(400, "Unknown capture mode.")
     if (reference or "") not in ("", *REFERENCES):
         raise HTTPException(400, "Unknown scale reference.")
-    if not 1 <= len(files) <= MAX_FILES:
-        raise HTTPException(400, f"Send between 1 and {MAX_FILES} images.")
-    face_tags, kind_tags = _json_list(faces, "faces"), _json_list(kinds, "kinds")
+    max_files = 1 if mode == "sheet" else MAX_FILES
+    if not 1 <= len(files) <= max_files:
+        raise HTTPException(400, "Send one sheet image." if mode == "sheet"
+                            else f"Send between 1 and {MAX_FILES} images.")
     datas = []
     for f in files:
         data = f.file.read(MAX_BYTES + 1)
@@ -160,6 +164,12 @@ def analyze(pipe: Pipe, files: Annotated[list[UploadFile] | None, File()] = None
         if settings.randomize_seed:
             settings = settings.model_copy(update={"seed": secrets.randbelow(2**31)})
         pipe = pipe.configured(settings)
+    if mode == "sheet":
+        job = jobs.new_sheet_job(pipe)
+        if not jobs.start_sheet(job, pipe, ImageInput(datas[0])):
+            raise HTTPException(429, BUSY)
+        return {"job_id": job.job_id}
+    face_tags, kind_tags = _json_list(faces, "faces"), _json_list(kinds, "kinds")
     images = [ImageInput(d, _tag(face_tags, i), _tag(kind_tags, i)) for i, d in enumerate(datas)]
     job = jobs.new_job(len(images), pipe)
     if not jobs.start(job, pipe, images, reference or None):

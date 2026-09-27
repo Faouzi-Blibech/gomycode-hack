@@ -1,7 +1,7 @@
 // web/src/api/types.ts — the single source of truth for the frontend
 export type Face = 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom';
 export type Provenance = 'user_written' | 'measured' | 'user_edited' | 'scaled' | 'inferred' | 'estimated' | 'default';
-export type StageKey = 'label' | 'outline' | 'read' | 'draw' | 'fuse';
+export type StageKey = 'label' | 'outline' | 'read' | 'draw' | 'fuse' | 'views' | 'lines' | 'values';
 export type StageState = 'pending' | 'running' | 'done' | 'skipped' | 'failed';
 export type FilledBy = 'observed' | 'qwen-image' | 'triposr' | 'mirrored' | 'assumed';
 
