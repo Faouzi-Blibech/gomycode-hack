@@ -30,7 +30,7 @@ from s2c.multiview.fuse import (
 from s2c.multiview.label import Chat, MvLabel, env_chat, hint_label, label_image
 from s2c.multiview.merge_views import merge_same_face
 from s2c.multiview.ocr import BatchReader, Reader, link, read_values
-from s2c.multiview.outline import PixelOutline, extract, resize_long_side
+from s2c.multiview.outline import PixelOutline, _stroke, extract, ink_mask, resize_long_side
 from s2c.multiview.qwen_faces import RESCUE_PENALTY, SEED, TRIES, rescue_sketch
 from s2c.multiview.qwen_image import MAX_REFS, ImageGen, default_gen
 from s2c.multiview.qwen_reader import qwen_batch_reader
@@ -85,6 +85,14 @@ def input_mask(outline: PixelOutline, edges=()) -> np.ndarray:
     holes += [cv2.ellipse2Poly((round(c.cx), round(c.cy)), (round(c.d / 2), round(c.d / 2)), 0, 0, 360, 5)
               for i, c in enumerate(outline.circles) if i not in edges]
     return normalize_mask(polygon_mask(outline.outer, holes, outline.shape))
+
+
+def line_width(bgr: np.ndarray, outline: PixelOutline, mask_out=()) -> float:
+    """A line drawing's line width in px, measured as the outline stage does: the ink inside the outline, its area
+    over half its edge length."""
+    filled = np.zeros(outline.shape, np.uint8)
+    cv2.fillPoly(filled, [np.asarray(outline.outer, np.int32).reshape(-1, 1, 2)], 255)
+    return _stroke(cv2.bitwise_and(ink_mask(bgr, mask_out), filled))
 
 
 class MvPipeline:
@@ -149,7 +157,8 @@ class MvPipeline:
             if reads and label.input_kind != "photo":
                 values = link(read_values(bgr, outline, self.reader, self.batch_reader), outline)
             obs = Observation(face=label.face, kind=label.input_kind, outline=outline, values=values,
-                              mm_per_px=mm_per_px, confidence=label.confidence * (RESCUE_PENALTY if rescued else 1.0))
+                              mm_per_px=mm_per_px, confidence=label.confidence * (RESCUE_PENALTY if rescued else 1.0),
+                              stroke=line_width(bgr, outline, mask_out) if outline.line_art and not rescued else 0.0)
             attach_label(obs, label)
             if rescued:
                 observed.warnings.append(f"{label.face}: sketch cleaned by Qwen-Image, check it")
@@ -212,9 +221,9 @@ class MvPipeline:
             warnings += more
         edges, more = classify_drawn_circles(observed.observations, env)
         warnings += more
-        for k, skip in edges.items():
-            o = observed.observations[k]
-            observed.masks[o.face] = input_mask(o.outline, skip)
+        for k, o in enumerate(observed.observations):
+            if o.line_art:  # on every fuse, so a circle read as a hole again gets its hole back
+                observed.masks[o.face] = input_mask(o.outline, edges.get(k, ()))
         best = max(range(len(observed.observations)), key=lambda i: observed.observations[i].confidence)
         target = observed.observations[best]
         image = observed.images[best] if best < len(observed.images) else None  # None once routes dropped them

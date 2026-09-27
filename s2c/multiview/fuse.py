@@ -38,6 +38,7 @@ class Observation:
     confidence: float = 0.9
     line_art: bool = False                      # a drawing in lines (drawing-sheet spec 3.3)
     hidden: list[tuple[str, float, float, float]] = field(default_factory=list)  # as PixelOutline.hidden
+    stroke: float = 0.0                         # line width of a line drawing in px, 0 when not measured
 
     def __post_init__(self):
         """Whoever builds the observation, a line-art outline makes it line art and brings its hidden lines."""
@@ -202,6 +203,15 @@ def _duplicate_through(feats: list[dict], face: str, a: float, b: float, env: S.
     return False
 
 
+def _diameter(o: Observation, i: int, sa: float, sb: float) -> tuple[float, str]:
+    """Circle i's diameter in mm and its provenance: written next to it, else measured on a photo, else scaled."""
+    written = [_value(lv.reading) for lv in o.values if lv.hole_index == i]
+    if written:
+        return float(written[-1]), "user_written"
+    d = o.outline.circles[i].d
+    return (float(d * o.mm_per_px), "measured") if o.mm_per_px else (float(d * (sa + sb) / 2), "scaled")
+
+
 def features_from(observations: list[Observation], env: S.Envelope, edges: dict[int, set[int]] | None = None):
     """Every circle becomes a hole on its own face, except those `edges` (observation index -> circle indices, from
     classify_drawn_circles) reads as edges; a through hole seen from both sides is kept once."""
@@ -210,18 +220,12 @@ def features_from(observations: list[Observation], env: S.Envelope, edges: dict[
     edges = edges or {}
     for k_obs, o in enumerate(observations):
         sa, sb = _scales(o, env)
-        written = {lv.hole_index: _value(lv.reading) for lv in o.values if lv.hole_index is not None}
         axis_len = env.length(S.FACE_AXES[o.face][2])
         for i, c in enumerate(o.outline.circles):
             if i in edges.get(k_obs, ()):
                 continue
             (a, b), = to_face_mm(np.array([[c.cx, c.cy]]), o.outline.bbox, sa, sb)
-            if i in written:
-                d, d_prov = written[i], "user_written"
-            elif o.mm_per_px:
-                d, d_prov = c.d * o.mm_per_px, "measured"
-            else:
-                d, d_prov = c.d * (sa + sb) / 2, "scaled"
+            d, d_prov = _diameter(o, i, sa, sb)
             depth, depth_prov = None, None
             if o.blind.get(i):
                 if i in o.depth_ratio:
@@ -231,7 +235,7 @@ def features_from(observations: list[Observation], env: S.Envelope, edges: dict[
             elif _duplicate_through(feats, o.face, a, b, env):
                 continue
             k = len(feats)
-            feats.append({"type": "hole", "face": o.face, "a_mm": a, "b_mm": b, "diameter_mm": float(d),
+            feats.append({"type": "hole", "face": o.face, "a_mm": a, "b_mm": b, "diameter_mm": d,
                           "depth_mm": depth})
             pos = _outline_prov(o)
             prov.update({f"features[{k}].a_mm": pos, f"features[{k}].b_mm": pos, f"features[{k}].diameter_mm": d_prov})
@@ -244,7 +248,8 @@ def features_from(observations: list[Observation], env: S.Envelope, edges: dict[
 
 HIDDEN_TOL = 0.03  # a hidden line lies this close to a circle's side, as a share of the view
 EDGE_TOL = 0.04    # a silhouette as wide as a circle, within this share of its diameter, explains it
-STATION = 1e-3     # widths are read this share of the length either side of each outline vertex
+STATION = 1e-3     # widths are read this share of the length either side of each outline corner
+CORNER_DEG = 30.0  # an outline vertex turning less than this lies on a curve, where a width is no step or end
 
 
 def _hidden_along(g: Observation, s: str, look: str, env: S.Envelope) -> list[float]:
@@ -263,16 +268,28 @@ def _hidden_along(g: Observation, s: str, look: str, env: S.Envelope) -> list[fl
     return out
 
 
+def _corners(outer) -> np.ndarray:
+    """Which vertices of a pixel outline are corners. The outline follows a curve in short chords that each turn
+    a little, so a vertex on a curve is no corner."""
+    p = np.asarray(outer, np.float64).reshape(-1, 2)
+    before, after = p - np.roll(p, 1, axis=0), np.roll(p, -1, axis=0) - p
+    turn = np.arctan2(before[:, 0] * after[:, 1] - before[:, 1] * after[:, 0], (before * after).sum(axis=1))
+    return np.degrees(np.abs(turn)) > CORNER_DEG
+
+
 def _widths(g: Observation, s: str, look: str, env: S.Envelope) -> list[tuple[float, float]]:
-    """The extent on axis s of g's outer silhouette just either side of each outline vertex along `look`: a step,
-    a shoulder or a taper end, never the middle of a taper."""
+    """The extent on axis s of g's outer silhouette just either side of each outline corner along `look`: a step,
+    a shoulder or a taper end, never the middle of a taper or a curve. The outline runs along the outside of its
+    line and a circle along the middle of its line, so the extent loses half a line width on each side."""
     sa, sb = _scales(g, env)
     pts = [S.to_global(g.face, a, b, env) for a, b in to_face_mm(g.outline.outer, g.outline.bbox, sa, sb)]
     poly = np.array([(p[look], p[s]) for p in pts])
     length = env.length(look)
-    hs = np.unique(np.concatenate([poly[:, 0] - STATION * length, poly[:, 0] + STATION * length]))
+    at = poly[_corners(g.outline.outer), 0]
+    hs = np.unique(np.concatenate([at - STATION * length, at + STATION * length]))
     lo, hi = _extents(poly, hs[(hs > 0) & (hs < length)])
-    return [(float(a), float(b)) for a, b in zip(lo, hi) if np.isfinite(a) and np.isfinite(b)]
+    half = g.stroke * (sa if s == S.FACE_AXES[g.face][0] else sb) / 2
+    return [(float(a) + half, float(b) - half) for a, b in zip(lo, hi) if np.isfinite(a) and np.isfinite(b)]
 
 
 def _verdict(o: Observation, i: int, others: list[Observation], env: S.Envelope) -> tuple[str, str | None]:
@@ -294,6 +311,8 @@ def _verdict(o: Observation, i: int, others: list[Observation], env: S.Envelope)
         if low and high and len(low | high) >= 2:
             return "hole", g.face
     for g, s, d in pairs:
+        if g.outline.circular:
+            continue  # every chord of a round silhouette is some width, centred on its axis: none is a step
         if any(abs(hi - lo - d) <= EDGE_TOL * d and abs((hi + lo) / 2 - at[s]) <= EDGE_TOL * d
                for lo, hi in _widths(g, s, look, env)):
             return "edge", g.face
@@ -313,9 +332,9 @@ def classify_drawn_circles(observations: list[Observation], env: S.Envelope) -> 
         others = [g for g in observations if g.line_art and S.CANONICAL_OF[g.face] != S.CANONICAL_OF[o.face]]
         sa, sb = _scales(o, env)
         lone = []
-        for i, c in enumerate(o.outline.circles):
+        for i in range(len(o.outline.circles)):
             kind, by = _verdict(o, i, others, env)
-            d = round(c.d * (sa + sb) / 2, 1)
+            d = round(_diameter(o, i, sa, sb)[0], 1)
             if kind == "edge":
                 edges.setdefault(k, set()).add(i)
                 warnings.append(f"Circle Ø{d:g} on {o.face}: read as an edge (step in {by})")

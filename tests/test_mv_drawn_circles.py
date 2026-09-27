@@ -8,8 +8,11 @@ import pytest
 from s2c.multiview import spec as S
 from s2c.multiview.build import build, volume
 from s2c.multiview.fuse import Observation, classify_drawn_circles, features_from
+from s2c.multiview.ocr import Linked, Reading
 from s2c.multiview.outline import extract
-from s2c.multiview.pipeline import ImageInput, MvPipeline
+from s2c.multiview.pipeline import ImageInput, MvPipeline, input_mask
+from s2c.multiview.turned import complete_turned
+from tests.mv_helpers import circle, rect
 from tests.test_mv_line_art import CHAIN, HIDDEN, centre_cross, page, pattern_line, png
 
 INK = (0, 0, 0)
@@ -200,3 +203,108 @@ def test_filled_renders_keep_every_circle():
     env = envelope(L, 2 * R, 2 * R)
     assert classify_drawn_circles([front, left], env) == ({}, [])
     assert len(features_from([front, left], env, {})[0]) == 1
+
+
+# ---- fix round 1 ------------------------------------------------------------------
+
+
+def cross_drilled_bar(px, d, section):
+    """A bar along x, 40 long and 20 high, drilled across (along z) through its middle with a Ø d hole. Seen from
+    the left it is round, or a flat bar 50 deep with fully rounded edges."""
+    front = page()
+    cv2.rectangle(front, (CX - 20 * px, CY - 10 * px), (CX + 20 * px, CY + 10 * px), INK, 2)
+    cv2.circle(front, (CX, CY), round(d * px / 2), INK, 2)
+    left = page()
+    if section == "round":
+        cv2.circle(left, (CX, CY), 10 * px, INK, 2)
+    else:
+        for x, start in ((CX - 15 * px, 90), (CX + 15 * px, -90)):
+            cv2.ellipse(left, (x, CY), (10 * px, 10 * px), 0, start, start + 180, INK, 2)
+        for y in (CY - 10 * px, CY + 10 * px):
+            cv2.line(left, (CX - 15 * px, y), (CX + 15 * px, y), INK, 2)
+    return front, left
+
+
+@pytest.mark.parametrize("px", [8, 10, 12, 16, 20])
+@pytest.mark.parametrize("d", [6, 8, 10, 12])
+@pytest.mark.parametrize("section", ["round", "rounded flat"])
+def test_a_cross_hole_is_not_explained_by_a_curved_silhouette(px, d, section):
+    """Every chord of a round silhouette is some width, centred on the axis: only a corner is a step or an end."""
+    front, left = (drawn(f, img) for f, img in zip(("front", "left"), cross_drilled_bar(px, d, section)))
+    assert len(front.outline.circles) == 1
+    edges, warnings = classify_drawn_circles([front, left], envelope(40, 20, 20 if section == "round" else 50))
+    assert edges == {}
+    assert warnings[0].endswith(" on front: read as a hole, no other view explains it")
+
+
+def small_cone(line):
+    """The cone at 4 px/mm, a 160 px view on a full page, drawn with thick lines."""
+    front, end = page(), page()
+    x0, x1 = CX - L * 2, CX + L * 2
+    pts = np.array([(x0, CY - r * 4), (x1, CY - R * 4), (x1, CY + R * 4), (x0, CY + r * 4)])
+    cv2.polylines(front, [pts], True, INK, line)
+    cv2.circle(end, (CX, CY), R * 4, INK, line)
+    cv2.circle(end, (CX, CY), r * 4, INK, line)
+    return front, end
+
+
+@pytest.mark.parametrize("line", [2, 3])
+def test_a_thick_line_does_not_widen_the_silhouette(line):
+    """A silhouette is measured to the outside of its line, a circle to the middle of its line."""
+    front, end = small_cone(line)
+    observed = MvPipeline().observe([ImageInput(png(front), "front", "drawing"), ImageInput(png(end), "left", "drawing")])
+    assert all(o.line_art for o in observed.observations)
+    edges, _ = classify_drawn_circles(observed.observations, envelope(L, 2 * R, 2 * R))
+    assert edges == {1: {0}}
+
+
+def test_the_input_mask_follows_the_verdict_on_every_fuse():
+    """The verdict does not move with the sizes, which scale both views of the shared axis alike, but it does
+    with the views: without the side view the small end's circle is a hole again, and the mask shows it."""
+    pipe = MvPipeline()
+    observed = pipe.observe([ImageInput(png(cone_front()), "front", "drawing"),
+                             ImageInput(png(end_view()), "left", "drawing")])
+    sizes = {"envelope.x_mm": L, "envelope.y_mm": 2 * R, "envelope.z_mm": 2 * R}
+    left = observed.observations[1]
+    assert pipe.fuse(observed, sizes).features == []
+    assert (observed.masks["left"] == input_mask(left.outline, {0})).all()
+    observed.observations = [left]
+    assert len(pipe.fuse(observed, sizes).features) == 1
+    assert (observed.masks["left"] == input_mask(left.outline)).all()
+
+
+def test_the_warning_gives_the_diameter_the_hole_gets():
+    front = drawn("front", bracket_front())
+    front.values = [Linked(Reading(8.5, "diameter", (0, 0, 1, 1), 0.9, "Ø8.5"), None, 0)]
+    env = envelope(60, 50, 30)
+    _, warnings = classify_drawn_circles([front], env)
+    feats, prov = features_from([front], env)
+    assert feats[0]["diameter_mm"] == 8.5 and prov["features[0].diameter_mm"] == "user_written"
+    assert warnings == ["Circle Ø8.5 on front: read as a hole, no other view explains it"]
+
+
+def test_complete_turned_leaves_two_given_side_views_alone():
+    env = envelope(40, 10, 40)
+    given = {"top": S.Outline(outer=circle(20, 20, 20), source="observed", confidence=0.9),
+             "front": S.Outline(outer=rect(40, 10), source="observed", confidence=0.9),
+             "right": S.Outline(outer=rect(40, 10), source="observed", confidence=0.9)}
+    assert complete_turned(given, env) == (given, [])
+
+
+def test_complete_turned_needs_a_round_view():
+    env = envelope(40, 10, 40)
+    given = {"top": S.Outline(outer=rect(40, 40), source="observed", confidence=0.9),
+             "front": S.Outline(outer=rect(40, 10), source="observed", confidence=0.9)}
+    assert complete_turned(given, env) == (given, [])
+
+
+def test_a_drawing_with_a_filled_view_gets_no_copied_side_view():
+    filled = page()
+    cv2.circle(filled, (CX, CY), R * PX, GREY, -1)
+    pipe = MvPipeline()
+    observed = pipe.observe([ImageInput(png(cone_front()), "front", "drawing"),
+                             ImageInput(png(filled), "left", "drawing")])
+    assert [o.line_art for o in observed.observations] == [True, False]
+    spec = pipe.fuse(observed, {"envelope.x_mm": L, "envelope.y_mm": 2 * R, "envelope.z_mm": 2 * R})
+    assert spec.views.top.source == "assumed"
+    assert not [w for w in spec.warnings if "copied" in w]
