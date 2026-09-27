@@ -46,7 +46,7 @@ def qwen_batch_reader(chat: Chat) -> BatchReader:
         for _ in range(2):
             try:
                 raw = chat(messages)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - a failed provider falls back, never breaks the request
                 log.warning("Qwen-VL read failed: %s", e)
                 return None
             try:
