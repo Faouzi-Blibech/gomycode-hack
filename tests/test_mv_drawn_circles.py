@@ -1,0 +1,187 @@
+import math
+import re
+
+import cv2
+import numpy as np
+import pytest
+
+from s2c.multiview import spec as S
+from s2c.multiview.build import build, volume
+from s2c.multiview.fuse import Observation, classify_drawn_circles, features_from
+from s2c.multiview.outline import extract
+from s2c.multiview.pipeline import ImageInput, MvPipeline
+from tests.test_mv_line_art import CHAIN, HIDDEN, centre_cross, page, pattern_line, png
+
+INK = (0, 0, 0)
+GREY = (128, 128, 128)
+PX = 15                  # px per mm in every drawn view
+R, r, L = 20, 10, 30     # the cone along x: large radius, small radius, length (mm)
+CX, CY = 800, 600        # every view is drawn around the page centre
+
+
+def drawn(face, img):
+    return Observation(face=face, kind="drawing", outline=extract(img, drawing=True))
+
+
+def envelope(x, y, z):
+    return S.Envelope(x_mm=x, y_mm=y, z_mm=z)
+
+
+def diameter(warning):
+    return float(re.match(r"Circle Ø([\d.]+) on ", warning).group(1))
+
+
+def end_view():
+    """Two concentric circles with a centre cross: a cone seen from its small end, or a washer."""
+    img = page()
+    cv2.circle(img, (CX, CY), R * PX, INK, 2)
+    cv2.circle(img, (CX, CY), r * PX, INK, 2)
+    centre_cross(img, CX, CY, R * PX, beyond=40)
+    return img
+
+
+def cone_front():
+    """The cone lying along x, small end on the left (it faces the left view), with its centre line."""
+    img = page()
+    x0, x1 = CX - L * PX // 2, CX + L * PX // 2
+    pts = np.array([(x0, CY - r * PX), (x1, CY - R * PX), (x1, CY + R * PX), (x0, CY + r * PX)])
+    cv2.polylines(img, [pts], True, INK, 2)
+    pattern_line(img, (x0 - 40, CY), (x1 + 40, CY), CHAIN)
+    return img
+
+
+def washer_front(thick=6):
+    img = page()
+    x0, x1 = CX - thick * PX // 2, CX + thick * PX // 2
+    cv2.rectangle(img, (x0, CY - R * PX), (x1, CY + R * PX), INK, 2)
+    pattern_line(img, (x0 - 40, CY), (x1 + 40, CY), CHAIN)
+    return img
+
+
+def test_the_small_end_of_a_cone_is_an_edge():
+    front, left = drawn("front", cone_front()), drawn("left", end_view())
+    assert front.line_art and left.line_art
+    assert left.outline.circular and len(left.outline.circles) == 1  # the outer circle is the outline
+    env = envelope(L, 2 * R, 2 * R)
+    edges, warnings = classify_drawn_circles([front, left], env)
+    assert edges == {1: {0}}
+    assert len(warnings) == 1 and warnings[0].endswith(" on left: read as an edge (step in front)")
+    assert diameter(warnings[0]) == pytest.approx(2 * r, abs=0.5)
+    assert features_from([front, left], env, edges)[0] == []
+
+
+def test_a_washer_bore_is_a_hole():
+    front, left = drawn("front", washer_front()), drawn("left", end_view())
+    env = envelope(6, 2 * R, 2 * R)
+    edges, warnings = classify_drawn_circles([front, left], env)
+    assert edges == {}
+    assert len(warnings) == 1 and warnings[0].endswith(" on left: read as a hole, no other view explains it")
+    feats, _ = features_from([front, left], env, edges)
+    assert len(feats) == 1 and feats[0]["face"] == "left"
+    assert feats[0]["diameter_mm"] == pytest.approx(2 * r, rel=0.05)
+
+
+def plate_front():
+    """A 60 x 40 plate with a Ø8 circle at (20, 24) mm."""
+    img = page()
+    cv2.rectangle(img, (350, 300), (1250, 900), INK, 2)
+    cv2.circle(img, (350 + 20 * PX, 900 - 24 * PX), 4 * PX, INK, 2)
+    centre_cross(img, 350 + 20 * PX, 900 - 24 * PX, 4 * PX)
+    return img
+
+
+def plate_top():
+    """The plate from above, 60 x 10, with the hole's sides dashed at x = 20 -/+ 4 mm."""
+    img = page()
+    cv2.rectangle(img, (350, 525), (1250, 675), INK, 2)
+    for x in (16, 24):
+        pattern_line(img, (350 + x * PX, 525), (350 + x * PX, 675), HIDDEN)
+    return img
+
+
+def plate_right():
+    """The plate from the right, 10 x 40, with the hole's sides dashed at y = 24 -/+ 4 mm: lines across the view,
+    placed off-centre so a flipped height would miss them."""
+    img = page()
+    cv2.rectangle(img, (725, 300), (875, 900), INK, 2)
+    for y in (20, 28):
+        pattern_line(img, (725, 900 - y * PX), (875, 900 - y * PX), HIDDEN)
+    return img
+
+
+@pytest.mark.parametrize("face, view", [("top", plate_top), ("right", plate_right)])
+def test_hidden_lines_make_a_hole(face, view):
+    front, side = drawn("front", plate_front()), drawn(face, view())
+    assert len(front.outline.circles) == 1 and len(side.hidden) == 2
+    env = envelope(60, 40, 10)
+    assert classify_drawn_circles([front, side], env) == ({}, [])
+    feats, _ = features_from([front, side], env, {})
+    assert len(feats) == 1 and feats[0]["diameter_mm"] == pytest.approx(8, rel=0.05)
+
+
+def bracket_front():
+    """A 60 wide base, 8 high, and an upright lug 20 wide whose top is rounded about (30, 40) mm, with a Ø8 hole
+    there. 50 mm high overall."""
+    img = page()
+    base, x0 = 975, 350
+
+    def px(a, b):
+        return (round(x0 + a * PX), round(base - b * PX))
+
+    arc = [px(30 + 10 * math.cos(t), 40 + 10 * math.sin(t)) for t in np.linspace(0, math.pi, 60)]
+    pts = [px(0, 0), px(60, 0), px(60, 8), px(40, 8), *arc, px(20, 8), px(0, 8)]
+    cv2.polylines(img, [np.array(pts)], True, INK, 2)
+    cv2.circle(img, px(30, 40), 4 * PX, INK, 2)
+    centre_cross(img, *px(30, 40), 4 * PX)
+    return img
+
+
+def test_a_lug_hole_without_hidden_lines_is_a_hole():
+    plain = page()
+    cv2.rectangle(plain, (350, 375), (1250, 825), INK, 2)  # 60 x 30, nothing inside
+    front, top = drawn("front", bracket_front()), drawn("top", plain)
+    assert len(front.outline.circles) == 1 and top.hidden == []
+    env = envelope(60, 50, 30)
+    edges, warnings = classify_drawn_circles([front, top], env)
+    assert edges == {}
+    assert len(warnings) == 1 and warnings[0].endswith(" on front: read as a hole, no other view explains it")
+    assert diameter(warnings[0]) == pytest.approx(8, abs=0.5)
+    assert len(features_from([front, top], env, edges)[0]) == 1
+
+
+def test_a_two_view_cone_builds_as_a_cone(tmp_path):
+    pipe = MvPipeline()
+    observed = pipe.observe([ImageInput(png(cone_front()), "front", "drawing"),
+                             ImageInput(png(end_view()), "left", "drawing")])
+    spec = pipe.fuse(observed, {"envelope.x_mm": L, "envelope.y_mm": 2 * R, "envelope.z_mm": 2 * R})
+    assert isinstance(spec, S.MultiViewSpec)
+    assert spec.features == []
+    assert spec.views.top.source == "inferred" and spec.provenance["views.top.outer"] == "inferred"
+    frustum = math.pi * L * (R ** 2 + R * r + r ** 2) / 3
+    assert volume(build(spec)) == pytest.approx(frustum, rel=0.03)
+    result = pipe.build(spec, tmp_path, observed.masks)
+    assert result.step.exists() and result.iou["left"] > 0.85  # the small end's circle is no hole in the input
+
+
+def filled_cone_front():
+    img = page()
+    x0, x1 = CX - L * PX // 2, CX + L * PX // 2
+    pts = np.array([(x0, CY - r * PX), (x1, CY - R * PX), (x1, CY + R * PX), (x0, CY + r * PX)])
+    cv2.fillPoly(img, [pts], GREY)
+    return img
+
+
+def filled_end_view():
+    img = page()
+    cv2.circle(img, (CX, CY), R * PX, GREY, -1)
+    cv2.circle(img, (CX, CY), r * PX, (255, 255, 255), -1)
+    return img
+
+
+def test_filled_renders_keep_every_circle():
+    """The same outlines as the cone, rendered filled: the see-through circle is a hole, as before line art."""
+    front, left = drawn("front", filled_cone_front()), drawn("left", filled_end_view())
+    assert not front.line_art and not left.line_art and len(left.outline.circles) == 1
+    env = envelope(L, 2 * R, 2 * R)
+    assert classify_drawn_circles([front, left], env) == ({}, [])
+    assert len(features_from([front, left], env, {})[0]) == 1

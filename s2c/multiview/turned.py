@@ -10,9 +10,10 @@ import cadquery as cq
 import numpy as np
 
 from s2c.multiview.build import _clean
-from s2c.multiview.spec import MultiViewSpec, to_global
+from s2c.multiview.spec import Envelope, MultiViewSpec, Outline, to_global
 
 WARNING = "Built as a turned part around the {axis} axis: its view along that axis is round and both side views match"
+COPIED = "{face} view copied from the {side} view: the {view} view is round, so the part is turned"
 
 # axis -> (view along the axis, ((side view, its radial axis), ...)), in the order the axes are tried
 SIDES = {
@@ -61,14 +62,24 @@ def _halves(spec: MultiViewSpec, axis: str, hs: np.ndarray) -> np.ndarray:
     return np.clip(np.array(rows), 0.0, None)
 
 
-def _reach(spec: MultiViewSpec, axis: str) -> tuple[float, float]:
-    """How far the view along the axis reaches from the centre line, and R: half the larger length across it."""
-    env = spec.envelope
+def _reach(outer, env: Envelope, axis: str) -> tuple[float, float]:
+    """How far the view along the axis (its outer points) reaches from the centre line, and R: half the larger
+    length across it."""
     view, sides = SIDES[axis]
     u, v = (rad for _, rad in sides)
     lu, lv = env.length(u), env.length(v)
-    g = [to_global(view, a, b, env) for a, b in getattr(spec.views, view).outer]
+    g = [to_global(view, a, b, env) for a, b in outer]
     return max(math.hypot(p[u] - lu / 2, p[v] - lv / 2) for p in g), max(lu, lv) / 2
+
+
+def _round(outer, env: Envelope, axis: str) -> bool:
+    """Conditions 1-2 of a turned part: the two lengths across the axis match, and the view along it (its outer
+    points) reaches no further than a circle."""
+    lu, lv = (env.length(rad) for _, rad in SIDES[axis][1])
+    if abs(lu - lv) > LENGTH_TOL * max(lu, lv):
+        return False
+    reach, r_max = _reach(outer, env, axis)
+    return reach <= ROUND_TOL * r_max + ROUND_SLACK_MM
 
 
 def turned_axis(spec: MultiViewSpec) -> str | None:
@@ -78,12 +89,9 @@ def turned_axis(spec: MultiViewSpec) -> str | None:
     for axis, (view, sides) in SIDES.items():
         if all(getattr(spec.views, face).source == "assumed" for face, _ in sides):
             continue  # assumed side views are rectangles: the hull is already a cylinder and nothing was matched
-        lu, lv = (env.length(rad) for _, rad in sides)
-        if abs(lu - lv) > LENGTH_TOL * max(lu, lv):
+        if not _round(getattr(spec.views, view).outer, env, axis):
             continue
-        reach, r_max = _reach(spec, axis)
-        if reach > ROUND_TOL * r_max + ROUND_SLACK_MM:
-            continue
+        r_max = max(env.length(rad) for _, rad in sides) / 2
         hs = np.linspace(0.0, env.length(axis), SAMPLES + 2)[1:-1]
         halves = _halves(spec, axis, hs)
         if halves.max(axis=0).min() < NECK_TOL * r_max:
@@ -154,7 +162,7 @@ def profile(spec: MultiViewSpec, axis: str) -> list[tuple[float, float]]:
                                                for a, b in getattr(spec.views, face).outer}))
     hs = np.sort(np.concatenate([heights - EPS_MM, heights + EPS_MM]))
     hs = hs[(hs > 0) & (hs < length)]
-    reach, r_max = _reach(spec, axis)
+    reach, r_max = _reach(getattr(spec.views, SIDES[axis][0]).outer, env, axis)
     r = _halves(spec, axis, hs).max(axis=0) * max(1.0, reach / r_max)
     for end in (hs < END_BAND * length, hs > (1 - END_BAND) * length):
         if end.any():
@@ -163,6 +171,44 @@ def profile(spec: MultiViewSpec, axis: str) -> list[tuple[float, float]]:
     lo, hi = -MARGIN * length, length + MARGIN * length
     pts = np.array([(0.0, lo), (r[0], lo), *zip(r, hs), (r[-1], hi), (0.0, hi)])
     return _square_up(_simplify(pts, SIMPLIFY * r_max), SNAP * r_max, SNAP * length)
+
+
+def _canonical_point(face: str, g: dict[str, float], env: Envelope) -> tuple[float, float]:
+    """spec.to_global undone, for a canonical face."""
+    if face == "front":
+        return g["x"], g["y"]
+    if face == "top":
+        return g["x"], env.z_mm - g["z"]
+    return env.z_mm - g["z"], g["y"]
+
+
+def _quarter_turn(seen: Outline, side: tuple[str, str], other: tuple[str, str], axis: str, env: Envelope) -> Outline:
+    """A side view (face, radial axis) turned a quarter about the axis onto the other one; the radial length
+    is the other's envelope length."""
+    (face, rad), (to, to_rad) = side, other
+    scale = env.length(to_rad) / env.length(rad)
+
+    def turn(points):
+        return [_canonical_point(to, {axis: g[axis], to_rad: g[rad] * scale}, env)
+                for g in (to_global(face, a, b, env) for a, b in points)]
+
+    return Outline(outer=turn(seen.outer), inner=[turn(loop) for loop in seen.inner], source="inferred",
+                   confidence=seen.confidence)
+
+
+def complete_turned(outlines: dict[str, Outline], env: Envelope) -> tuple[dict[str, Outline], list[str]]:
+    """Drawing-sheet spec 3.5: a round view with only one of its two side views given is a turned part, so the
+    other side view is that one, turned a quarter about the axis. Run before completion, so the turned build sees
+    two matching side views instead of an assumed rectangle."""
+    out, warnings = dict(outlines), []
+    for axis, (view, sides) in SIDES.items():
+        given = [s for s in sides if s[0] in out]
+        if view not in out or len(given) != 1 or not _round(out[view].outer, env, axis):
+            continue
+        other = next(s for s in sides if s[0] not in out)
+        out[other[0]] = _quarter_turn(out[given[0][0]], given[0], other, axis, env)
+        warnings.append(COPIED.format(face=other[0], side=given[0][0], view=view))
+    return out, warnings
 
 
 def revolve(spec: MultiViewSpec, axis: str) -> cq.Workplane:

@@ -22,6 +22,7 @@ from s2c.multiview.fuse import (
     assemble,
     attach_label,
     canonical_outlines,
+    classify_drawn_circles,
     features_from,
     fuse_envelope,
     outline_kinds,
@@ -38,7 +39,7 @@ from s2c.multiview.reference import find_reference
 from s2c.multiview.settings import AiSettings, GeometrySettings
 from s2c.multiview.slice import slice_solid
 from s2c.multiview.turned import WARNING as TURNED_WARNING
-from s2c.multiview.turned import turned_axis
+from s2c.multiview.turned import complete_turned, turned_axis
 
 log = logging.getLogger(__name__)
 IOU_GREEN = 0.85
@@ -77,11 +78,12 @@ class BuildResult:
     warnings: list[str]
 
 
-def input_mask(outline: PixelOutline) -> np.ndarray:
-    """The input silhouette of one image: outer outline filled, openings and circles cut out, normalised."""
+def input_mask(outline: PixelOutline, edges=()) -> np.ndarray:
+    """The input silhouette of one image: outer outline filled, openings and circles cut out, normalised.
+    Circles read as edges (their indices in `edges`) are not holes, so they stay filled."""
     holes = list(outline.inner)
     holes += [cv2.ellipse2Poly((round(c.cx), round(c.cy)), (round(c.d / 2), round(c.d / 2)), 0, 0, 360, 5)
-              for c in outline.circles]
+              for i, c in enumerate(outline.circles) if i not in edges]
     return normalize_mask(polygon_mask(outline.outer, holes, outline.shape))
 
 
@@ -204,6 +206,15 @@ class MvPipeline:
         env, env_prov, warnings = env_result
         outlines, more = canonical_outlines(observed.observations, env)
         warnings = observed.warnings + warnings + more
+        if all(o.line_art for o in observed.observations):  # drawing-sheet spec 3.5, for line drawings only
+            turned_views, more = complete_turned({f: ol for f, (ol, _) in outlines.items()}, env)
+            outlines.update({f: (ol, "inferred") for f, ol in turned_views.items() if f not in outlines})
+            warnings += more
+        edges, more = classify_drawn_circles(observed.observations, env)
+        warnings += more
+        for k, skip in edges.items():
+            o = observed.observations[k]
+            observed.masks[o.face] = input_mask(o.outline, skip)
         best = max(range(len(observed.observations)), key=lambda i: observed.observations[i].confidence)
         target = observed.observations[best]
         image = observed.images[best] if best < len(observed.images) else None  # None once routes dropped them
@@ -218,7 +229,7 @@ class MvPipeline:
         warnings += more
         with_prov = {f: (ol, outlines[f][1] if f in outlines else ("inferred" if ol.source == "inferred" else "default"))
                      for f, ol in full.items()}
-        feats, feat_prov = features_from(observed.observations, env)
+        feats, feat_prov = features_from(observed.observations, env, edges)
         try:
             spec = assemble(env, env_prov, with_prov, feats, feat_prov, warnings, user_values, accepted,
                             snap_values=geometry.snap, clearance=geometry.clearance,

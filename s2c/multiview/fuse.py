@@ -11,6 +11,7 @@ from s2c.multiview import spec as S
 from s2c.multiview.ocr import Linked, Reading
 from s2c.multiview.outline import PixelOutline, to_face_mm
 from s2c.multiview.raster import iou, outline_mask
+from s2c.multiview.turned import _extents
 
 CLEARANCE_CLASSES = {  # ISO 273 clearance holes for M2, M2.5, M3, M4, M5, M6, M8, M10
     "fine": (2.2, 2.7, 3.2, 4.3, 5.3, 6.4, 8.4, 10.5),
@@ -201,15 +202,19 @@ def _duplicate_through(feats: list[dict], face: str, a: float, b: float, env: S.
     return False
 
 
-def features_from(observations: list[Observation], env: S.Envelope):
-    """Every circle becomes a hole on its own face; a through hole seen from both sides is kept once."""
+def features_from(observations: list[Observation], env: S.Envelope, edges: dict[int, set[int]] | None = None):
+    """Every circle becomes a hole on its own face, except those `edges` (observation index -> circle indices, from
+    classify_drawn_circles) reads as edges; a through hole seen from both sides is kept once."""
     feats: list[dict] = []
     prov: dict[str, str] = {}
-    for o in observations:
+    edges = edges or {}
+    for k_obs, o in enumerate(observations):
         sa, sb = _scales(o, env)
         written = {lv.hole_index: _value(lv.reading) for lv in o.values if lv.hole_index is not None}
         axis_len = env.length(S.FACE_AXES[o.face][2])
         for i, c in enumerate(o.outline.circles):
+            if i in edges.get(k_obs, ()):
+                continue
             (a, b), = to_face_mm(np.array([[c.cx, c.cy]]), o.outline.bbox, sa, sb)
             if i in written:
                 d, d_prov = written[i], "user_written"
@@ -233,6 +238,89 @@ def features_from(observations: list[Observation], env: S.Envelope):
             if depth is not None:
                 prov[f"features[{k}].depth_mm"] = depth_prov
     return feats, prov
+
+
+# ---- drawn circles: holes or edges (drawing-sheet spec 3.4) ---------------------
+
+HIDDEN_TOL = 0.03  # a hidden line lies this close to a circle's side, as a share of the view
+EDGE_TOL = 0.04    # a silhouette as wide as a circle, within this share of its diameter, explains it
+STATION = 1e-3     # widths are read this share of the length either side of each outline vertex
+
+
+def _hidden_along(g: Observation, s: str, look: str, env: S.Envelope) -> list[float]:
+    """Where g's hidden lines that run along `look` lie on axis s, in mm. Their positions are fractions of g's
+    bbox from its left and top edges, as drawn."""
+    a_axis, b_axis, _ = S.FACE_AXES[g.face]
+    a_len, b_len = S.face_size(g.face, env)
+    out = []
+    for kind, pos, _, _ in g.hidden:
+        if kind == "h":  # runs along a; pos runs down from the bbox top, b runs up
+            run, across, a, b = a_axis, b_axis, 0.0, (1 - pos) * b_len
+        else:
+            run, across, a, b = b_axis, a_axis, pos * a_len, 0.0
+        if run == look and across == s:
+            out.append(S.to_global(g.face, a, b, env)[s])
+    return out
+
+
+def _widths(g: Observation, s: str, look: str, env: S.Envelope) -> list[tuple[float, float]]:
+    """The extent on axis s of g's outer silhouette just either side of each outline vertex along `look`: a step,
+    a shoulder or a taper end, never the middle of a taper."""
+    sa, sb = _scales(g, env)
+    pts = [S.to_global(g.face, a, b, env) for a, b in to_face_mm(g.outline.outer, g.outline.bbox, sa, sb)]
+    poly = np.array([(p[look], p[s]) for p in pts])
+    length = env.length(look)
+    hs = np.unique(np.concatenate([poly[:, 0] - STATION * length, poly[:, 0] + STATION * length]))
+    lo, hi = _extents(poly, hs[(hs > 0) & (hs < length)])
+    return [(float(a), float(b)) for a, b in zip(lo, hi) if np.isfinite(a) and np.isfinite(b)]
+
+
+def _verdict(o: Observation, i: int, others: list[Observation], env: S.Envelope) -> tuple[str, str | None]:
+    """("hole" | "edge", the view that decided it, or None when no view explains the circle)."""
+    c = o.outline.circles[i]
+    sa, sb = _scales(o, env)
+    a_axis, b_axis, look = S.FACE_AXES[o.face]
+    (a, b), = to_face_mm(np.array([[c.cx, c.cy]]), o.outline.bbox, sa, sb)
+    at = S.to_global(o.face, a, b, env)
+    pairs = []  # (view, the axis it shares with o, the circle's diameter along that axis)
+    for g in others:
+        s = next(ax for ax in (a_axis, b_axis) if ax in S.FACE_AXES[g.face][:2])
+        pairs.append((g, s, c.d * (sa if s == a_axis else sb)))
+    for g, s, d in pairs:
+        tol = HIDDEN_TOL * env.length(s)
+        qs = _hidden_along(g, s, look, env)
+        low = {k for k, q in enumerate(qs) if abs(q - (at[s] - d / 2)) <= tol}
+        high = {k for k, q in enumerate(qs) if abs(q - (at[s] + d / 2)) <= tol}
+        if low and high and len(low | high) >= 2:
+            return "hole", g.face
+    for g, s, d in pairs:
+        if any(abs(hi - lo - d) <= EDGE_TOL * d and abs((hi + lo) / 2 - at[s]) <= EDGE_TOL * d
+               for lo, hi in _widths(g, s, look, env)):
+            return "edge", g.face
+    return "hole", None
+
+
+def classify_drawn_circles(observations: list[Observation], env: S.Envelope) -> tuple[dict[int, set[int]], list[str]]:
+    """Drawing-sheet spec 3.4: which circles of a line drawing are edges, as observation index -> circle indices,
+    and the warnings. A circle is a hole when another line-art view draws its sides hidden, an edge when another
+    view's silhouette is that wide there, and otherwise a hole: a visible circle must be some edge. Filled renders
+    and sketches keep every circle."""
+    edges: dict[int, set[int]] = {}
+    warnings = []
+    for k, o in enumerate(observations):
+        if not o.line_art:
+            continue
+        others = [g for g in observations if g.line_art and S.CANONICAL_OF[g.face] != S.CANONICAL_OF[o.face]]
+        sa, sb = _scales(o, env)
+        for i, c in enumerate(o.outline.circles):
+            kind, by = _verdict(o, i, others, env)
+            name = f"Circle Ø{round(c.d * (sa + sb) / 2, 1):g} on {o.face}"
+            if kind == "edge":
+                edges.setdefault(k, set()).add(i)
+                warnings.append(f"{name}: read as an edge (step in {by})")
+            elif by is None:
+                warnings.append(f"{name}: read as a hole, no other view explains it")
+    return edges, warnings
 
 
 # ---- snapping -----------------------------------------------------------------
