@@ -1,8 +1,8 @@
 import { createContext, useCallback, useContext, useMemo, useReducer, useRef, type Dispatch, type ReactNode } from 'react';
-import type { AiSettings, Analysis, Face, GeometrySettings, Job, ModelResult, Spec } from '../api/types';
+import type { AiSettings, Analysis, ChatMessage, ChatResponse, Face, GeometrySettings, Job, ModelResult, Spec } from '../api/types';
 import { resetDeadline } from '../lib/deadline';
 
-export type Screen = 'capture' | 'analyzing' | 'review' | 'model';
+export type Screen = 'capture' | 'describe' | 'analyzing' | 'review' | 'model';
 export type CaptureKind = 'auto' | 'sketch' | 'photo' | 'drawing';
 export interface CaptureItem { id: string; file: File; url: string; face: Face | 'auto'; kind: CaptureKind }
 /** The images a job was started with, in upload order: job.images[i] is jobItems[i] even after Capture changes. */
@@ -25,6 +25,8 @@ export interface State {
   model: ModelResult | null;
   /** The spec `model` was built from, so the Model screen can rebuild when the analysis changes. */
   modelSpec: Spec | null;
+  /** The Describe chat, oldest first. */
+  chat: { messages: ChatMessage[]; last: ChatResponse | null };
 }
 
 export type Action =
@@ -41,6 +43,7 @@ export type Action =
   | { type: 'TOGGLE_REJECT'; face: Face }
   | { type: 'SET_GEOMETRY'; patch: Partial<GeometrySettings> }
   | { type: 'MODEL'; model: ModelResult | null; spec?: Spec | null }
+  | { type: 'CHAT'; messages: ChatMessage[]; last?: ChatResponse | null }
   | { type: 'GOTO'; screen: Screen }
   | { type: 'RESET' };
 
@@ -57,7 +60,7 @@ export const initialGeometry: GeometrySettings = {
 
 export const initialState: State = {
   screen: 'capture', items: [], reference: '', ai: initialAi, jobId: null, jobItems: [], jobError: null, job: null, analysis: null,
-  typed: {}, rejected: [], geometry: initialGeometry, model: null, modelSpec: null,
+  typed: {}, rejected: [], geometry: initialGeometry, model: null, modelSpec: null, chat: { messages: [], last: null },
 };
 
 let seq = 0;
@@ -89,6 +92,10 @@ export function reducer(state: State, action: Action): State {
     case 'JOB_LOST':
       return { ...state, jobError: action.error };
     case 'ANALYSIS':
+      // A part described in the chat has no job: it replaces whatever the photos produced.
+      if (action.analysis.request_id === '') {
+        return { ...state, analysis: action.analysis, jobId: null, job: null, jobItems: [], jobError: null, typed: {}, rejected: [] };
+      }
       // A late response for an older job (or a merge that outlived its job) must not replace the current one.
       return action.analysis.request_id === state.jobId ? { ...state, analysis: action.analysis } : state;
     case 'TYPE_VALUE':
@@ -102,6 +109,8 @@ export function reducer(state: State, action: Action): State {
       return { ...state, geometry: { ...state.geometry, ...action.patch } };
     case 'MODEL':
       return { ...state, model: action.model, modelSpec: action.model ? action.spec ?? null : null };
+    case 'CHAT':
+      return { ...state, chat: { messages: action.messages, last: action.last === undefined ? state.chat.last : action.last } };
     case 'GOTO':
       return { ...state, screen: action.screen };
     case 'RESET':

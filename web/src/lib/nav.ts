@@ -23,6 +23,11 @@ export function buildNav(state: State): NavItem[] {
     subC: screen === 'analyzing' && jobId ? (failed ? 'var(--stop)' : 'var(--accent-ink)') : null,
     spinning: running,
   };
+  // The Describe chat takes Capture's slot: it is the other way to start a part.
+  const described = analysis?.request_id === '' && !inCapture;
+  const first: NavItem = screen === 'describe' || described
+    ? { num: '01', label: 'Describe', screen: 'describe', st: screen === 'describe' ? 'current' : 'done', sub: 'Chat with the AI', subC: null, spinning: false }
+    : capture;
   const review: NavItem = {
     num: '02', label: 'Review', screen: 'review',
     st: !analysis ? 'locked' : screen === 'review' ? 'current' : screen === 'model' ? 'done' : 'open',
@@ -35,5 +40,5 @@ export function buildNav(state: State): NavItem[] {
     st: !modelOpen ? 'locked' : screen === 'model' ? 'current' : 'open',
     sub: !modelOpen ? (spec && !stop ? 'Build to open' : 'After review') : model ? 'Built' : 'Building…',
   };
-  return [capture, review, modelItem];
+  return [first, review, modelItem];
 }

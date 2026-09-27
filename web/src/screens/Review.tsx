@@ -131,7 +131,7 @@ export function Review() {
   const { analysis, job, jobItems, typed, rejected, geometry } = state;
   const spec = analysis?.spec ?? null;
   const abstain = analysis?.abstain ?? null;
-  const requestId = analysis?.request_id ?? null;
+  const requestId = analysis?.request_id || null;
 
   const [open, setOpen] = useState<string | null>(null);
   const [hwOpen, setHwOpen] = useState(true);

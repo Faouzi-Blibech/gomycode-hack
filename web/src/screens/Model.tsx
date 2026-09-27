@@ -83,8 +83,8 @@ export function Model() {
   const timer = useRef<number | undefined>(undefined);
   const rbTimer = useRef<number | undefined>(undefined);
   const exportSeq = useRef(0); // bumped whenever the geometry or spec changes: an older export is dropped
-  const live = useRef({ requestId: state.analysis?.request_id ?? null, spec });
-  live.current = { requestId: state.analysis?.request_id ?? null, spec };
+  const live = useRef({ requestId: state.analysis?.request_id || null, spec });
+  live.current = { requestId: state.analysis?.request_id || null, spec };
 
   const runBuild = useCallback(async (geometry: GeometrySettings, flash: boolean) => {
     const s = live.current.spec;

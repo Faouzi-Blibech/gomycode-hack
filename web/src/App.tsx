@@ -3,6 +3,7 @@ import { Shell } from './components/Shell';
 import { buildNav } from './lib/nav';
 import { Analyzing } from './screens/Analyzing';
 import { Capture } from './screens/Capture';
+import { Describe } from './screens/Describe';
 import { Review } from './screens/Review';
 import { useStore, type Screen } from './state/store';
 
@@ -29,6 +30,7 @@ export function App() {
   return (
     <Shell nav={buildNav(state)} onNav={onNav}>
       {state.screen === 'capture' && <Capture />}
+      {state.screen === 'describe' && <Describe />}
       {state.screen === 'analyzing' && <Analyzing />}
       {state.screen === 'review' && <Review />}
       {state.screen === 'model' && <Suspense fallback={<Loading />}><Model /></Suspense>}
