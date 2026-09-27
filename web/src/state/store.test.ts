@@ -1,0 +1,33 @@
+import { describe, expect, it } from 'vitest';
+import type { Analysis, ModelResult, Spec } from '../api/types';
+import { initialState, reducer, type CaptureItem, type State } from './store';
+
+const item = (id: string, face: CaptureItem['face'] = 'front'): CaptureItem =>
+  ({ id, file: new Blob() as File, url: `blob:${id}`, face, kind: 'sketch' });
+const analysis = (request_id: string): Analysis => ({ request_id, spec: null, abstain: null, filled_by: {} });
+
+describe('store', () => {
+  it('freezes the images a job was started with', () => {
+    let s: State = { ...initialState, items: [item('a'), item('b', 'top')] };
+    s = reducer(s, { type: 'START_JOB', jobId: 'j1' });
+    expect(s.jobItems).toEqual([{ url: 'blob:a', face: 'front', kind: 'sketch' }, { url: 'blob:b', face: 'top', kind: 'sketch' }]);
+    s = reducer(s, { type: 'REMOVE_ITEM', id: 'a' });
+    expect(s.jobItems[0].url).toBe('blob:a');
+  });
+
+  it('ignores an analysis for another job', () => {
+    let s = reducer({ ...initialState, items: [item('a')] }, { type: 'START_JOB', jobId: 'j2' });
+    s = reducer(s, { type: 'ANALYSIS', analysis: analysis('j1') });
+    expect(s.analysis).toBeNull();
+    s = reducer(s, { type: 'ANALYSIS', analysis: analysis('j2') });
+    expect(s.analysis?.request_id).toBe('j2');
+  });
+
+  it('remembers the spec a model was built from', () => {
+    const spec = { version: 'mv1' } as Spec;
+    const model = { key: 'k' } as ModelResult;
+    const s = reducer(initialState, { type: 'MODEL', model, spec });
+    expect(s.modelSpec).toBe(spec);
+    expect(reducer(s, { type: 'MODEL', model: null }).modelSpec).toBeNull();
+  });
+});

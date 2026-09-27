@@ -150,7 +150,8 @@ def fuse_envelope(observations: list[Observation], user_values: dict | None = No
             stage="dimensions", reason=f"missing_{first}", remedy=remedy,
             partial={"known": {f"envelope.{a}_mm": v for a, v in values.items()},
                      "missing": [f"envelope.{a}_mm" for a in missing],
-                     "suggested": suggested})
+                     "suggested": suggested,
+                     "provenance": {f"envelope.{a}_mm": prov[f"envelope.{a}_mm"] for a in values}})
     return S.Envelope(x_mm=values["x"], y_mm=values["y"], z_mm=values["z"]), prov, warnings
 
 
