@@ -6,6 +6,7 @@ import copy
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -269,13 +270,28 @@ class MvPipeline:
                            views, scores, warnings)
 
 
+def _warm_readers(reader: object | None, read_chat: Chat | None) -> None:
+    """TrOCR first, then Qwen: Ollama only sees TrOCR's GPU share once it has actually claimed it, so it
+    can decide how many layers to keep on the GPU with that share already gone."""
+    if reader is not None:
+        warm = getattr(reader, "warm", None)
+        if warm is not None:
+            t0 = time.perf_counter()
+            try:
+                warm()
+                log.info("reader %s ready in %.1f s", reader.name, time.perf_counter() - t0)
+            except Exception as e:  # noqa: BLE001 - a failed warm-up only means a slower first read
+                log.warning("reader %s warm-up failed: %s", reader.name, e)
+    if read_chat is not None:
+        qwen_reader.warm_chat(read_chat)
+
+
 def default_pipeline() -> MvPipeline:
     """Qwen-VL, Qwen-Image and Solaria from the environment; TrOCR and TripoSR when the ai extra is installed."""
     reader = provider = None
     try:
         from s2c.reading.trocr import TrocrReader
         reader = TrocrReader()
-        ReadingService([reader]).warm()  # loads the model in the background; the first request does not wait
     except Exception as e:  # transformers missing
         log.warning("TrOCR unavailable: %s", e)
     try:
@@ -284,8 +300,8 @@ def default_pipeline() -> MvPipeline:
     except Exception as e:
         log.warning("TripoSR unavailable: %s", e)
     read_chat = env_chat(stage="mv_read")
-    if read_chat is not None:
-        threading.Thread(target=qwen_reader.warm_chat, args=(read_chat,), name="qwen-warmup",
+    if reader is not None or read_chat is not None:
+        threading.Thread(target=_warm_readers, args=(reader, read_chat), name="reader-warmup",
                           daemon=True).start()
     space = os.environ.get("SOLARIA_SPACE")
     image_gen = default_gen()
