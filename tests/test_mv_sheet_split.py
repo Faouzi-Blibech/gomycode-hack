@@ -70,6 +70,16 @@ def test_the_border_frame_is_removed(bracket):
     assert_views_match(sheet.drawings[0].views, truth, FIVE)
 
 
+@pytest.mark.parametrize("faces", [("front", "right"), ("front", "top")])
+def test_the_border_frame_of_a_small_sheet_is_removed(bracket, faces):
+    """On a small sheet the frame's stroke inks over 5 % of its box, yet all its ink runs along the box edges."""
+    img, truth = draw_sheet({f: bracket[f] for f in faces}, labels=False, border=True)
+    sheet = split_sheet(img)
+    assert len(sheet.drawings) == 1
+    assert_views_match(sheet.drawings[0].views, truth, faces, labels=False)
+    assert is_sheet(sheet)
+
+
 def test_two_drawings_are_two_drawings(bracket):
     img, truth = draw_sheet(bracket, symbol="first")
     sheet = split_sheet(img)

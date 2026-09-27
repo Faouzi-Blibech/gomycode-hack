@@ -24,6 +24,8 @@ BORDER_NEAR = 0.05      # a frame "nearly touches" a side: within this share of 
 BORDER_FILL = 0.05      # ... and inks under this share of its box
 BORDER_SIDE = 0.9       # ... and inks this share of each side of its box, which a round or L-shaped view does not
 BORDER_BAND = 0.03
+BORDER_EDGE = 0.02      # ... or keeps this share of its ink within an edge band this wide (share of its short side)
+BORDER_EDGE_INK = 0.9
 SEPARATOR_INK = 0.9     # a row or column this full of ink is a separator band
 DILATE = 0.008
 SPECK = 0.0002
@@ -111,16 +113,19 @@ def ink_mask(image_bgr: np.ndarray) -> np.ndarray:
 
 
 def _remove_border(ink: np.ndarray) -> None:
-    """Erase a sheet frame: near all four sides, thin, and inked along every side of its box."""
+    """Erase a sheet frame: near all four sides, thin, and inked along every side of its box. Thin means under
+    BORDER_FILL of its box, or nearly all ink in a narrow band along the box edges: on a small sheet the frame's
+    stroke alone inks over BORDER_FILL."""
     h, w = ink.shape
     n, comp, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
     for i in range(1, n):
         x, y, bw, bh, area = (int(v) for v in stats[i])
         if max(x, w - x - bw) > BORDER_NEAR * w or max(y, h - y - bh) > BORDER_NEAR * h:
             continue
-        if area >= BORDER_FILL * bw * bh:
-            continue
         own = comp[y: y + bh, x: x + bw] == i
+        edge = max(3, round(BORDER_EDGE * min(bw, bh)))
+        if area >= BORDER_FILL * bw * bh and own[edge:-edge, edge:-edge].sum() > (1 - BORDER_EDGE_INK) * area:
+            continue
         band = max(3, round(BORDER_BAND * min(bw, bh)))
         sides = (own[:band].any(0), own[-band:].any(0), own[:, :band].any(1), own[:, -band:].any(1))
         if min(float(s.mean()) for s in sides) >= BORDER_SIDE:
