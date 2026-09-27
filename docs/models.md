@@ -58,3 +58,12 @@ Both readers run in parallel, so a request waits for the slower one, not the sum
 | `READING_LOG` | `logs/reading.jsonl` | one line per reader call: reader, crops, cached, status, latency; no image, no text |
 
 Measured latency: run `uv run python scripts/reading_latency.py <sketch image>` and paste the table here with the date and the machine.
+
+Measured 2026-09-27 on the team laptop (CPU only, torch 2.14.0+cpu, transformers 5.17.0), TrOCR alone, 3 runs each; Qwen-VL not measured (no `VLM_*` key configured on that machine):
+
+| sketch | TrOCR load | read, median | min | max | crops |
+| --- | --- | --- | --- | --- | --- |
+| `examples/mv/sketches/front.png` | 5.0 s | 2376 ms | 2325 ms | 2391 ms | 2 |
+| `examples/mv/sketches/top.png` | 5.5 s | 1413 ms | 1304 ms | 1455 ms | 1 |
+
+On CPU a read costs roughly 1-1.2 s per crop even in one batch, so a sheet with 16 crops can take well over 10 s; a GPU or a quantized model is the fix if that matters.
