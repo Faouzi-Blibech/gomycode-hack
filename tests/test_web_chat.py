@@ -88,3 +88,26 @@ def test_ollama_behind_the_docker_host_needs_no_key(monkeypatch):
     monkeypatch.setenv("VLM_BASE_URL", "http://host.docker.internal:11434/v1")
     monkeypatch.setenv("VLM_MODEL", "gemma3:4b")
     assert get_chat_transport() is not None
+
+
+def test_a_missing_model_says_which_model_and_how_to_fix_it():
+    from fastapi.testclient import TestClient
+
+    from s2c.web import chat
+    from s2c.web.server import app
+
+    class Missing(Exception):
+        status_code = 404
+
+    def send(messages):
+        raise Missing("secret provider text")
+
+    app.dependency_overrides[chat.get_chat_transport] = lambda: chat.ChatTransport(
+        model="gone-model", provider="https://example.test/v1", send=send)
+    try:
+        r = TestClient(app).post("/api/chat", json={"messages": [{"role": "user", "content": "a plate"}]})
+    finally:
+        app.dependency_overrides.pop(chat.get_chat_transport, None)
+    assert r.status_code == 502
+    assert "gone-model" in r.json()["error"] and "CHAT_MODEL" in r.json()["error"]
+    assert "secret provider text" not in r.text

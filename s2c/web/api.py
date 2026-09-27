@@ -277,7 +277,12 @@ def chat_route(body: ChatBody,
     try:
         return chat.run_chat([m.model_dump() for m in body.messages], transport)
     except chat.ChatUnavailable as e:
-        raise HTTPException(502, "The chat model did not answer. Try again.") from e
+        detail = {
+            "model_not_found": f"The chat model '{transport.model}' is not available on this provider. "
+                               "Set CHAT_MODEL in .env to a model your key can use.",
+            "auth": "The chat provider rejected the API key. Check CHAT_API_KEY in .env.",
+        }.get(e.reason, "The chat model did not answer. Try again.")
+        raise HTTPException(502, detail) from e
 
 
 @router.get("/artifacts/{key}/{path:path}")

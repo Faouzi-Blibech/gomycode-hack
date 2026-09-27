@@ -14,7 +14,7 @@
 - Rule 2: a millimetre value is accepted only if the same number appears in a **user** message. Assistant messages and the system prompt don't count. Anything else is dropped and listed in `missing`. Provenance for accepted values is `user_written`; positions derived by arithmetic (flange bolt holes, a spacer's centre) are `scaled`.
 - The bot answers only about Sketch-to-CAD and designing a part in its grammar. For anything else it replies in one polite sentence that it only helps design parts here.
 - Grammar for chat: `plate`, `l_bracket`, `spacer`, `flange`. `profile_extrusion` and anything else: the bot says to sketch it on the Capture screen.
-- Provider only from env: `CHAT_BASE_URL`, `CHAT_MODEL`, `CHAT_API_KEY`, each falling back to `VLM_BASE_URL`, `VLM_MODEL`, `VLM_API_KEY`. `.env.example` gets the Groq preset: `https://api.groq.com/openai/v1`, `llama-3.3-70b-versatile`. Never hard-code the model in source.
+- Provider only from env: `CHAT_BASE_URL`, `CHAT_MODEL`, `CHAT_API_KEY`, each falling back to `VLM_BASE_URL`, `VLM_MODEL`, `VLM_API_KEY`. `.env.example` gets the Groq preset: `https://api.groq.com/openai/v1`, `openai/gpt-oss-120b` (Groq retired the 70B Llama; `qwen/qwen3.8-27b` also works). Never hard-code the model in source.
 - No key or provider configured: 503 `{"error": "The chat model is not configured. Add CHAT_API_KEY to .env."}`. A provider failure: 502 `{"error": "The chat model did not answer. Try again."}`. Never leak exception text.
 - At most 20 messages and 2000 characters per message (400 otherwise). Log provider, model, latency and tokens, never message text.
 - Commits: plain messages, no AI attribution. Push after each commit.

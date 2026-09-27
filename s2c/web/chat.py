@@ -52,7 +52,21 @@ _COMMA_DECIMAL = re.compile(r"(\d+),(\d+)")
 
 
 class ChatUnavailable(Exception):
-    """The provider failed; the route answers 502 without the exception text."""
+    """The provider failed; the route answers 502 without the exception text.
+    `reason` is a short safe slug: "model_not_found", "auth" or "error"."""
+
+    def __init__(self, reason: str = "error"):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _reason(exc: Exception) -> str:
+    status = getattr(exc, "status_code", None)
+    if status == 404:
+        return "model_not_found"
+    if status in (401, 403):
+        return "auth"
+    return "error"
 
 
 @dataclass
@@ -103,7 +117,7 @@ def _call(transport: ChatTransport, messages: list[dict]) -> str:
     except Exception as exc:
         _log({**record, "latency_ms": round((time.perf_counter() - t0) * 1000), "status": "error",
               "error_type": type(exc).__name__})
-        raise ChatUnavailable from exc
+        raise ChatUnavailable(_reason(exc)) from exc
     _log({**record, "latency_ms": round((time.perf_counter() - t0) * 1000), "status": "ok",
           "chars_out": len(text), **(usage or {})})
     return text
