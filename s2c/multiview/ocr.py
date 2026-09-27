@@ -6,13 +6,13 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Literal
 
 import cv2
 import numpy as np
 
 from s2c.multiview.outline import PixelOutline, foreground
+from s2c.reading import MIN_CONFIDENCE, Crop, ReaderRun, ReadingService
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +21,8 @@ BatchReader = Callable[[list[np.ndarray]], list[tuple[str, float]] | None]  # ev
 _DIAMETER_SIGNS = "⌀ØøΦφ∅"
 _VALUE = re.compile(r"^(⌀|D|R)?(\d+(?:\.\d+)?)$")
 STROKE_PX = 25
+MAX_CROPS = 16    # the text boxes nearest the part; the rest of a sheet is rarely a dimension
+NEAR_HOLE = 0.25  # a ⌀ or R links to a hole within this share of the part's longer side, plus the hole's radius
 
 
 @dataclass
@@ -41,6 +43,8 @@ class Linked:
 
 
 def parse_value(text: str) -> tuple[float, str] | None:
+    if re.search(r"\d\s+\d", text):
+        return None  # "12 48" is two values or a misread, never 1248
     t = text.strip().replace(" ", "").replace(",", ".")
     for sign in _DIAMETER_SIGNS:
         t = t.replace(sign, "⌀")
@@ -82,38 +86,73 @@ def text_regions(image_bgr: np.ndarray, outline: PixelOutline) -> list[tuple[int
     return boxes
 
 
-def read_values(image_bgr: np.ndarray, outline: PixelOutline, reader: Reader | None,
-                batch: BatchReader | None = None) -> list[Reading]:
-    """One batch call for every crop when a batch reader is given; the single-crop reader is the fallback."""
-    boxes = text_regions(image_bgr, outline)
-    crops = [image_bgr[max(y - 6, 0): y + h + 6, max(x - 6, 0): x + w + 6] for x, y, w, h in boxes]
-    reads = batch(crops) if batch is not None and crops else None
-    if reads is None:
-        if reader is None:
-            return []
-        reads = [reader(crop) for crop in crops]
-    out = []
-    for box, (text, confidence) in zip(boxes, reads):
-        parsed = parse_value(text)
-        if parsed is None:
-            log.info("dropped OCR read %r at %s", text, box)
+def _gap(box: tuple[int, int, int, int], bbox: tuple[int, int, int, int]) -> float:
+    """Distance from a text box's centre to the part's bounding box; 0 inside it."""
+    x, y, w, h = box
+    bx, by, bw, bh = bbox
+    cx, cy = x + w / 2, y + h / 2
+    return float(np.hypot(max(bx - cx, 0, cx - bx - bw), max(by - cy, 0, cy - by - bh)))
+
+
+def crops_for(image_bgr: np.ndarray, outline: PixelOutline) -> list[Crop]:
+    """At most MAX_CROPS text crops, nearest the part first, with a 6 px margin."""
+    boxes = sorted(text_regions(image_bgr, outline), key=lambda b: _gap(b, outline.bbox))[:MAX_CROPS]
+    return [Crop(image_bgr[max(y - 6, 0): y + h + 6, max(x - 6, 0): x + w + 6], (x, y, w, h))
+            for x, y, w, h in boxes]
+
+
+def decide(runs: list[ReaderRun], k: int) -> tuple[str, tuple[float, str], float, bool] | None:
+    """Crop k's reads -> (text, (value, kind), confidence, confirmed), or None when no read is usable.
+    Usable: parses as a value, and a calibrated reader is at least MIN_CONFIDENCE sure.
+    Confirmed: two or more usable reads give the same number, or the only configured reader is calibrated.
+    The first usable read in reader order gives the text: the VLM goes first because it keeps ⌀ and R."""
+    usable = []
+    for run in runs:
+        if run.results is None:
             continue
-        out.append(Reading(parsed[0], parsed[1], box, float(confidence), text))
+        r = run.results[k]
+        parsed = parse_value(r.text)
+        if parsed is None or (run.calibrated and r.confidence < MIN_CONFIDENCE):
+            continue
+        usable.append((r, parsed))
+    if not usable:
+        return None
+    first, parsed = usable[0]
+    agree = len(usable) >= 2 and len({p[0] for _, p in usable}) == 1
+    alone = len(runs) == 1 and runs[0].calibrated
+    return first.text, parsed, first.confidence, agree or alone
+
+
+def read_values(image_bgr: np.ndarray, outline: PixelOutline, service: ReadingService | None) -> list[Reading]:
+    """Every reader reads every crop in parallel; decide() says which values the user must check."""
+    if service is None:
+        return []
+    crops = crops_for(image_bgr, outline)
+    runs = service.read(crops)
+    out = []
+    for k, crop in enumerate(crops):
+        decided = decide(runs, k)
+        if decided is None:
+            log.info("no usable read at %s", crop.box)
+            continue
+        text, (value, kind), confidence, confirmed = decided
+        out.append(Reading(value, kind, crop.box, float(confidence), text, confirmed))
     return out
 
 
 def link(readings: list[Reading], outline: PixelOutline) -> list[Linked]:
-    """Below or above the outline: axis a. Left or right: axis b. Diameters: the nearest hole."""
+    """Below or above the outline: axis a. Left or right: axis b. Diameters: the nearest hole, if it is near."""
     bx, by, bw, bh = outline.bbox
+    reach = NEAR_HOLE * max(bw, bh)
     out = []
     for r in readings:
         x, y, w, h = r.bbox
         cx, cy = x + w / 2, y + h / 2
         inside = bx <= cx <= bx + bw and by <= cy <= by + bh
         if r.kind != "linear":
-            if outline.circles and (inside or not outline.circular):
-                k = min(range(len(outline.circles)),
-                        key=lambda i: (outline.circles[i].cx - cx) ** 2 + (outline.circles[i].cy - cy) ** 2)
+            dist = [float(np.hypot(c.cx - cx, c.cy - cy)) - c.d / 2 for c in outline.circles]
+            k = min(range(len(dist)), key=dist.__getitem__) if dist else None
+            if k is not None and (inside or not outline.circular) and dist[k] <= reach:
                 out.append(Linked(r, None, k))
             else:
                 out.append(Linked(r, "ab" if outline.circular else None, None))
@@ -126,36 +165,14 @@ def link(readings: list[Reading], outline: PixelOutline) -> list[Linked]:
     return out
 
 
-@lru_cache(maxsize=1)
-def _trocr(model_name: str):
-    import torch
-    from huggingface_hub import snapshot_download
-    from transformers import RobertaTokenizer, TrOCRProcessor, VisionEncoderDecoderModel, ViTImageProcessor
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    # transformers 5 does not fetch vocab.json and merges.txt for this repo by itself; take the small files explicitly
-    local = snapshot_download(model_name, allow_patterns=["*.json", "*.txt"])
-    processor = TrOCRProcessor(image_processor=ViTImageProcessor.from_pretrained(local),
-                               tokenizer=RobertaTokenizer.from_pretrained(local))
-    model = VisionEncoderDecoderModel.from_pretrained(model_name).to(device).eval()
-    return processor, model, device
-
-
-def trocr_reader(model_name: str = "microsoft/trocr-base-handwritten") -> Reader:
-    """Fallback reader until the numbers owner's reader lands. The model loads on the first read."""
-    import transformers  # noqa: F401  fail early when the ai extra is missing
+def trocr_reader(model_name: str | None = None) -> Reader:
+    """One crop at a time over the shared TrOCR reader (s2c.reading.trocr), for callers that need a function.
+    The pipeline passes the shared reader itself, so every crop of an image is read in one batch."""
+    from s2c.reading.trocr import TrocrReader
+    shared = TrocrReader(model_name)
 
     def read(crop_bgr: np.ndarray) -> tuple[str, float]:
-        import torch
-        from PIL import Image
-        processor, model, device = _trocr(model_name)
-        image = Image.fromarray(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB))
-        pixels = processor(images=image, return_tensors="pt").pixel_values.to(device)
-        with torch.no_grad():
-            out = model.generate(pixels, max_new_tokens=10, num_beams=1, output_scores=True,
-                                 return_dict_in_generate=True)
-        text = processor.batch_decode(out.sequences, skip_special_tokens=True)[0]
-        scores = model.compute_transition_scores(out.sequences, out.scores, normalize_logits=True)
-        confidence = float(torch.exp(scores.mean()).item()) if scores.numel() else 0.0
-        return text, confidence
+        out = shared.read([Crop(crop_bgr, (0, 0, crop_bgr.shape[1], crop_bgr.shape[0]))])
+        return (out[0].text, out[0].confidence) if out else ("", 0.0)
 
     return read
