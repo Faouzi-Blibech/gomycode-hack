@@ -1,0 +1,16 @@
+body{margin:0;background:var(--bg);-webkit-font-smoothing:antialiased}
+::view-transition-old(root),::view-transition-new(root){animation-duration:320ms;animation-timing-function:cubic-bezier(.2,.8,.2,1)}
+@media (prefers-reduced-motion: reduce){::view-transition-old(root),::view-transition-new(root){animation:none}}
+a{color:var(--accent-ink)}a:hover{color:var(--ink)}
+html,body,#root{height:100%}
+*{box-sizing:border-box}
+.s2c-nav-item[aria-disabled="true"]{pointer-events:none}
+.s2c-hover:hover{background:var(--raised)!important}
+@media (max-width:1023px){
+  .s2c-app{flex-direction:column!important;height:auto!important;min-height:100%;overflow:visible!important}
+  .s2c-app>aside{width:100%!important;flex-direction:row!important;flex-wrap:wrap;align-items:center}
+  .s2c-app>main{overflow:visible!important}
+}
+@keyframes s2c-spin{to{transform:rotate(360deg)}}
+.s2c-spin{animation:s2c-spin 1s linear infinite}
+@media (prefers-reduced-motion: reduce){.s2c-spin{animation:none}}
