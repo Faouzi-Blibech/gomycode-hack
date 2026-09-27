@@ -30,6 +30,7 @@ class Reading:
     bbox: tuple[int, int, int, int]
     confidence: float
     text: str
+    confirmed: bool = True  # False: the readers did not agree, so the user checks the value before it is trusted
 
 
 @dataclass
