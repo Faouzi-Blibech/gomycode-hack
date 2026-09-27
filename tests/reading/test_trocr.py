@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import pytest
+import torch
 
 from s2c.reading import Crop
 from s2c.reading.trocr import token_confidences
@@ -33,7 +34,8 @@ def test_trocr_reads_a_batch_of_printed_digits(monkeypatch):
         return Crop(img, (0, 0, 200, 80))
 
     reader = TrocrReader()
-    trocr._load(reader.model_id, reader.device)  # a real load, bypassing warm() which conftest patches to no-op
+    _, model = trocr._load(reader.model_id, reader.device)  # a real load, bypassing warm() which conftest no-ops
+    assert model.dtype == torch.float16  # cuda: half precision keeps GPU memory down alongside Qwen
     out = reader.read([digits("60"), digits("125")])
     # TrOCR was trained on sentences and often ends a read with a period; parsing, not the reader, drops it
     assert [r.text.replace(" ", "").rstrip(".") for r in out] == ["60", "125"]

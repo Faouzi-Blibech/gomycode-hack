@@ -37,6 +37,8 @@ def _load(model_id: str, device: str) -> tuple:
             processor = TrOCRProcessor(image_processor=ViTImageProcessor.from_pretrained(local),
                                        tokenizer=RobertaTokenizer.from_pretrained(local))
             model = VisionEncoderDecoderModel.from_pretrained(model_id).to(device).eval()
+            if device == "cuda":
+                model = model.half()  # halves GPU memory; CPU stays float32 (no fp16 kernels there)
             _LOADED[(model_id, device)] = (processor, model)
         return _LOADED[(model_id, device)]
 
@@ -67,7 +69,7 @@ class TrocrReader:
         processor, model = _load(self.model_id, self.device)
         images = [Image.fromarray(cv2.cvtColor(c.image, cv2.COLOR_BGR2RGB)) for c in crops]
         with _READ_LOCK:
-            pixels = processor(images=images, return_tensors="pt").pixel_values.to(self.device)
+            pixels = processor(images=images, return_tensors="pt").pixel_values.to(self.device, dtype=model.dtype)
             with torch.no_grad():
                 out = model.generate(pixels, max_new_tokens=self.max_new_tokens, num_beams=1, output_scores=True,
                                      return_dict_in_generate=True)
@@ -78,5 +80,5 @@ class TrocrReader:
         if pad is None:
             pad = processor.tokenizer.pad_token_id
         mask = (generated != pad).cpu().numpy()
-        confidences = token_confidences(scores.cpu().numpy(), mask)
+        confidences = token_confidences(scores.float().cpu().numpy(), mask)
         return [ReaderResult(text=t.strip(), confidence=c) for t, c in zip(texts, confidences)]
