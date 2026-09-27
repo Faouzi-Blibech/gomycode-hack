@@ -174,8 +174,9 @@ def _merge_values(face: str, group, transforms, circle_index) -> tuple[list[Link
 
 
 def _merge_labels(group, circle_index, n_circles: int):
-    """Blind flags and depths per merged circle. A Solaria result beats every vision-model label."""
-    blind, estimates, ratio, from_image = {}, {}, {}, set()
+    """Blind flags and depths per merged circle. Rule 2: only a Solaria result may mark a hole blind;
+    a vision-model label's blind flag, voted or not, never does."""
+    blind, ratio, from_image = {}, {}, set()
     for j in range(n_circles):
         members = [(k, i) for (k, i), c in circle_index.items() if c == j]
         solaria = [(k, i) for k, i in members if i in group[k].depth_from_image]
@@ -186,12 +187,8 @@ def _merge_labels(group, circle_index, n_circles: int):
             if i in group[k].depth_ratio:
                 ratio[j] = group[k].depth_ratio[i]
             continue
-        votes = [group[k].blind.get(i, False) for k, i in members]
-        blind[j] = 2 * sum(votes) > len(votes)
-        guesses = [group[k].depth_estimates[i] for k, i in members if i in group[k].depth_estimates]
-        if guesses:
-            estimates[j] = float(np.median(guesses))
-    return blind, estimates, ratio, from_image
+        blind[j] = False
+    return blind, ratio, from_image
 
 
 def _merged_scale(face: str, group, transforms) -> tuple[float | None, list[str]]:
@@ -245,10 +242,10 @@ def _merge_group(face: str, group: list[Observation], images: list[np.ndarray], 
     circle_warnings += [f"{face}: an opening became round after merging {len(kept)} photos, check it"
                         for _ in voted_only]
     values, more = _merge_values(face, kept, kept_t, circle_index)
-    blind, estimates, ratio, from_image = _merge_labels(kept, circle_index, len(outline.circles))
+    blind, ratio, from_image = _merge_labels(kept, circle_index, len(outline.circles))
     scale, scale_warnings = _merged_scale(face, kept, kept_t)
     merged = Observation(face=face, kind=group[ref].kind, outline=outline, values=values, mm_per_px=scale,
-                         blind=blind, depth_estimates=estimates, depth_ratio=ratio, depth_from_image=from_image,
+                         blind=blind, depth_ratio=ratio, depth_from_image=from_image,
                          confidence=round(max(o.confidence for o in kept) * agreement, 3))
     warnings += circle_warnings + more + scale_warnings + [f"{face}: merged {len(kept)} photos, agreement {agreement:.2f}"]
     return merged, images[ref], warnings

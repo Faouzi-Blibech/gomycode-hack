@@ -17,7 +17,15 @@ from s2c.multiview.build import BuildError, export
 from s2c.multiview.build import build as build_solid
 from s2c.multiview.complete import MeshProvider, complete
 from s2c.multiview.depth import DepthProvider, apply_depth, solaria_depth
-from s2c.multiview.fuse import Observation, assemble, attach_label, canonical_outlines, features_from, fuse_envelope
+from s2c.multiview.fuse import (
+    Observation,
+    assemble,
+    attach_label,
+    canonical_outlines,
+    features_from,
+    fuse_envelope,
+    outline_kinds,
+)
 from s2c.multiview.label import Chat, MvLabel, env_chat, hint_label, label_image
 from s2c.multiview.merge_views import merge_same_face
 from s2c.multiview.ocr import BatchReader, Reader, link, read_values
@@ -29,6 +37,8 @@ from s2c.multiview.raster import Mesh, face_mask, iou, normalize_mask, polygon_m
 from s2c.multiview.reference import find_reference
 from s2c.multiview.settings import AiSettings, GeometrySettings
 from s2c.multiview.slice import slice_solid
+from s2c.multiview.turned import WARNING as TURNED_WARNING
+from s2c.multiview.turned import turned_axis
 
 log = logging.getLogger(__name__)
 IOU_GREEN = 0.85
@@ -210,12 +220,22 @@ class MvPipeline:
                      for f, ol in full.items()}
         feats, feat_prov = features_from(observed.observations, env)
         try:
-            return assemble(env, env_prov, with_prov, feats, feat_prov, warnings, user_values, accepted,
-                            snap_values=geometry.snap, clearance=geometry.clearance)
+            spec = assemble(env, env_prov, with_prov, feats, feat_prov, warnings, user_values, accepted,
+                            snap_values=geometry.snap, clearance=geometry.clearance,
+                            kinds=outline_kinds(observed.observations))
         except ValidationError as e:
             log.warning("spec rejected: %s", e)
             return S.MvAbstain(stage="dimensions", reason="invalid_value",
                                remedy="A value is out of range. Check the numbers you entered.")
+        try:
+            axis = turned_axis(spec)
+        except Exception as e:  # noqa: BLE001 - the turn is a refinement; its check must never break a fuse
+            log.warning("turned check failed: %s", e)
+            axis = None
+        note = axis and TURNED_WARNING.format(axis=axis)
+        if note and note not in spec.warnings:
+            spec = spec.model_copy(update={"warnings": [*spec.warnings, note]})
+        return spec
 
     def build(self, spec: S.MultiViewSpec, out_dir: Path, masks: dict | None = None) -> BuildResult | S.MvAbstain:
         try:
@@ -255,7 +275,7 @@ def default_pipeline() -> MvPipeline:
         log.warning("Qwen-Image unavailable: set QWEN_IMAGE_SPACE, or QWEN_IMAGE_BACKEND=dashscope with its "
                     "settings; missing faces fall back to TripoSR or an assumed rectangle")
     if not space:
-        log.warning("Solaria unavailable: set SOLARIA_SPACE; hole depth stays with the vision model's labels")
+        log.warning("Solaria unavailable: set SOLARIA_SPACE; every hole stays through unless the user makes it blind")
     return MvPipeline(chat=env_chat(), reader=reader, mesh_provider=provider,
                       batch_reader=qwen_batch_reader(read_chat) if read_chat else None, image_gen=image_gen,
                       depth=solaria_depth(space, os.environ.get("HF_TOKEN")) if space else None)

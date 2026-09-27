@@ -31,6 +31,12 @@ def _size_update(size: dict) -> dict:
                      elem_classes=["size", "required"] if size.get("required") else ["size"])
 
 
+def _preview_update(m):
+    """A failed build (e.g. a finish that does not fit) leaves preview unset; the 3D viewer then keeps whatever
+    it is already showing instead of being cleared."""
+    return m.preview if m.preview is not None else gr.update()
+
+
 def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> gr.Blocks:
     studio = studio or Studio(pipe or default_pipeline())
     status = provider_status(studio.pipe)
@@ -217,13 +223,13 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
                 geometry = geometry_settings(*g)
             except ValueError as e:
                 msg = card("Check the geometry settings", str(e), "stop")
-                return [gr.update(), msg, *[gr.update()] * (len(review_outputs) - 1), msg, None, [], ""]
+                return [gr.update(), msg, *[gr.update()] * (len(review_outputs) - 1), msg, gr.update(), [], ""]
             r, m = studio.build(s, {"x": x, "y": y, "z": z}, rows, rej, geometry)
             target = 2 if m.ok else m.open_step  # a finish that cannot be built opens step 3, where its controls are
             if target is None and r.ok:  # the part itself failed: say so on the step the user is looking at
                 r.message_html = m.message_html
             step = gr.update() if target is None else gr.Walkthrough(selected=target)
-            return [step, *show_review(r), m.message_html, m.preview, m.views, m.stats_html]
+            return [step, *show_review(r), m.message_html, _preview_update(m), m.views, m.stats_html]
 
         def on_geometry(s, *g):
             try:
@@ -232,7 +238,7 @@ def build_app(pipe: MvPipeline | None = None, studio: Studio | None = None) -> g
                 msg = card("Check the geometry settings", str(e), "stop")
                 return msg, gr.update(), gr.update(), gr.update(), *[gr.update()] * len(sizes), gr.update()
             r, m = studio.rebuild_geometry(s, geometry)
-            return (m.message_html, m.preview, m.views, m.stats_html,
+            return (m.message_html, _preview_update(m), m.views, m.stats_html,
                     *(_size_update(r.sizes.get(a, {})) for a in AXES), r.rows)
 
         def on_export(s, fmts, q, mat, noz, lay, inf, pat, per, sup, br, sc):

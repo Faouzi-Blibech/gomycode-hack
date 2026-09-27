@@ -142,21 +142,33 @@ Code: `outline.py`, `ocr.py`, `qwen_reader.py`, `label.py` (prompt), `reference.
   - Show Qwen reads amber unless TrOCR agrees.
   - Send at most 16 crops.
 - [ ] P0-8: correct for pen-stroke width, which makes walls too thick and holes too small (`outline.py:61-90`). The 3D modeling track checks it on the golden parts.
-- [ ] P0-3 (prompt half): stop asking the vision model for hole depths and blind flags (`label.py:48`).
+- [x] P0-3 (prompt half): stop asking the vision model for hole depths and blind flags (`label.py:48`). Done 2026-09-26: neither the prompt nor the schema it sends asks for them.
 - [ ] P0-7 (tests half): degradation tests for shadow, ruled paper, sheet on a desk, tilt and noise.
 - [ ] After the demo: hole positions written by the user (multi-view spec §4.4); report the dropped-hole warning in mm, not grid pixels; drafting conventions (centre lines, pen gaps).
 
 ### Track 2: 3D modeling (geometry, build, drawing)
 Code: `fuse.py`, `build.py`, `finish.py`, `drawing.py`, `artifacts.py`.
-- [ ] ★ P0-3 (geometry half): remove the model's millimetre depths and blind flags from geometry (`fuse.py:50-52,224-231`, `merge_views.py:184-186`). Holes are through unless the user says otherwise. Flip `tests/test_mv_label.py:22`.
-- [ ] ★ P0-11: a failed fillet or chamfer keeps the last good part and suggests the largest size that builds, by bisection with at most 7 builds (`studio/handlers.py:318-325`).
+- [x] ★ P0-3 (geometry half): remove the model's millimetre depths and blind flags from geometry (`fuse.py:50-52,224-231`, `merge_views.py:184-186`). Holes are through unless the user says otherwise. Flip `tests/test_mv_label.py:22`.
+- [x] ★ P0-11: a failed fillet or chamfer keeps the last good part and suggests the largest size that builds, by bisection with at most 7 builds (`studio/handlers.py:318-325`). Done 2026-09-26.
 - [ ] P0-7 (parts half): 3–5 real demo parts measured with calipers for the golden set (`tests/golden_mv/`), and one measured accuracy number in the README.
+  - The accuracy number is done (2026-09-26). The reverse-engineering benchmark covers 400 reference parts (clean renders, true size given): 95 % built, median volume error 10.3 %, median 3D IoU 0.91. Plan: `docs/superpowers/plans/2026-09-26-re-benchmark-plan.md`.
+  - The caliper-measured phone-photo parts are still open.
 - [ ] After the demo:
   - a per-hole through/blind control;
   - a lazy Drawing tab in step 3;
   - the PartSpec → MultiViewSpec adapter, once decision 1 is taken;
   - one `FACE_FRAMES` table;
   - edits keyed by face and position.
+
+- [x] Done 2026-09-26, from the benchmark data:
+  - outline snapping keeps curves and thin features on drawings and photos, and squares sketches as before;
+  - turned parts are built as solids of revolution;
+  - a thin part's edge view is an outline;
+  - an empty hull boolean is retried with a 1e-4 mm fuzzy boolean.
+- [ ] After the demo, from the benchmark:
+  - hidden pockets and open boxes are filled by the hull, and no view can show them (the largest remaining error);
+  - a Studio switch to turn the turned-part build off;
+  - cache the hull and the turn, so edits to finishes only rebuild in under a second on knurled parts.
 
 ### Track 3: Security and privacy
 Code: `pipeline.py`, `label.py`, `studio/app.py`, `status.py`, `routes.py`, `docs/disclosure.md`, `CLAUDE.md`.

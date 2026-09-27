@@ -131,7 +131,7 @@ def hole_depths(depth: np.ndarray, outline: PixelOutline, exclude=()) -> tuple[d
 
 
 def apply_depth(obs: Observation, depth: np.ndarray, exclude=()) -> list[str]:
-    """Write Solaria's verdicts into the observation; they override the vision model's labels."""
+    """Write Solaria's verdicts into the observation; only Solaria (or the user) makes a hole blind."""
     found, warnings = hole_depths(depth, obs.outline, exclude)
     for i, ratio in found.items():
         obs.depth_from_image.add(i)

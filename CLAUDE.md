@@ -64,18 +64,16 @@ One OpenAI-compatible client. Configure with `VLM_BASE_URL`, `VLM_MODEL`, `VLM_A
 - Never commit API keys. `.env` is ignored; `.env.example` lists the variables.
 - No secrets, images of people, or personal data in `tests/`.
 
-## Current state (2026-09-25)
+## Current state (2026-09-26)
 
-- **Branches.** `geometry/multiview-gcode` → `geometry/qwen-solaria` → `geometry/studio-ui` are pushed to origin and not merged. `main` holds only docs.
-- **What exists.**
-  - The multi-view path (`s2c/multiview/`, `s2c/studio/`, `app_mv_studio.py`) is built and tested.
-  - The single-view modules described above (`partspec/`, `metrology.py`, `merge.py`, `builder.py`, `views.py`, `s2c/api.py`, `web/`) are not on any branch yet.
+- **Branches.** `geometry/studio-ui` was merged into `main` (PR #12) on 2026-09-26. Work after that merge sits on `geometry/studio-ui` and needs a new PR. `main` also holds the single-view modules (`s2c/partspec/`, `merge.py`, `pipeline.py`, `vision/`) and CI.
+- **What exists.** The multi-view path (`s2c/multiview/`, `s2c/studio/`, `app_mv_studio.py`) is built and tested.
+- **Accuracy.** The reverse-engineering benchmark (`scripts/re_benchmark.py`, dataset kept outside git) covers 400 reference parts: 95 % built, median volume error 10.3 %, median 3D IoU 0.91 (clean renders, true size given). Phone photos are still unmeasured.
+- **Rule 2.** Resolved for the multi-view path: the vision model's hole depths and blind flags no longer reach geometry, and only Solaria or the user makes a hole blind.
 - **Open rule conflicts, waiting for the team decision.**
-  - The multi-view path goes beyond rule 3.
-  - Rule 2: the vision model's hole-depth estimates still reach geometry (`label.py`, `fuse.py`).
+  - The multi-view path goes beyond rule 3; it now also builds turned parts as solids of revolution.
   - The Responsible AI lines below are not yet all true in code.
-  - All three are P0 items in `docs/superpowers/reviews/2026-09-24-project-review.md`.
-- **Work before the demo.** The four-track checklist in that review (recognition, 3D modeling, security, backend and orchestration). Do not start its cut-list items before 2026-09-27.
+- **Work before the demo.** The four-track checklist in `docs/superpowers/reviews/2026-09-24-project-review.md`.
 
 ## Responsible AI positions (say these in the demo)
 

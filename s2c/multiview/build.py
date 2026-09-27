@@ -2,6 +2,7 @@
 Spec section 6.4. Deterministic; no model output is ever executed here."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import cadquery as cq
@@ -18,6 +19,21 @@ class BuildError(Exception):
 
 INVALID = ("invalid_solid", "Simplify the outline or retake the photo.")
 EMPTY = ("intersection_empty", "The views do not describe one part. Check which face each photo shows.")
+log = logging.getLogger(__name__)
+
+
+FUZZY_MM = 1e-4  # a retry tolerance far below any drawn or measured detail
+
+
+def _intersect(a: cq.Workplane, b: cq.Workplane) -> cq.Workplane:
+    """Exact boolean first. OCC can return nothing when two faces almost coincide (a hole edge 0.02 mm from a
+    foot edge), so an empty or invalid result is retried as a fuzzy boolean; a truly empty one stays empty."""
+    out = a.intersect(b)
+    solids = out.solids().vals()
+    if solids and all(s.isValid() for s in solids):
+        return out
+    fuzzy = a.intersect(b, tol=FUZZY_MM)
+    return fuzzy if fuzzy.solids().vals() else out
 
 
 def volume(solid: cq.Workplane) -> float:
@@ -125,12 +141,30 @@ def _apply_finish(solid: cq.Workplane, finish) -> cq.Workplane:
     return out
 
 
+def _turn(hull: cq.Workplane, spec: MultiViewSpec) -> cq.Workplane:
+    """A round part cut down to its solid of revolution, so a hub comes out round instead of square.
+    The turn only refines a hull that already built: if OCC fails on it, the hull is kept."""
+    from s2c.multiview import turned  # deferred: turned reuses _clean from this module
+
+    axis = None
+    try:
+        axis = turned.turned_axis(spec)
+        if axis is None:
+            return hull
+        solid = _intersect(hull, turned.revolve(spec, axis))
+        _check(solid)
+    except Exception as e:  # noqa: BLE001 - OCC raises anything; the hull is a valid answer
+        log.warning("turned build around %s failed, keeping the hull: %s", axis, e)
+        return hull
+    return solid
+
+
 def build(spec: MultiViewSpec) -> cq.Workplane:
     env = spec.envelope
     try:
         solid = _prism("front", spec.views.front, env)
         for face in ("top", "right"):
-            solid = solid.intersect(_prism(face, getattr(spec.views, face), env))
+            solid = _intersect(solid, _prism(face, getattr(spec.views, face), env))
             if not solid.solids().vals():  # an empty result would make CadQuery fall back to an earlier solid
                 raise BuildError(*EMPTY)
     except BuildError:
@@ -138,8 +172,20 @@ def build(spec: MultiViewSpec) -> cq.Workplane:
     except Exception as e:
         raise BuildError(*INVALID) from e
     _check(solid)
+    turned = _turn(solid, spec)
+    if turned is solid:
+        return _finish_part(solid, spec)
+    try:
+        return _finish_part(turned, spec)
+    except BuildError as e:  # a revolve's faceted rim can refuse a fillet the hull takes
+        log.warning("finishing the turned part failed (%s), finishing the hull instead", e.reason)
+        return _finish_part(solid, spec)
+
+
+def _finish_part(solid: cq.Workplane, spec: MultiViewSpec) -> cq.Workplane:
+    """Holes, slots, then fillets and chamfers, on a solid that already passed _check."""
     for f in spec.features:
-        solid = _cut_feature(solid, f, env)
+        solid = _cut_feature(solid, f, spec.envelope)
     for finish in spec.finishes:
         solid = _apply_finish(solid, finish)
     _check(solid)
