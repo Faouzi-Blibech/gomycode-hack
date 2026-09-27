@@ -20,7 +20,8 @@ SOURCE_TEXT = {"user_written": "written", "measured": "measured", "user_edited":
                "default": "default · check"}
 FACE_BADGES = {"observed": ("observed", "ok"), "mirrored": ("mirrored", "ok"),
                "qwen-image": ("drawn by Qwen-Image", "ai"), "triposr": ("predicted by TripoSR", "ai"),
-               "assumed": ("assumed rectangle", "check")}
+               "assumed": ("assumed rectangle", "check"),
+               "inferred": ("inferred from the other side view", "check")}
 CSS = """
 .studio-header {display:flex; flex-wrap:wrap; align-items:center; gap:12px; justify-content:space-between}
 .studio-header h1 {margin:0; font-size:1.6rem}
