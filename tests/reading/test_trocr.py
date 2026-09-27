@@ -1,3 +1,5 @@
+import threading
+
 import cv2
 import numpy as np
 import pytest
@@ -59,6 +61,57 @@ def test_an_out_of_memory_error_moves_the_reader_to_cpu_and_retries_once(monkeyp
     assert reader.device == "cpu"
     assert [r.text for r in out] == ["60"]
     assert calls == [("load", "cuda"), ("run", "cuda"), ("load", "cpu"), ("run", "cpu")]
+
+
+def test_two_concurrent_oom_reads_both_recover_on_cpu(monkeypatch):
+    """One shared reader, two threads both hit a real CUDA OOM: neither must crash, even if the other
+    has already flipped the reader to CPU by the time this one's except block runs."""
+    from s2c.reading import trocr
+    from s2c.reading.trocr import TrocrReader
+
+    reader = TrocrReader(device="cuda")
+    b_registered = threading.Event()
+    a_flipped_to_cpu = threading.Event()
+
+    def fake_load(model_id, device):
+        name = threading.current_thread().name
+        if device == "cuda" and name == "B":
+            b_registered.set()
+        if device == "cpu":
+            a_flipped_to_cpu.set()
+        return ("processor", "model")
+
+    def fake_run(processor, model, device, crops, max_new_tokens):
+        name = threading.current_thread().name
+        if device == "cuda":
+            if name == "A":
+                assert b_registered.wait(timeout=2)  # B must already be in flight before A raises and flips
+                raise RuntimeError("CUDA out of memory. Tried to allocate 20.00 MiB (A)")
+            assert a_flipped_to_cpu.wait(timeout=2)  # A must have already flipped self.device before B raises
+            raise RuntimeError("CUDA out of memory. Tried to allocate 20.00 MiB (B)")
+        return [ReaderResult(text="60", confidence=0.9)]
+
+    monkeypatch.setattr(trocr, "_load", fake_load)
+    monkeypatch.setattr(trocr, "_run", fake_run)
+    crop = Crop(np.zeros((10, 10, 3), np.uint8), (0, 0, 10, 10))
+    results: dict[str, object] = {}
+    errors: dict[str, Exception] = {}
+
+    def worker(name):
+        try:
+            results[name] = reader.read([crop])
+        except Exception as e:  # noqa: BLE001 - the assertion under test is that nothing raises
+            errors[name] = e
+
+    threads = [threading.Thread(target=worker, args=(n,), name=n) for n in ("A", "B")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert errors == {}
+    assert {n: [r.text for r in out] for n, out in results.items()} == {"A": ["60"], "B": ["60"]}
+    assert reader.device == "cpu"
 
 
 @pytest.mark.gpu

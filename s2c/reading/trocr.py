@@ -107,13 +107,14 @@ class TrocrReader:
     def read(self, crops: list[Crop]) -> list[ReaderResult] | None:
         if not crops:
             return []
+        device = self.device  # a snapshot: another concurrent read must not change which attempt this one is on
         try:
-            processor, model = _load(self.model_id, self.device)
-            return _run(processor, model, self.device, crops, self.max_new_tokens)
+            processor, model = _load(self.model_id, device)
+            return _run(processor, model, device, crops, self.max_new_tokens)
         except Exception as e:
-            if self.device != "cuda" or not _is_oom(e):
+            if device != "cuda" or not _is_oom(e):
                 raise
             log.warning("TrOCR ran out of GPU memory (%s); moving to CPU for the rest of the process", e)
-            self.device = "cpu"
-            processor, model = _load(self.model_id, self.device)
-            return _run(processor, model, self.device, crops, self.max_new_tokens)
+            self.device = "cpu"  # only ever moves towards cpu, for every later read on this reader
+            processor, model = _load(self.model_id, "cpu")
+            return _run(processor, model, "cpu", crops, self.max_new_tokens)

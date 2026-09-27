@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import pytest
 
 from s2c.reading.tiles import tile_grid
 
@@ -20,6 +21,11 @@ def test_a_single_crop_makes_a_one_row_one_cell_grid():
     cell_w = max_w + 16
     assert grid.shape[0] == 1 * (cell_h + header + 12)
     assert grid.shape[1] == cols * cell_w
+
+
+def test_an_empty_list_raises_instead_of_encoding_a_blank_image():
+    with pytest.raises(ValueError, match="at least one image"):
+        tile_grid([])
 
 
 def test_seventeen_crops_make_five_rows():

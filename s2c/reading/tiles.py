@@ -8,6 +8,8 @@ import numpy as np
 def tile_grid(images: list[np.ndarray], cols: int = 4, cell_h: int = 80, max_w: int = 320) -> bytes:
     """One white image, one numbered cell per crop (BGR arrays), PNG-encoded.
     The number `#k` (1-based) sits in a header strip above the ink, never on it."""
+    if not images:
+        raise ValueError("tile_grid needs at least one image")
     header = 26
     tiles = []
     for image in images:
