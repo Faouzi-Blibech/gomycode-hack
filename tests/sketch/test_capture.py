@@ -74,6 +74,19 @@ def test_blurry_photo_abstains():
     assert isinstance(out, SketchAbstain) and out.reason == "image_quality"
 
 
+def test_a_synthetic_sheet_keeps_its_drawn_stroke_widths():
+    """Found end to end (Task 12): Sauvola alone took the soft fringe of every anti-aliased stroke as
+    ink (16 % more ink than drawn), and the stroke was measured as 5.5 px where the later stages are
+    set at 3 px for this very sheet; the classifier then found no dimension line at all."""
+    from tests.sketch.synth import Sheet, bridge_block
+
+    sh = bridge_block(Sheet())
+    out = capture(sh.bgr())
+    drawn = sh.ink() > 0
+    assert ((out.ink > 0) != drawn).sum() < 0.02 * drawn.sum()
+    assert abs(out.stroke_px - 3.0) <= 0.3
+
+
 def test_large_photo_is_resized():
     img = cv2.resize(page(), (2830, 4000))
     out = capture(img)

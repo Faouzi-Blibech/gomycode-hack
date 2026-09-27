@@ -87,6 +87,50 @@ def test_a_lone_short_edge_is_visible_not_hidden():
     assert c.hidden == [] and len(c.visible) == 4
 
 
+def visible_lines(c):
+    return [p for p in c.visible if p.kind == "line"]
+
+
+def test_stacked_dimensions_share_an_extension_line_without_leaving_an_edge():
+    """The overall value's extension line crosses the inner dimension line; both pieces are extension
+    line, none is an edge of the part (found end to end: the piece left over widened the view)."""
+    def draw(sh):
+        box(sh, 300, 300, 700, 500)
+        sh.hdim(300, 450, 500, 545, "37.5")
+        sh.hdim(300, 700, 500, 590, "100")
+    c = run(draw)
+    assert len(c.dimlines) == 2
+    assert len(visible_lines(c)) == 4
+
+
+def test_a_leader_drawn_across_an_outline_corner_stays_one_leader():
+    """The SIDE view's leader crosses the outline at its corner: the piece beyond the crossing is
+    still the leader, and the corner is neither an arrowhead nor a dimension line."""
+    def draw(sh):
+        box(sh, 300, 300, 500, 500)
+        sh.circle((350, 350), 25)
+        tip = np.array([350.0, 350.0]) + 25 * np.array([-0.707, -0.707])
+        sh.leader(tip, (tip[0] - 64, tip[1] - 60), "Ø12.5", scale=0.6)
+    c = run(draw)
+    assert len(c.leaders) == 1 and c.dimlines == []
+    tail = c.leaders[0].tail
+    assert np.hypot(tail[0] - (332.3 - 64), tail[1] - (332.3 - 60)) < 10
+    assert all(290 <= q[0] <= 510 and 290 <= q[1] <= 510 for p in visible_lines(c) for q in (p.p0, p.p1))
+
+
+def test_a_dimension_that_lost_one_end_leaves_its_extension_line_out_of_the_edges():
+    """Text written across a dimension line can cut off one end (the SIDE "50"); the line crossing
+    the remaining tip is still an extension line, not an edge of the part."""
+    def draw(sh):
+        box(sh, 300, 300, 500, 500)
+        sh.line((506, 500), (568, 500), 1)
+        sh.line((560, 380), (560, 500), 1)
+        sh.arrowhead((560, 500), (0, 1))
+        sh.text("50", (590, 380))
+    c = run(draw)
+    assert len(visible_lines(c)) == 4
+
+
 def outline_corners():
     """Corners of the part outline in the three views of `bridge_block`."""
     front = [F(*p) for p in FRONT_OUTLINE]
