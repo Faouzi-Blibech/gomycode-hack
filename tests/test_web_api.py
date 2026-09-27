@@ -375,7 +375,7 @@ def test_analyze_sheet_mode_leaves_out_a_view_it_cannot_name(monkeypatch):
                     [cx - r, cy + r // 2], [cx - r, cy - r // 2]], np.int32)
     cv2.polylines(img, [iso], True, (0, 0, 0), 2)
     cv2.line(img, (cx, cy), (cx, cy + r), (0, 0, 0), 2)
-    ok, png = cv2.imencode(".png", img)
+    _, png = cv2.imencode(".png", img)
     r_ = c.post("/api/analyze", files=[("files", ("sheet.png", png.tobytes(), "image/png"))], data={"mode": "sheet"})
     job = _wait(r_.json()["job_id"])
     assert job["status"] == "done", job
