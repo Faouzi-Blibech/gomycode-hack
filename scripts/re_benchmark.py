@@ -79,7 +79,8 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
 
     if args.one:
-        print(json.dumps(_score_one(Path(args.one), Path(args.out), args.timeout)))
+        print(json.dumps(_score_one(Path(args.one), Path(args.out), args.timeout)), flush=True)
+        os._exit(0)  # a timed-out scoring thread may still run; the row is out, so do not wait on it
         return
 
     if not args.dataset:

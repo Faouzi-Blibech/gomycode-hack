@@ -72,3 +72,11 @@ def test_the_chat_client_gives_up_in_a_minute(monkeypatch):
         monkeypatch.setenv(key, value)
     assert env_chat() is not None
     assert made["timeout"] == 60 and made["max_retries"] == 1
+
+
+def test_the_prompt_actually_sent_asks_for_no_depths_and_no_blind_flags():
+    """The schema embedded in the system message must not ask for estimates or blind flags either (P0-3)."""
+    chat = chat_returning(GOOD)
+    label_image(b"jpeg", chat)
+    sent = chat.calls[0][0]["content"].lower()
+    assert "estimates" not in sent and "blind" not in sent

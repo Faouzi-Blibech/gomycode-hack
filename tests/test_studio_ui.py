@@ -432,3 +432,18 @@ def test_cleared_feature_cell_reverts(studio, tmp_path):
     assert model.ok
     assert path not in session.edits
     assert review.rows[idx][1] == original
+
+
+def test_a_build_failure_that_is_not_the_finish_is_not_blamed_on_it(studio, tmp_path, monkeypatch):
+    """A hole outside the part fails the build even with a fillet set: say so, and drop the stale part."""
+    sid = with_images(studio, tmp_path)
+    review = studio.analyze(sid, "none", AiSettings())
+    sizes = {"x": "60", "y": "40", "z": "10"}
+    _, good = studio.build(sid, sizes, review.rows, [], GeometrySettings())
+    assert good.ok
+    monkeypatch.setattr(handlers, "build_part", lambda spec, geometry, root: MvAbstain(
+        stage="build", reason="feature_outside_part", remedy="A hole or slot lies outside the part."))
+    _, model = studio.build(sid, sizes, review.rows, [], GeometrySettings(finish="fillet", finish_mm=1.0))
+    assert model.ok is False and "does not fit" not in model.message_html
+    assert "outside the part" in model.message_html
+    assert studio.store.get(sid).part is None and model.open_step is None

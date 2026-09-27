@@ -124,6 +124,9 @@ def _abstain_card(a: S.MvAbstain) -> str:
     return card(f"Stopped at {a.stage}: {_reason_words(a.reason)}", a.remedy, "stop")
 
 
+FINISH_FAILURES = frozenset({"fillet_failed", "chamfer_failed"})  # build.BuildError reasons of a finish
+
+
 class Studio:
     def __init__(self, pipe: MvPipeline, store: SessionStore | None = None, root: Path = ROOT):
         self.pipe, self.store, self.root = pipe, store or SessionStore(), Path(root)
@@ -345,7 +348,7 @@ class Studio:
         if isinstance(part, S.MvAbstain):
             # A finish that cannot be built is fixed with the Geometry controls, which live in step 3 (index 2);
             # the part on screen is still good, so it is kept rather than blanking the viewer.
-            if part.stage == "build" and session.geometry.finish != "none":
+            if part.reason in FINISH_FAILURES and session.geometry.finish != "none":
                 return self._finish_failure_model(session)
             session.part = None
             return Model(False, _abstain_card(part))

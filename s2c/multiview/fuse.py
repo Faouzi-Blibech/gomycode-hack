@@ -280,6 +280,7 @@ def _snap_outline(points: list, a_len: float, b_len: float) -> list:
     if n < 3:
         return list(points)
     on_horiz, on_vert = [False] * n, [False] * n
+    horiz_edges, vert_edges = [], []
     for i in range(n):
         a1, b1 = points[i]
         a2, b2 = points[(i + 1) % n]
@@ -289,22 +290,78 @@ def _snap_outline(points: list, a_len: float, b_len: float) -> list:
             continue
         if abs(db) <= EDGE_SLOPE * abs(da):
             on_horiz[i] = on_horiz[(i + 1) % n] = True
+            horiz_edges.append((i, (i + 1) % n))
         elif abs(da) <= EDGE_SLOPE * abs(db):
             on_vert[i] = on_vert[(i + 1) % n] = True
+            vert_edges.append((i, (i + 1) % n))
     all_a = [p[0] for p in points]
     all_b = [p[1] for p in points]
     a_targets = _level_targets({round(points[i][0], 6) for i in range(n) if on_vert[i]}, a_len, all_a)
     b_targets = _level_targets({round(points[i][1], 6) for i in range(n) if on_horiz[i]}, b_len, all_b)
-    out = []
-    for i, (a, b) in enumerate(points):
-        na = a_targets.get(round(a, 6), a) if on_vert[i] else a
-        nb = b_targets.get(round(b, 6), b) if on_horiz[i] else b
-        out.append((na, nb))
+    na = [a_targets.get(round(a, 6), a) if on_vert[i] else a for i, (a, _) in enumerate(points)]
+    nb = [b_targets.get(round(b, 6), b) if on_horiz[i] else b for i, (_, b) in enumerate(points)]
+    _keep_straight(points, na, vert_edges, axis=0)
+    _keep_straight(points, nb, horiz_edges, axis=1)
+    return list(zip(na, nb))
+
+
+def _keep_straight(points: list, new: list, edges: list, axis: int) -> None:
+    """A straight edge never ends up more slanted than it was: when its two ends would snap to different
+    values, both keep their own. Repeats because an end may be shared by a chain of edges."""
+    changed = True
+    while changed:
+        changed = False
+        for i, j in edges:
+            if abs(new[i] - new[j]) > abs(points[i][axis] - points[j][axis]) + 1e-9:
+                new[i], new[j] = points[i][axis], points[j][axis]
+                changed = True
+
+
+def _crosses(points: list, moved: set) -> bool:
+    """Whether an edge touching a moved vertex properly crosses any non-adjacent edge."""
+    n = len(points)
+
+    def ccw(p, q, r):
+        return (r[1] - p[1]) * (q[0] - p[0]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    for i in {k for m in moved for k in ((m - 1) % n, m)}:
+        p, q = points[i], points[(i + 1) % n]
+        for j in range(n):
+            if j in (i, (i - 1) % n, (i + 1) % n):
+                continue
+            r, s = points[j], points[(j + 1) % n]
+            if ccw(p, q, r) * ccw(p, q, s) < 0 and ccw(r, s, p) * ccw(r, s, q) < 0:
+                return True
+    return False
+
+
+def outline_kinds(observations: list[Observation]) -> dict[str, str]:
+    """The input kind (sketch, photo, drawing) behind each canonical outline: the observation
+    `canonical_outlines` picks, by the same rule."""
+    kinds = {}
+    for face in S.CANONICAL_FACES:
+        group = [o for o in observations if S.CANONICAL_OF[o.face] == face]
+        if group:
+            kinds[face] = max(group, key=lambda o: (o.confidence, o.face in S.CANONICAL_FACES)).kind
+    return kinds
+
+
+def _snap_sketch(points: list, a_len: float, b_len: float) -> list:
+    """A hand sketch: every vertex to the envelope edges, standard walls and the 0.5 mm grid, which squares
+    wobbly strokes and closes cut corners. Points that land on each other merge."""
+    out: list = []
+    for a, b in points:
+        p = (snap_coord(a, a_len), snap_coord(b, b_len))
+        if not out or p != out[-1]:
+            out.append(p)
+    if len(out) > 1 and out[0] == out[-1]:
+        out.pop()
     return out
 
 
-def snap(data: dict, clearance: str = "medium") -> None:
-    """Snap scaled, inferred and estimated values of a spec dict in place (spec 4.5)."""
+def snap(data: dict, clearance: str = "medium", kinds: dict | None = None) -> None:
+    """Snap scaled, inferred and estimated values of a spec dict in place (spec 4.5). Sketched outlines are
+    squared vertex by vertex; drawn and photographed ones keep their curves and thin features (level snap)."""
     prov, snapped = data["provenance"], data.setdefault("snapped", [])
     for k, f in enumerate(data["features"]):
         for name in ("a_mm", "b_mm", "diameter_mm", "depth_mm", "width_mm", "length_mm"):
@@ -323,15 +380,21 @@ def snap(data: dict, clearance: str = "medium") -> None:
         a_axis, b_axis, _ = S.FACE_AXES[face]
         outline = data["views"][face]
         orig = [tuple(p) for p in outline["outer"]]
-        new = _snap_outline(outline["outer"], lengths[a_axis], lengths[b_axis])
-        if len(set(new)) >= len(set(orig)) and new != orig:
+        if (kinds or {}).get(face) == "sketch":
+            new = _snap_sketch(orig, lengths[a_axis], lengths[b_axis])
+            ok = len(set(new)) >= 3 and new != orig and not _crosses(new, set(range(len(new))))
+        else:
+            new = _snap_outline(outline["outer"], lengths[a_axis], lengths[b_axis])
+            moved = {i for i, (p, q) in enumerate(zip(orig, new)) if p != q}
+            ok = bool(moved) and len(set(new)) >= len(set(orig)) and not _crosses(new, moved)
+        if ok:
             outline["outer"] = new
             snapped.append(path)
 
 
 def assemble(env: S.Envelope, env_prov: dict, outlines: dict, feats: list[dict], feat_prov: dict,
              warnings: list[str], user_values: dict | None = None, accepted=(), snap_values: bool = True,
-             clearance: str = "medium") -> S.MultiViewSpec:
+             clearance: str = "medium", kinds: dict | None = None) -> S.MultiViewSpec:
     """outlines: canonical face -> (Outline, provenance). Applies the user's edits, then snapping."""
     data = {
         "envelope": env.model_dump(),
@@ -351,5 +414,5 @@ def assemble(env: S.Envelope, env_prov: dict, outlines: dict, feats: list[dict],
             data["features"][int(m.group(1))][m.group(2)] = float(value)
             data["provenance"][path] = "user_edited"
     if snap_values:
-        snap(data, clearance)
+        snap(data, clearance, kinds)
     return S.MultiViewSpec.model_validate(data)

@@ -242,3 +242,33 @@ Task order: 7 and 8 in parallel (disjoint files), then a full benchmark rerun (b
 - [ ] **Step 2: Run** `uv run pytest tests/test_mv_outline.py -v`. Expected: the washer test FAILS with `no_outline`; the others pass.
 - [ ] **Step 3: Implement** the gate in `extract`.
 - [ ] **Step 4: Run** `uv run pytest tests/test_mv_outline.py tests/test_mv_rescue.py tests/test_mv_pipeline.py tests/test_mv_merge_views.py -q` and ruff on the touched files. Expected: PASS.
+
+### Task 10: Robustness fixes from the rerun (controller, inline)
+
+**Finding (full rerun at edb5cf1, `tmp/re_bench/after`):**
+- 5 parts that built at the baseline now abstain with `intersection_empty`: bearing_holder_006/012/014, bolt_nut_004 and pipe_clamp_018.
+- **bearing_holder_006, pipe_clamp_018:**
+  - Every prism is valid and the true intersection is not empty, but OCC's exact boolean returns nothing.
+  - The front view's hole edge (x = 5.66) almost coincides with the top view's foot edge (x = 5.68–5.72).
+  - The old snapping happened to push that edge away, which is why these parts built at the baseline.
+  - A fuzzy boolean with `tol = 1e-4` mm gives 2365 mm³ and 29,029 mm³ respectively, both valid solids.
+- **bolt_nut_004:** builds with snapping off. With the new snapping, a moved horizontal level passes over nearby curve vertices, and the outline crosses itself.
+- **Slanted lines:** the two ends of one near-vertical line can snap to different targets. On bearing_holder_006, 5.72 → 6.0 and 5.68 → 5.5, which slants a straight line by 0.5 mm.
+
+**Files:** `s2c/multiview/build.py`, `s2c/multiview/fuse.py`, `tests/test_mv_build.py`, `tests/test_mv_fuse.py`.
+
+**Changes:**
+- `build._intersect(a, b)`:
+  - Tries the exact intersection first.
+  - When the result has no solid or is not valid, it retries with `tol=FUZZY_MM = 1e-4` and keeps the retry only if that gives a solid.
+  - It is used for the hull and for the turn.
+  - A genuinely empty intersection stays empty: 1e-4 mm cannot create volume.
+- `fuse._snap_outline`: a qualifying edge never ends up more slanted than it was. If its two ends would snap apart, both keep their original coordinate on that axis, repeated until stable.
+- `fuse.snap`: a snapped outline whose moved edges cross another edge is rejected, and the original is kept.
+- `turned_axis` runs inside `_turn`'s try block, and `MvPipeline.fuse` guards its call too, so no turn check can break a build or a fuse (from the Task 8 re-review).
+
+- [ ] Tests (RED first):
+  - `test_build_retries_a_fuzzy_intersection_when_the_exact_one_comes_back_empty` (monkeypatch `cq.Workplane.intersect` to return an empty Workplane when `tol` is None).
+  - `test_snapping_moves_both_ends_of_a_straight_line_together`.
+  - `test_snapping_never_makes_an_outline_cross_itself`.
+- [ ] Rerun the full benchmark on the final code with no other work running and `--timeout 300`. Record before/after in the ledger.

@@ -28,8 +28,11 @@ ROUND_TOL, ROUND_SLACK_MM = 1.03, 0.2
 PROFILE_TOL = 0.03
 NECK_TOL = 0.02  # a radius near 0 inside the part would make a non-manifold revolve
 EPS_MM = 1e-4
-# revolve clean-up, as fractions of the part's largest envelope length (the axis length for END_BAND)
-MARGIN, SIMPLIFY, SNAP, END_BAND = 1e-3, 1e-3, 2e-3, 1e-2
+# revolve clean-up: radial amounts are fractions of R, amounts along the axis fractions of its length
+MARGIN, SNAP, END_BAND = 1e-3, 2e-3, 1e-2
+SIMPLIFY = MARGIN / 2  # below the margin, so simplifying never pulls a face back onto the true radius
+# the intersect's cost grows with axis-view points times profile points; the dataset's knurled knobs reach 48k
+TURN_BUDGET = 60_000
 
 
 def _extents(poly: np.ndarray, hs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -69,9 +72,12 @@ def _reach(spec: MultiViewSpec, axis: str) -> tuple[float, float]:
 
 
 def turned_axis(spec: MultiViewSpec) -> str | None:
-    """The axis the part is turned about, or None. Cheap: numpy only, it runs on every fuse."""
+    """The axis the part is turned about, or None. Cheap: numpy only, it runs on every fuse. None also when the
+    turn would cost more than TURN_BUDGET, so the fuse warning and the build always agree."""
     env = spec.envelope
-    for axis, (_, sides) in SIDES.items():
+    for axis, (view, sides) in SIDES.items():
+        if all(getattr(spec.views, face).source == "assumed" for face, _ in sides):
+            continue  # assumed side views are rectangles: the hull is already a cylinder and nothing was matched
         lu, lv = (env.length(rad) for _, rad in sides)
         if abs(lu - lv) > LENGTH_TOL * max(lu, lv):
             continue
@@ -82,8 +88,11 @@ def turned_axis(spec: MultiViewSpec) -> str | None:
         halves = _halves(spec, axis, hs)
         if halves.max(axis=0).min() < NECK_TOL * r_max:
             continue
-        if max(np.abs(a - b).mean() for a, b in combinations(halves, 2)) / r_max <= PROFILE_TOL:
-            return axis
+        if max(np.abs(a - b).mean() for a, b in combinations(halves, 2)) / r_max > PROFILE_TOL:
+            continue
+        if len(getattr(spec.views, view).outer) * len(profile(spec, axis)) > TURN_BUDGET:
+            continue
+        return axis
     return None
 
 
@@ -111,14 +120,15 @@ def _chains(values: np.ndarray, tol: float) -> list[np.ndarray]:
     return np.split(order, np.flatnonzero(np.diff(values[order]) > tol) + 1)
 
 
-def _square_up(pts: np.ndarray, tol: float) -> list[tuple[float, float]]:
-    """Radii and heights within tol made equal, so every face is a cylinder, a flat ring or a clearly sloped cone:
-    OCC booleans silently return nothing on a cone that is almost a cylinder. Radii round up, keeping the part inside."""
+def _square_up(pts: np.ndarray, r_tol: float, h_tol: float) -> list[tuple[float, float]]:
+    """Radii within r_tol and heights within h_tol made equal, so every face is a cylinder, a flat ring or a clearly
+    sloped cone: OCC booleans silently return nothing on a cone that is almost a cylinder. Radii round up, keeping
+    the part inside; a step's height moves either way, by at most h_tol."""
     r, h = pts[:, 0].copy(), pts[:, 1].copy()
     inner, last = np.arange(1, len(pts) - 1), len(pts) - 1  # the two points on the axis keep r = 0
-    for g in _chains(r[inner], tol):
+    for g in _chains(r[inner], r_tol):
         r[inner[g]] = r[inner[g]].max()
-    for g in _chains(h, tol):
+    for g in _chains(h, h_tol):
         h[g] = h[0] if 0 in g else h[last] if last in g else h[g].mean()
     out: list[tuple[float, float]] = []
     for p in zip(r.tolist(), h.tolist()):
@@ -134,12 +144,12 @@ def _square_up(pts: np.ndarray, tol: float) -> list[tuple[float, float]]:
 def profile(spec: MultiViewSpec, axis: str) -> list[tuple[float, float]]:
     """Half-section (r, h), closed on the axis. r is the largest half-extent, taken just either side of every
     outline vertex height so steps stay sharp, and scaled up when the view along the axis reaches further out
-    (gear teeth between the side views). The true part stays inside, and the revolve never just touches the hull
-    (OCC booleans fail on tangent contact): r grows by a margin and the ends run past the envelope. Within END_BAND
-    of an end r takes the band's largest value: an outline that stops just short of the envelope end would otherwise
-    leave a needle on the axis."""
+    (gear teeth between the side views). r grows by a margin and the ends run past the envelope, so the revolve
+    never just touches the hull (OCC booleans fail on tangent contact) and the true part stays inside radially;
+    snapping may move a step along the axis by up to SNAP of the length. Within END_BAND of an end r takes the band's
+    largest value: an outline that stops just short of the envelope end would otherwise leave a needle on the axis."""
     env = spec.envelope
-    length, size = env.length(axis), max(env.x_mm, env.y_mm, env.z_mm)
+    length = env.length(axis)
     heights = np.array(sorted({0.0, length} | {to_global(face, a, b, env)[axis] for face, _ in SIDES[axis][1]
                                                for a, b in getattr(spec.views, face).outer}))
     hs = np.sort(np.concatenate([heights - EPS_MM, heights + EPS_MM]))
@@ -149,10 +159,10 @@ def profile(spec: MultiViewSpec, axis: str) -> list[tuple[float, float]]:
     for end in (hs < END_BAND * length, hs > (1 - END_BAND) * length):
         if end.any():
             r[end] = r[end].max()
-    r += MARGIN * size
-    lo, hi = -MARGIN * size, length + MARGIN * size
+    r += MARGIN * r_max
+    lo, hi = -MARGIN * length, length + MARGIN * length
     pts = np.array([(0.0, lo), (r[0], lo), *zip(r, hs), (r[-1], hi), (0.0, hi)])
-    return _square_up(_simplify(pts, SIMPLIFY * size), SNAP * size)
+    return _square_up(_simplify(pts, SIMPLIFY * r_max), SNAP * r_max, SNAP * length)
 
 
 def revolve(spec: MultiViewSpec, axis: str) -> cq.Workplane:
