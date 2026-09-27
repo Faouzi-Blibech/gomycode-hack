@@ -11,7 +11,7 @@ import secrets
 from functools import lru_cache
 from http import HTTPStatus
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import cv2
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -30,7 +30,7 @@ from s2c.multiview.reference import REFERENCES
 from s2c.multiview.settings import AiSettings, GeometrySettings, StudioSettings
 from s2c.multiview.spec import MultiViewSpec, MvAbstain
 from s2c.silhouette import iou
-from s2c.web import jobs
+from s2c.web import chat, jobs
 
 log = logging.getLogger(__name__)
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "mv" / "sketches"
@@ -254,6 +254,30 @@ def export(body: ExportBody) -> dict:
     return {"files": files, "zip_url": f"{base}/{zip_path.name}", "print_time_s": res.print_time_s,
             "filament_g": res.filament_g, "warnings": list(dict.fromkeys([*part.spec.warnings, *res.warnings])),
             "abstain": None}
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ChatBody(BaseModel):
+    messages: list[ChatMessage]
+
+
+@router.post("/chat")
+def chat_route(body: ChatBody,
+               transport: Annotated[chat.ChatTransport | None, Depends(chat.get_chat_transport)]) -> dict:
+    if not 1 <= len(body.messages) <= chat.MAX_MESSAGES:
+        raise HTTPException(400, f"Send between 1 and {chat.MAX_MESSAGES} messages.")
+    if any(len(m.content) > chat.MAX_CHARS for m in body.messages):
+        raise HTTPException(400, f"A message is longer than {chat.MAX_CHARS} characters.")
+    if transport is None:
+        raise HTTPException(503, "The chat model is not configured. Add CHAT_API_KEY to .env.")
+    try:
+        return chat.run_chat([m.model_dump() for m in body.messages], transport)
+    except chat.ChatUnavailable as e:
+        raise HTTPException(502, "The chat model did not answer. Try again.") from e
 
 
 @router.get("/artifacts/{key}/{path:path}")
