@@ -26,3 +26,14 @@ def test_spiral_and_desk_ink_are_dropped(cap):
     assert not cap.ink[:12].any()  # the other notebook's cover above the sheet
     rows = cap.ink[:, w - 40:].any(1).nonzero()[0]  # the binding ran the whole height; only "Ø8" is this far right
     assert rows.size == 0 or np.ptp(rows) < 0.25 * h
+
+
+def test_views_split_into_top_front_and_right_despite_the_miter_line_and_bridging_dimensions(cap):
+    from s2c.sketch.views import split_views
+
+    views, _ = split_views(cap.ink, [], cap.stroke_px)
+    by_name = {v.name: v.bbox for v in views}
+    assert sorted(by_name) == ["front", "right", "top"]
+    top, front, right = by_name["top"], by_name["front"], by_name["right"]
+    assert top[1] + top[3] <= front[1] + 0.2 * front[3]      # top above front
+    assert right[0] >= front[0] + 0.8 * front[2]              # right beside front, not merged into it
