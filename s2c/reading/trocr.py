@@ -110,11 +110,19 @@ class TrocrReader:
         device = self.device  # a snapshot: another concurrent read must not change which attempt this one is on
         try:
             processor, model = _load(self.model_id, device)
-            return _run(processor, model, device, crops, self.max_new_tokens)
+            return self._batched(processor, model, device, crops)
         except Exception as e:
             if device != "cuda" or not _is_oom(e):
                 raise
             log.warning("TrOCR ran out of GPU memory (%s); moving to CPU for the rest of the process", e)
             self.device = "cpu"  # only ever moves towards cpu, for every later read on this reader
             processor, model = _load(self.model_id, "cpu")
-            return _run(processor, model, "cpu", crops, self.max_new_tokens)
+            return self._batched(processor, model, "cpu", crops)
+
+    def _batched(self, processor, model, device: str, crops: list[Crop]) -> list[ReaderResult]:
+        # a whole sheet's crops in one batch bust GPU_BUDGET_TROCR_GB; TROCR_BATCH at a time stays inside it
+        n = max(1, int(os.environ.get("TROCR_BATCH", "8")))
+        out: list[ReaderResult] = []
+        for i in range(0, len(crops), n):
+            out += _run(processor, model, device, crops[i:i + n], self.max_new_tokens)
+        return out

@@ -13,6 +13,9 @@ from s2c.sketch.text import TextItem, erase_mask
 
 REACH = 0.10          # of the sheet's long side: how far a view's annotations may sit
 MIN_HOLE = 0.03       # side of the smallest enclosed area of an outline, of the long side
+MIN_PART = 0.01      # side of the smallest enclosed area that can join a view, of the long side
+GAP = 0.02            # of the long side: enclosed areas closer than this are one view
+DIAGONAL = 0.15       # of the long side: a straight slanted line this long is construction, not a view
 THIRD_ANGLE = {"above": "top", "below": "bottom", "right": "right", "left": "left"}
 
 
@@ -26,42 +29,54 @@ class ViewRegion:
     named_by: Literal["label", "layout"]
 
 
+def _without_diagonals(geo: np.ndarray) -> np.ndarray:
+    """Erase long straight lines that are neither horizontal nor vertical: a 45 degree miter or construction
+    line (solid or dashed) runs between views and would join them."""
+    long_side = max(geo.shape)
+    lines = cv2.HoughLinesP(geo, 1, np.pi / 180, threshold=60, minLineLength=int(DIAGONAL * long_side),
+                            maxLineGap=int(0.03 * long_side))
+    out = geo.copy()
+    for x0, y0, x1, y1 in ([] if lines is None else lines.reshape(-1, 4)):
+        angle = abs(np.degrees(np.arctan2(y1 - y0, x1 - x0))) % 180
+        if 20 <= angle <= 70 or 110 <= angle <= 160:
+            cv2.line(out, (int(x0), int(y0)), (int(x1), int(y1)), 0, 9)
+    return out
+
+
 def _seeds(geo: np.ndarray) -> list[tuple[np.ndarray, tuple[int, int, int, int]]]:
-    """Closed outlines: components that enclose an area. Overlapping ones are merged."""
+    """Closed areas of the outlines, grouped into views: areas closer than GAP belong to the same view.
+    The enclosed areas are used, not the outer outline, so a dimension or extension line touching two views
+    does not join them; views sit apart across an empty band."""
     long_side = max(geo.shape)
     closed = cv2.morphologyEx(geo, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
     contours, hierarchy = cv2.findContours(closed, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
     if hierarchy is None:
         return []
-    min_hole = (MIN_HOLE * long_side) ** 2
-    boxes = []
-    for i, c in enumerate(contours):
-        child = hierarchy[0][i][2]
-        if hierarchy[0][i][3] != -1 or child == -1:
-            continue
-        holes = []
-        while child != -1:
-            holes.append(cv2.contourArea(contours[child]))
-            child = hierarchy[0][child][0]
-        if max(holes) >= min_hole:
-            boxes.append(list(cv2.boundingRect(c)))
+    min_hole, min_part = (MIN_HOLE * long_side) ** 2, (MIN_PART * long_side) ** 2
+    areas = [(list(cv2.boundingRect(c)), cv2.contourArea(c)) for i, c in enumerate(contours)
+             if hierarchy[0][i][3] != -1]
+    boxes = [b + [a >= min_hole] for b, a in areas if a >= min_part]  # small areas join, only big ones seed
+    gap = GAP * long_side
     merged = True
-    while merged:  # merge overlapping boxes: inner outlines belong to the outer one
+    while merged:  # areas of one view touch or nearly touch; inner outlines belong to the outer one
         merged = False
         for i in range(len(boxes)):
             for j in range(i + 1, len(boxes)):
                 a, b = boxes[i], boxes[j]
-                if a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]:
+                if (a[0] < b[0] + b[2] + gap and b[0] < a[0] + a[2] + gap
+                        and a[1] < b[1] + b[3] + gap and b[1] < a[1] + a[3] + gap):
                     x0, y0 = min(a[0], b[0]), min(a[1], b[1])
                     x1, y1 = max(a[0] + a[2], b[0] + b[2]), max(a[1] + a[3], b[1] + b[3])
-                    boxes[i] = [x0, y0, x1 - x0, y1 - y0]
+                    boxes[i] = [x0, y0, x1 - x0, y1 - y0, a[4] or b[4]]
                     del boxes[j]
                     merged = True
                     break
             if merged:
                 break
     out = []
-    for x, y, w, h in boxes:
+    for x, y, w, h, big in boxes:
+        if not big:
+            continue
         mask = np.zeros(geo.shape, bool)
         mask[y:y + h, x:x + w] = geo[y:y + h, x:x + w] > 0
         out.append((mask, (x, y, w, h)))
@@ -124,7 +139,7 @@ def _distance_to_box(point, box) -> float:
 
 
 def split_views(ink, texts: list[TextItem], stroke_px: float):
-    geo = cv2.bitwise_and(ink, cv2.bitwise_not(erase_mask(texts, ink.shape)))
+    geo = _without_diagonals(cv2.bitwise_and(ink, cv2.bitwise_not(erase_mask(texts, ink.shape))))
     seeds = _seeds(geo)
     if not seeds:
         return SketchAbstain(stage="views", reason="no_views_found",
