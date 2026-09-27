@@ -24,8 +24,8 @@ def px_outline(x=400, y=300, w=601, h=401, circles=()):
     return PixelOutline(outer=outer, circles=list(circles), bbox=(x, y, w, h), shape=(1200, 1600))
 
 
-def written(value, axis=None, hole=None, kind="linear", conf=0.9):
-    return Linked(Reading(float(value), kind, (0, 0, 10, 10), conf, str(value)), axis, hole)
+def written(value, axis=None, hole=None, kind="linear", conf=0.9, confirmed=True):
+    return Linked(Reading(float(value), kind, (0, 0, 10, 10), conf, str(value), confirmed), axis, hole)
 
 
 def front_obs(**kw):
@@ -255,3 +255,62 @@ def test_outline_kinds_follow_the_chosen_observation():
     back = Observation(face="back", kind="photo", outline=outline_from_mm(rect(10, 10), 10, 10), confidence=0.5)
     top = Observation(face="bottom", kind="drawing", outline=outline_from_mm(rect(10, 10), 10, 10))
     assert outline_kinds([back, front, top]) == {"front": "sketch", "top": "drawing"}
+
+
+def test_an_unconfirmed_size_is_only_a_suggestion():
+    front = Observation(face="front", kind="sketch", outline=px_outline(),
+                        values=[written(60, "a", confirmed=False), written(40, "b")])
+    res = fuse_envelope([front], {"envelope.z_mm": 5})
+    assert isinstance(res, MvAbstain) and res.reason == "missing_x"
+    assert res.remedy == "Check the width: the sketch reads 60 mm. Confirm or correct it."
+    assert res.partial["suggested"]["envelope.x_mm"] == 60
+    assert res.partial["known"] == {"envelope.y_mm": 40, "envelope.z_mm": 5}
+
+
+def test_a_confirmed_size_on_another_view_wins_over_an_unconfirmed_one():
+    front = Observation(face="front", kind="sketch", outline=px_outline(),
+                        values=[written(60, "a", confirmed=False), written(40, "b")])
+    top = Observation(face="top", kind="sketch", outline=px_outline(h=101), values=[written(60, "a")])
+    env, prov, _ = fuse_envelope([front, top], {"envelope.z_mm": 5})
+    assert env.x_mm == 60 and prov["envelope.x_mm"] == "user_written"
+
+
+def test_a_size_far_off_the_drawing_scale_is_only_a_suggestion():
+    # front 601 x 401 px reads 60 x 40 (0.1 mm/px); top 601 x 101 px reads 60 and 1248 (12.4 mm/px)
+    front = front_obs()
+    top = Observation(face="top", kind="sketch", outline=px_outline(h=101),
+                      values=[written(60, "a"), written(1248, "b")])
+    res = fuse_envelope([front, top])
+    assert isinstance(res, MvAbstain) and res.reason == "missing_z"
+    assert res.partial["suggested"]["envelope.z_mm"] == 1248
+    assert res.remedy == "Check the depth: the sketch reads 1248 mm. Confirm or correct it."
+
+
+def test_the_scale_trap_needs_two_other_sizes():
+    front = Observation(face="front", kind="sketch", outline=px_outline(h=121),
+                        values=[written(100, "a"), written(3, "b")])  # a thin plate drawn thick: 6x off
+    env, prov, _ = fuse_envelope([front], {"envelope.z_mm": 50})
+    assert (env.x_mm, env.y_mm) == (100, 3) and prov["envelope.y_mm"] == "user_written"
+
+
+def test_a_size_within_the_scale_trap_stays_written_and_warns_nothing():
+    top = Observation(face="top", kind="sketch", outline=px_outline(h=101), values=[written(60, "a"), written(25, "b")])
+    env, prov, warnings = fuse_envelope([front_obs(), top])  # 25 mm on 100 px is 2.5x the 0.1 mm/px of the rest
+    assert env.z_mm == 25 and prov["envelope.z_mm"] == "user_written"
+    assert not any("scale" in w for w in warnings)
+
+
+def test_an_unconfirmed_hole_diameter_is_kept_amber():
+    env = Envelope(x_mm=60, y_mm=40, z_mm=5)
+    front = Observation(face="front", kind="sketch", outline=px_outline(circles=[PixelCircle(500, 600, 58)]),
+                        values=[written(6, None, 0, "diameter", confirmed=False)])
+    feats, prov = features_from([front], env)
+    assert feats[0]["diameter_mm"] == 6 and prov["features[0].diameter_mm"] == "inferred"
+
+
+def test_a_hole_diameter_far_off_the_drawing_is_kept_amber():
+    env = Envelope(x_mm=60, y_mm=40, z_mm=5)
+    front = Observation(face="front", kind="sketch", outline=px_outline(circles=[PixelCircle(500, 600, 58)]),
+                        values=[written(1, None, 0, "diameter")])  # the drawing says about 5.8 mm
+    feats, prov = features_from([front], env)
+    assert feats[0]["diameter_mm"] == 1 and prov["features[0].diameter_mm"] == "inferred"

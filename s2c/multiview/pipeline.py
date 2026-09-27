@@ -39,6 +39,7 @@ from s2c.multiview.settings import AiSettings, GeometrySettings
 from s2c.multiview.slice import slice_solid
 from s2c.multiview.turned import WARNING as TURNED_WARNING
 from s2c.multiview.turned import turned_axis
+from s2c.reading import ReadingService, as_reader, read_timeout_s
 
 log = logging.getLogger(__name__)
 IOU_GREEN = 0.85
@@ -98,6 +99,15 @@ class MvPipeline:
         self.seed, self.attempts = SEED, TRIES
         self.draw_faces = self.rescue_enabled = True
 
+    def reading(self) -> ReadingService | None:
+        """The readers in trust order: the batch (Qwen-VL) reader first, it keeps the ⌀ and R signs; then TrOCR."""
+        model = os.environ.get("VLM_MODEL")
+        readers = [r for r in (
+            as_reader(self.batch_reader, "qwen", calibrated=False, batch=True, timeout_s=read_timeout_s(),
+                      cache_key=f"qwen:{model}" if model and self.batch_reader is not None else None),
+            as_reader(self.reader, "trocr", calibrated=True, batch=False)) if r is not None]
+        return ReadingService(readers) if readers else None
+
     def configured(self, ai: AiSettings) -> MvPipeline:
         """A copy for one request with the user's AI switches, seed and attempts; the shared pipeline never changes."""
         pipe = copy.copy(self)
@@ -123,6 +133,7 @@ class MvPipeline:
         reads = self.reader is not None or self.batch_reader is not None
         if not reads:
             observed.warnings.append("OCR unavailable: enter the dimensions by hand")
+        service = self.reading() if reads else None
         excluded: list[tuple] = []
         for item in images:
             bgr = cv2.imdecode(np.frombuffer(item.data, np.uint8), cv2.IMREAD_COLOR)
@@ -145,7 +156,7 @@ class MvPipeline:
                 return outline
             values = []
             if reads and label.input_kind != "photo":
-                values = link(read_values(bgr, outline, self.reader, self.batch_reader), outline)
+                values = link(read_values(bgr, outline, service), outline)
             obs = Observation(face=label.face, kind=label.input_kind, outline=outline, values=values,
                               mm_per_px=mm_per_px, confidence=label.confidence * (RESCUE_PENALTY if rescued else 1.0))
             attach_label(obs, label)
@@ -259,8 +270,9 @@ def default_pipeline() -> MvPipeline:
     """Qwen-VL, Qwen-Image and Solaria from the environment; TrOCR and TripoSR when the ai extra is installed."""
     reader = provider = None
     try:
-        from s2c.multiview.ocr import trocr_reader
-        reader = trocr_reader()
+        from s2c.reading.trocr import TrocrReader
+        reader = TrocrReader()
+        ReadingService([reader]).warm()  # loads the model in the background; the first request does not wait
     except Exception as e:  # transformers missing
         log.warning("TrOCR unavailable: %s", e)
     try:

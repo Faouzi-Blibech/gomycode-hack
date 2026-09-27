@@ -75,8 +75,8 @@ def test_build_errors_become_abstentions(tmp_path):
 def test_the_batch_reader_feeds_ocr(monkeypatch):
     seen = []
 
-    def fake(bgr, outline, reader, batch=None):
-        seen.append((reader, batch))
+    def fake(bgr, outline, service):
+        seen.append([r.name for r in service.readers])
         return []
 
     def batch(crops):
@@ -84,8 +84,15 @@ def test_the_batch_reader_feeds_ocr(monkeypatch):
 
     monkeypatch.setattr(pipeline, "read_values", fake)
     observed = MvPipeline(batch_reader=batch).observe([ImageInput(sketch(600, 400), "front", "sketch")])
-    assert seen == [(None, batch)]
+    assert seen == [["qwen"]]
     assert "OCR unavailable: enter the dimensions by hand" not in observed.warnings
+
+
+def test_the_pipeline_reads_with_qwen_first_then_trocr():
+    pipe = MvPipeline(reader=lambda crop: ("", 0.0), batch_reader=lambda crops: [])
+    assert [r.name for r in pipe.reading().readers] == ["qwen", "trocr"]
+    assert [r.calibrated for r in pipe.reading().readers] == [False, True]
+    assert MvPipeline().reading() is None
 
 
 def test_default_pipeline_reads_with_qwen_vl_when_configured(monkeypatch):
