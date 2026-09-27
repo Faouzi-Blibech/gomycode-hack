@@ -25,6 +25,9 @@ SPUR_FRACTION = 0.006      # lines thinner than this share of the long side (and
 SPUR_MIN_PX = 5
 SPUR_MAX = 0.025           # the kernel widened for thick lines stays under this share of the long side
 SPUR_KEEP = 0.5            # cutting spurs keeps most of the view, or the view itself was that thin
+SPUR_MIN_REACH = 3         # px: a piece cut off that sticks out less is a sliver of a curve, not a line
+SPUR_TURN = 45             # degrees: under a line sticking out the outline runs on; at a corner it turns
+SPUR_FEW = 8               # centre lines overhang in a few places; more short pieces are teeth
 ROUND_ASPECT = 0.85        # a drawn circle is about as wide as it is tall...
 ROUND_FILL = 0.9           # ...fills this share of its hull...
 SPLIT_FILL = 0.6           # ...and the pieces of one cut by centre lines fill at least this share
@@ -188,11 +191,12 @@ def _line_art(ink: np.ndarray, fg: np.ndarray, outer, filled: np.ndarray, band: 
     body = filled  # also when the view itself is about as thin as a line: it stays as drawn
     if n > 1:
         core = np.where(labels == 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA])), 255, 0).astype(np.uint8)
-        reach = cv2.distanceTransform(cv2.bitwise_not(core), cv2.DIST_L2, 3)
-        if (reach[cv2.subtract(filled, core) > 0].max(initial=0) > k  # a line sticks out, not just a nick
-                and cv2.countNonZero(core) >= SPUR_KEEP * cv2.countNonZero(filled)):
-            body = core
-            outer = max(cv2.findContours(core, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[0], key=cv2.contourArea)
+        spurs = _spurs(filled, core, k)
+        if cv2.countNonZero(spurs) and cv2.countNonZero(core) >= SPUR_KEEP * cv2.countNonZero(filled):
+            outer = max(cv2.findContours(cv2.subtract(filled, spurs), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[0],
+                        key=cv2.contourArea)
+            body = np.zeros_like(filled)
+            cv2.drawContours(body, [outer], -1, 255, -1)
     bbox = tuple(int(v) for v in cv2.boundingRect(outer))
     edge_band = cv2.subtract(body, cv2.erode(body, np.ones((band, band), np.uint8)))
     gaps = cv2.morphologyEx(cv2.bitwise_and(body, cv2.bitwise_not(fg)), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
@@ -216,6 +220,51 @@ def _line_art(ink: np.ndarray, fg: np.ndarray, outer, filled: np.ndarray, band: 
     return PixelOutline(outer=cv2.approxPolyDP(outer, 2.0, True).reshape(-1, 2), circles=circles, bbox=bbox,
                         circular=circularity(outer) >= CIRCULARITY, shape=(h, w), line_art=True,
                         hidden=find_hidden_lines(cv2.bitwise_and(ink, body), bbox))
+
+
+def _spurs(filled: np.ndarray, core: np.ndarray, k: int) -> np.ndarray:
+    """What the opening cut off that is a line sticking out: any piece reaching further than k, and a shorter
+    one standing on a stretch where the outline runs on. A piece where the outline turns is a corner's own tip,
+    which a square kernel shaves off an acute corner; it stays. So do short pieces all round the outline: the
+    part's own teeth, not the few places where centre lines overhang."""
+    cut = cv2.subtract(filled, core)
+    reach = cv2.distanceTransform(cv2.bitwise_not(core), cv2.DIST_L2, 3)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(np.where(reach > SPUR_MIN_REACH, cut, 0).astype(np.uint8))
+    spurs, short = np.zeros_like(cut), []
+    if n < 2:
+        return spurs
+    pts = max(cv2.findContours(core, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)[0], key=cv2.contourArea).reshape(-1, 2)
+    g = SPUR_MIN_REACH + 2  # the piece's foot, nearer the core than SPUR_MIN_REACH, goes with it
+    for i in range(1, n):
+        x, y, w, h = (int(v) for v in stats[i, :4])
+        x0, y0, x1, y1 = max(x - g, 0), max(y - g, 0), min(x + w + g, cut.shape[1]), min(y + h + g, cut.shape[0])
+        seed = np.where(labels[y0: y1, x0: x1] == i, 255, 0).astype(np.uint8)
+        piece = cv2.bitwise_and(cv2.dilate(seed, np.ones((2 * g + 1, 2 * g + 1), np.uint8)), cut[y0: y1, x0: x1])
+        if reach[y0: y1, x0: x1][piece > 0].max() > k:
+            spurs[y0: y1, x0: x1] |= piece
+            continue
+        near = cv2.dilate(piece, np.ones((3, 3), np.uint8))
+        inside = np.flatnonzero((pts[:, 0] >= x0) & (pts[:, 0] < x1) & (pts[:, 1] >= y0) & (pts[:, 1] < y1))
+        idx = inside[near[pts[inside, 1] - y0, pts[inside, 0] - x0] > 0]
+        if _turn(pts, idx, k) < SPUR_TURN:
+            short.append((x0, y0, x1, y1, piece))
+    if len(short) <= SPUR_FEW:
+        for x0, y0, x1, y1, piece in short:
+            spurs[y0: y1, x0: x1] |= piece
+    return spurs
+
+
+def _turn(pts: np.ndarray, idx: np.ndarray, m: int) -> float:
+    """How far, in degrees, the closed outline `pts` turns across the stretch of points `idx`, each side
+    measured over m points."""
+    if len(idx) == 0:
+        return 0.0
+    n = len(pts)
+    j = int(np.argmax(np.diff(np.r_[idx, idx[0] + n])))  # the stretch starts after its widest gap
+    i0, i1 = idx[(j + 1) % len(idx)], idx[j]
+    a, b = pts[i0] - pts[(i0 - m) % n], pts[(i1 + m) % n] - pts[i1]
+    cos = float(np.dot(a, b)) / (float(np.linalg.norm(a) * np.linalg.norm(b)) or 1.0)
+    return float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
 
 
 def _split_circles(pieces: np.ndarray, k: int, min_area: float, stroke: float,

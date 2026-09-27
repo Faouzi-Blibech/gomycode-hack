@@ -148,6 +148,42 @@ def test_a_dashed_horizontal_line_is_measured_from_the_top_of_the_bbox():
     assert o.hidden[0][1] == pytest.approx(0.25, abs=0.03)
 
 
+def small_view(shape: str, centre_lines: bool, overhang: int = 5):
+    """A view drawn small with 3 px lines, as on a sheet, its centre lines overhanging it by a few px."""
+    img = page(280, 380)
+    ink, t = (0, 0, 0), 3
+    if shape == "rectangle":
+        cv2.rectangle(img, (40, 40), (340, 240), ink, t)
+        half = (150, 100)
+    elif shape == "cone":
+        cv2.polylines(img, [np.array([(130, 100), (250, 60), (250, 220), (130, 180)])], True, ink, t)
+        half = (60, 80)
+    else:
+        cv2.circle(img, (190, 140), 80, ink, t)
+        cv2.circle(img, (190, 140), 40, ink, t)
+        half = (80, 80)
+    if centre_lines:
+        dash = (12 * t, 3 * t, 3 * t, 3 * t)
+        pattern_line(img, (190 - half[0] - overhang, 140), (190 + half[0] + overhang, 140), dash, t)
+        if shape != "cone":
+            pattern_line(img, (190, 140 - half[1] - overhang), (190, 140 + half[1] + overhang), dash, t)
+    return img
+
+
+@pytest.mark.parametrize("overhang", [3, 5, 8, 12])
+@pytest.mark.parametrize("shape", ["rectangle", "cone", "end view"])
+def test_centre_lines_overhanging_a_blown_up_small_view_are_cut_off(shape, overhang):
+    """The pipeline blows a sheet view up about four times, 3 px lines and all. The outline is the drawn one,
+    to the outer edge of its lines, whatever the centre lines do."""
+    plain = cv2.cvtColor(small_view(shape, centre_lines=False), cv2.COLOR_BGR2GRAY)
+    _, _, w, h = cv2.boundingRect(cv2.findNonZero(255 - plain))
+    big = resize_long_side(small_view(shape, centre_lines=True, overhang=overhang))
+    s = big.shape[1] / plain.shape[1]
+    o = extract(big, drawing=True)
+    assert o.line_art
+    assert o.bbox[2] == pytest.approx(w * s, rel=0.01) and o.bbox[3] == pytest.approx(h * s, rel=0.01)
+
+
 @pytest.mark.parametrize("line", [1, 2, 3])
 def test_a_small_view_blown_up_to_full_size_reads_the_same(line):
     """A view cropped from a sheet is small; the pipeline scales it up about four times, lines and all."""
