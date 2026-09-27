@@ -341,3 +341,21 @@ def test_analyze_sheet_mode_without_read_sketch_fails_with_a_clear_message(monke
     job = _wait(r.json()["job_id"])
     assert job["status"] == "failed"
     assert "per-face photos" in job["error"]
+
+
+def test_analyze_sheet_mode_splits_a_drawn_sheet_and_builds(monkeypatch):
+    """A clean orthographic sheet is split and named by s2c.multiview.sheet before the sketch reader is tried."""
+    def no_sketch(image_bytes):
+        raise AssertionError("the sketch reader must not run on a drawn sheet")
+    monkeypatch.setattr("s2c.sketch.read_sketch", no_sketch, raising=False)
+    sheet = Path(__file__).resolve().parents[1] / "examples" / "mv" / "sheet" / "sheet.png"
+    r = c.post("/api/analyze", files=[("files", ("sheet.png", sheet.read_bytes(), "image/png"))],
+               data={"mode": "sheet"})
+    assert r.status_code == 202, r.text
+    job = _wait(r.json()["job_id"])
+    assert job["status"] == "done", job
+    assert job["stages"][0]["detail"].startswith("3 views found")
+    assert job["stages"][0]["tool"] == "Drawing reader"
+    assert job["result"]["spec"] or job["result"]["abstain"]
+    assert {i["face"] for i in job["images"]} >= {"front", "top"}
+    assert job["coverage"]["front"] == job["coverage"]["top"] == "observed"

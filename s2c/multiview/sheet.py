@@ -746,3 +746,46 @@ def _rings(ink: np.ndarray, box: Box, body: Box, slack: int) -> tuple[float, flo
     if len(inner) == 0:
         return None
     return float(max(body[2], body[3])), 2 * float(inner.max()) + 1, cx, cy
+
+
+ROUND = 0.85  # a view whose filled outline covers this share of its enclosing circle is round
+
+
+def round_view(ink: np.ndarray, box) -> bool:
+    """The view's filled outline is a circle, once lines thinner than a tenth of the view (chain lines through a
+    hole) are opened away. Round views alone never make a sheet: they are what a tight crop of one drawing leaves
+    when the split takes its outline for the sheet frame, its holes."""
+    x, y, w, h = box
+    k = max(3, round(0.1 * min(w, h))) | 1
+    sub = cv2.copyMakeBorder(ink[y: y + h, x: x + w], k, k, k, k, cv2.BORDER_CONSTANT, value=0)
+    closed = cv2.morphologyEx(sub, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    filled = np.zeros_like(closed)
+    cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
+    opened = cv2.morphologyEx(filled, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
+    contours, _ = cv2.findContours(opened, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return False
+    c = max(contours, key=cv2.contourArea)
+    _, r = cv2.minEnclosingCircle(c)
+    return cv2.contourArea(c) >= ROUND * math.pi * r * r
+
+
+def sheet_crops(image_bgr: np.ndarray, projection: str = "first", reader: Reader | None = None,
+                ) -> tuple[Sheet, Naming, list[tuple[int, bytes, str]]] | None:
+    """(sheet, naming, [(view index, PNG crop, face)]) when the image is a drawing sheet, else None. A sheet needs
+    two aligned line-drawn views (is_sheet), two of them named under the scale check (two unrelated sketches can
+    line up) and one named view that is not round (a tight crop of one drawing leaves its holes as "views")."""
+    sheet = split_sheet(image_bgr)
+    if not is_sheet(sheet):
+        return None
+    naming = name_views(sheet, image_bgr, projection, reader=reader)
+    if named_count(naming) < 2:
+        return None
+    ink = ink_mask(image_bgr)
+    views = sheet.drawings[naming.drawing].views
+    if all(round_view(ink, v.box) for v, f in zip(views, naming.faces) if f not in ("auto", SKIP)):
+        return None
+    index = [i for i, f in enumerate(naming.faces) if f != SKIP]
+    crops = [(i, png, face) for (png, face), i in zip(crop_views(sheet, image_bgr, naming), index, strict=True)]
+    return sheet, naming, crops
