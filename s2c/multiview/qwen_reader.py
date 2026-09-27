@@ -63,3 +63,12 @@ def qwen_batch_reader(chat: Chat) -> BatchReader:
         return None
 
     return read
+
+
+def warm_chat(chat: Chat) -> None:
+    """One tiny text-only request to load the model before the first real read. A failed warm-up only
+    means a slower first read, never a broken request."""
+    try:
+        chat([{"role": "user", "content": "Reply with OK."}])
+    except Exception as e:  # noqa: BLE001 - a failed warm-up only means a slower first read
+        log.warning("Qwen-VL warm-up failed: %s", e)

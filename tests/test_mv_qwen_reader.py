@@ -4,7 +4,7 @@ import numpy as np
 
 from s2c.multiview.ocr import read_values
 from s2c.multiview.outline import extract
-from s2c.multiview.qwen_reader import qwen_batch_reader
+from s2c.multiview.qwen_reader import qwen_batch_reader, warm_chat
 from tests.test_mv_ocr import sketch_with_values, svc
 
 CROP = np.full((40, 60, 3), 255, np.uint8)
@@ -85,3 +85,16 @@ def test_read_values_calls_the_batch_once_and_keeps_the_local_reads_when_it_fail
     kept = read_values(img, o, svc(lambda crop: ("60", 0.8), failing))
     assert [(r.value_mm, r.confirmed) for r in kept] == [(60.0, False), (60.0, False)]
     assert read_values(img, o, svc(batch=failing)) == []
+
+
+def test_warm_chat_sends_one_tiny_text_only_request():
+    chat = chat_returning("OK")
+    warm_chat(chat)
+    assert chat.calls == [[{"role": "user", "content": "Reply with OK."}]]
+
+
+def test_warm_chat_swallows_a_failing_chat():
+    def broken(messages):
+        raise RuntimeError("no server")
+
+    warm_chat(broken)  # must not raise

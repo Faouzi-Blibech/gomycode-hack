@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import cv2
 import numpy as np
 from pydantic import ValidationError
 
+from s2c.multiview import qwen_reader
 from s2c.multiview import spec as S
 from s2c.multiview.build import BuildError, export
 from s2c.multiview.build import build as build_solid
@@ -282,6 +284,9 @@ def default_pipeline() -> MvPipeline:
     except Exception as e:
         log.warning("TripoSR unavailable: %s", e)
     read_chat = env_chat(stage="mv_read")
+    if read_chat is not None:
+        threading.Thread(target=qwen_reader.warm_chat, args=(read_chat,), name="qwen-warmup",
+                          daemon=True).start()
     space = os.environ.get("SOLARIA_SPACE")
     image_gen = default_gen()
     if image_gen is None:

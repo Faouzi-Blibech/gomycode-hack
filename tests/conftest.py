@@ -19,3 +19,9 @@ def _no_trocr_download(monkeypatch):
     still get a real load (see tests/reading/test_trocr.py)."""
     monkeypatch.setattr("s2c.reading.trocr.TrocrReader.warm", lambda self: None)
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+
+@pytest.fixture(autouse=True)
+def _no_qwen_warmup(monkeypatch):
+    """default_pipeline() warms Qwen-VL in a background thread; a unit test must never call the real chat."""
+    monkeypatch.setattr("s2c.multiview.qwen_reader.warm_chat", lambda chat: None)

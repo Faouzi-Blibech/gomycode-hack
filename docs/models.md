@@ -49,7 +49,7 @@ The Studio reads written dimensions with two readers at once, through `s2c/readi
 
 A value is trusted (green, `user_written`) when both readers give the same number. When they disagree, or only Qwen answered, the Studio asks the user to confirm the size (pre-filled) or shows the hole diameter amber. With only TrOCR configured, its confident reads are trusted, as before. When Qwen is configured but fails or times out, TrOCR is again the only reader that answered: its reads are unconfirmed too, so every size becomes a suggestion during a VLM outage rather than staying silently trusted.
 
-Both readers run in parallel, so a request waits for the slower one, not the sum. TrOCR loads in the background when the Studio starts. Settings:
+Both readers run in parallel, so a request waits for the slower one, not the sum. TrOCR loads in the background when the Studio starts, and Qwen is warmed with a tiny text-only request at the same time, so the first real read does not pay Ollama's ~60 s cold-load cost. For Ollama, also set `OLLAMA_KEEP_ALIVE=30m` (or `-1`) in the environment of the Ollama server itself, so it does not unload the model after 5 idle minutes. Settings:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

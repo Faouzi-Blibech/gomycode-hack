@@ -117,6 +117,45 @@ def test_default_pipeline_reads_with_qwen_vl_when_configured(monkeypatch):
     assert pipeline.default_pipeline().batch_reader is not None
 
 
+def test_default_pipeline_warms_qwen_in_a_daemon_thread_when_configured(monkeypatch):
+    import threading
+
+    from s2c.multiview import qwen_reader
+
+    for key, value in {"VLM_BASE_URL": "http://localhost:9/v1", "VLM_MODEL": "m", "VLM_API_KEY": "k"}.items():
+        monkeypatch.setenv(key, value)
+    calls = []
+    started, release = threading.Event(), threading.Event()
+
+    def slow_warm(chat):
+        started.set()
+        release.wait(timeout=2)
+        calls.append(chat)
+
+    monkeypatch.setattr(qwen_reader, "warm_chat", slow_warm)
+    pipeline.default_pipeline()
+    assert started.wait(timeout=2)
+    warmups = [t for t in threading.enumerate() if t.name == "qwen-warmup"]
+    assert warmups and warmups[0].daemon
+    release.set()
+    warmups[0].join(timeout=2)
+    assert len(calls) == 1
+
+
+def test_default_pipeline_does_not_warm_qwen_when_unconfigured(monkeypatch):
+    import threading
+
+    from s2c.multiview import qwen_reader
+
+    monkeypatch.delenv("VLM_API_KEY", raising=False)
+    monkeypatch.delenv("VLM_BASE_URL", raising=False)
+    calls = []
+    monkeypatch.setattr(qwen_reader, "warm_chat", lambda chat: calls.append(chat))
+    pipeline.default_pipeline()
+    assert not [t for t in threading.enumerate() if t.name == "qwen-warmup"]
+    assert calls == []
+
+
 def test_two_sketches_of_one_face_merge_into_one_observation(tmp_path):
     pipe = MvPipeline()
     observed = pipe.observe([ImageInput(sketch(600, 400), "front", "sketch"),
