@@ -102,3 +102,9 @@ def test_moved_readers_declare_calibration_budget_and_cache():
     from s2c.reading.vlm import VlmReader
     r = VlmReader(client=object())
     assert (r.name, r.calibrated, r.cache_key) == ("vlm", False, None) and r.timeout_s == 20.0
+
+
+def test_default_readers_include_trocr_so_a_cold_vlm_never_leaves_none(monkeypatch):
+    monkeypatch.delenv("SKETCH_READERS", raising=False)
+    names = [r.name for r in readers_from_env()]
+    assert "trocr" in names

@@ -1,4 +1,5 @@
-"""Pick readers by name from SKETCH_READERS (default "paddle,vlm"); an unavailable reader is skipped."""
+"""Pick readers by name from SKETCH_READERS (default "trocr,paddle,vlm"); an unavailable reader is skipped.
+TrOCR is in the default so a cold or slow VLM never leaves the sketch path with no reader at all."""
 from __future__ import annotations
 
 import logging
@@ -10,7 +11,7 @@ log = logging.getLogger(__name__)
 
 
 def readers_from_env(spec: str | None = None) -> list[Reader]:
-    names = [n.strip() for n in (spec or os.environ.get("SKETCH_READERS", "paddle,vlm")).split(",")]
+    names = [n.strip() for n in (spec or os.environ.get("SKETCH_READERS", "trocr,paddle,vlm")).split(",")]
     out: list[Reader] = []
     for name in filter(None, names):
         try:
