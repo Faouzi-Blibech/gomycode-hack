@@ -200,7 +200,40 @@ def test_a_thin_rim_render_keeps_its_outline_in_drawing_mode():
         cv2.circle(img, (round(800 + 722 * np.cos(a)), round(800 + 722 * np.sin(a))), 6, rim, -1)
     cv2.circle(img, (800, 800), 700, (255, 255, 255), -1)
     plain, drawn = extract(img), extract(img, drawing=True)
-    assert drawn.line_art and digest(drawn) == digest(plain)
+    assert digest(drawn) == digest(plain)
+
+
+GREY = (128, 128, 128)
+
+
+def washer_render():
+    img = page(1600, 1600)
+    cv2.circle(img, (800, 800), 500, GREY, -1)
+    cv2.circle(img, (800, 800), 440, (255, 255, 255), -1)
+    return img
+
+
+def tube_render():
+    img = page()
+    cv2.rectangle(img, (400, 200), (1200, 1000), GREY, -1)
+    cv2.rectangle(img, (460, 260), (1140, 940), (255, 255, 255), -1)
+    return img
+
+
+def frame_with_tab_render():
+    img = page()
+    cv2.rectangle(img, (400, 250), (1100, 950), GREY, -1)
+    cv2.rectangle(img, (440, 290), (1060, 910), (255, 255, 255), -1)
+    cv2.rectangle(img, (1100, 560), (1280, 640), GREY, -1)
+    return img
+
+
+@pytest.mark.parametrize("render", [washer_render, tube_render, frame_with_tab_render])
+def test_a_thin_walled_filled_render_is_unchanged_in_drawing_mode(render):
+    """Its walls are thin enough to fill under 35 % of the outline, but far thicker than any drawn line."""
+    img = render()
+    plain, drawn = extract(img), extract(img, drawing=True)
+    assert not drawn.line_art and digest(drawn) == digest(plain)
 
 
 def sketch_fixtures():

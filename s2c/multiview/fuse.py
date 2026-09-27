@@ -36,7 +36,7 @@ class Observation:
     depth_from_image: set[int] = field(default_factory=set)          # circles whose blind flag came from Solaria
     confidence: float = 0.9
     line_art: bool = False                      # a drawing in lines (drawing-sheet spec 3.3)
-    hidden: list = field(default_factory=list)  # dashed hidden edges, as PixelOutline.hidden
+    hidden: list[tuple[str, float, float, float]] = field(default_factory=list)  # as PixelOutline.hidden
 
     def __post_init__(self):
         """Whoever builds the observation, a line-art outline makes it line art and brings its hidden lines."""

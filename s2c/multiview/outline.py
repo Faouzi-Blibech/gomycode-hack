@@ -19,9 +19,11 @@ MIN_THIN_FRACTION = 0.002  # a thin part's edge view can be this small and still
 MIN_THIN_SPAN = 0.10       # ...provided it is long relative to the page...
 MIN_THIN_FILL = 0.5        # ...and filled, not a hollow or broken stroke...
 MIN_THIN_MARGIN = 0.01     # ...and fully in frame, not a table edge or ruler crossing the border
-LINE_ART_FILL = 0.35       # a drawing whose ink covers less of its filled outline than this is drawn in lines
+LINE_ART_FILL = 0.35       # a drawing whose ink covers less of its filled outline than this is drawn in lines...
+LINE_ART_STROKE = 0.015    # ...if the ink is also this thin (share of the long side); a thin-walled render is not
 SPUR_FRACTION = 0.006      # lines thinner than this share of the long side (and SPUR_MIN_PX) are not the part
 SPUR_MIN_PX = 5
+SPUR_MAX = 0.025           # the kernel widened for thick lines stays under this share of the long side
 SPUR_KEEP = 0.5            # cutting spurs keeps most of the view, or the view itself was that thin
 ROUND_ASPECT = 0.85        # a drawn circle is about as wide as it is tall...
 ROUND_FILL = 0.9           # ...fills this share of its hull...
@@ -115,7 +117,9 @@ def extract(image_bgr: np.ndarray, mask_out=(), band: int = EDGE_BAND_PX,
     filled = np.zeros_like(fg)
     cv2.drawContours(filled, [outer], -1, 255, -1)
     if drawing and cv2.countNonZero(cv2.bitwise_and(fg, filled)) < LINE_ART_FILL * cv2.countNonZero(filled):
-        return _line_art(ink, fg, outer, filled, band)
+        stroke = _stroke(cv2.bitwise_and(ink, filled))
+        if stroke <= LINE_ART_STROKE * max(h, w):
+            return _line_art(ink, fg, outer, filled, band, stroke)
     edge_band = cv2.subtract(filled, cv2.erode(filled, np.ones((band, band), np.uint8)))
     gaps = cv2.morphologyEx(cv2.bitwise_and(filled, cv2.bitwise_not(fg)), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     n, labels, stats, _ = cv2.connectedComponentsWithStats(gaps, connectivity=4)
@@ -147,7 +151,7 @@ def _stroke(ink: np.ndarray) -> float:
 
 def _spur_kernel(shape, stroke: float) -> int:
     """Spec 3.3's kernel, widened for thick lines, such as those of a small sheet view blown up to full size."""
-    return max(SPUR_MIN_PX, round(SPUR_FRACTION * max(shape)), 2 * round(stroke) + 1)
+    return max(SPUR_MIN_PX, round(SPUR_FRACTION * max(shape)), min(2 * round(stroke) + 1, round(SPUR_MAX * max(shape))))
 
 
 def _circle(solid: np.ndarray, dx: int, dy: int, stroke: float) -> PixelCircle:
@@ -174,11 +178,10 @@ def _solid(comp: np.ndarray, k: int) -> np.ndarray:
     return cv2.morphologyEx(solid, cv2.MORPH_CLOSE, np.ones((k, k), np.uint8))
 
 
-def _line_art(ink: np.ndarray, fg: np.ndarray, outer, filled: np.ndarray, band: int) -> PixelOutline:
+def _line_art(ink: np.ndarray, fg: np.ndarray, outer, filled: np.ndarray, band: int, stroke: float) -> PixelOutline:
     """Spec 3.3. Centre, extension and dimension lines sticking out are opened away. Regions enclosed by
     visible lines are faces, not openings, so only circles are kept, as candidate holes."""
     h, w = fg.shape
-    stroke = _stroke(cv2.bitwise_and(ink, filled))
     k = _spur_kernel(fg.shape, stroke)
     opened = cv2.morphologyEx(filled, cv2.MORPH_OPEN, np.ones((k, k), np.uint8))
     n, labels, stats, _ = cv2.connectedComponentsWithStats(opened, connectivity=8)
