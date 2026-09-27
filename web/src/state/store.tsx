@@ -1,10 +1,12 @@
 import { createContext, useCallback, useContext, useMemo, useReducer, useRef, type Dispatch, type ReactNode } from 'react';
-import type { AiSettings, Analysis, Face, GeometrySettings, Job, ModelResult } from '../api/types';
+import type { AiSettings, Analysis, Face, GeometrySettings, Job, ModelResult, Spec } from '../api/types';
 import { resetDeadline } from '../lib/deadline';
 
 export type Screen = 'capture' | 'analyzing' | 'review' | 'model';
 export type CaptureKind = 'auto' | 'sketch' | 'photo' | 'drawing';
 export interface CaptureItem { id: string; file: File; url: string; face: Face | 'auto'; kind: CaptureKind }
+/** The images a job was started with, in upload order: job.images[i] is jobItems[i] even after Capture changes. */
+export interface JobItem { url: string; face: Face | 'auto'; kind: CaptureKind }
 
 export interface State {
   screen: Screen;
@@ -12,6 +14,7 @@ export interface State {
   reference: string;
   ai: AiSettings;
   jobId: string | null;
+  jobItems: JobItem[];
   /** Set when polling gave up on the job (lost connection or unknown job). */
   jobError: string | null;
   job: Job | null;
@@ -20,6 +23,8 @@ export interface State {
   rejected: Face[];
   geometry: GeometrySettings;
   model: ModelResult | null;
+  /** The spec `model` was built from, so the Model screen can rebuild when the analysis changes. */
+  modelSpec: Spec | null;
 }
 
 export type Action =
@@ -35,7 +40,7 @@ export type Action =
   | { type: 'TYPE_VALUE'; path: string; value: number }
   | { type: 'TOGGLE_REJECT'; face: Face }
   | { type: 'SET_GEOMETRY'; patch: Partial<GeometrySettings> }
-  | { type: 'MODEL'; model: ModelResult | null }
+  | { type: 'MODEL'; model: ModelResult | null; spec?: Spec | null }
   | { type: 'GOTO'; screen: Screen }
   | { type: 'RESET' };
 
@@ -51,8 +56,8 @@ export const initialGeometry: GeometrySettings = {
 };
 
 export const initialState: State = {
-  screen: 'capture', items: [], reference: '', ai: initialAi, jobId: null, jobError: null, job: null, analysis: null,
-  typed: {}, rejected: [], geometry: initialGeometry, model: null,
+  screen: 'capture', items: [], reference: '', ai: initialAi, jobId: null, jobItems: [], jobError: null, job: null, analysis: null,
+  typed: {}, rejected: [], geometry: initialGeometry, model: null, modelSpec: null,
 };
 
 let seq = 0;
@@ -75,13 +80,17 @@ export function reducer(state: State, action: Action): State {
     case 'SET_AI':
       return { ...state, ai: { ...state.ai, ...action.patch } };
     case 'START_JOB':
-      return { ...state, screen: 'analyzing', jobId: action.jobId, jobError: null, job: null, analysis: null, typed: {}, rejected: [], model: null };
+      return {
+        ...state, screen: 'analyzing', jobId: action.jobId, jobItems: state.items.map(({ url, face, kind }) => ({ url, face, kind })),
+        jobError: null, job: null, analysis: null, typed: {}, rejected: [], model: null, modelSpec: null,
+      };
     case 'JOB_UPDATE':
       return action.job.job_id === state.jobId ? { ...state, job: action.job } : state;
     case 'JOB_LOST':
       return { ...state, jobError: action.error };
     case 'ANALYSIS':
-      return { ...state, analysis: action.analysis };
+      // A late response for an older job (or a merge that outlived its job) must not replace the current one.
+      return action.analysis.request_id === state.jobId ? { ...state, analysis: action.analysis } : state;
     case 'TYPE_VALUE':
       return { ...state, typed: { ...state.typed, [action.path]: action.value } };
     case 'TOGGLE_REJECT':
@@ -92,7 +101,7 @@ export function reducer(state: State, action: Action): State {
     case 'SET_GEOMETRY':
       return { ...state, geometry: { ...state.geometry, ...action.patch } };
     case 'MODEL':
-      return { ...state, model: action.model };
+      return { ...state, model: action.model, modelSpec: action.model ? action.spec ?? null : null };
     case 'GOTO':
       return { ...state, screen: action.screen };
     case 'RESET':
@@ -114,7 +123,8 @@ export function StoreProvider({ children, initial }: { children: ReactNode; init
     if (action.type === 'START_JOB') resetDeadline();
     if (action.type === 'REMOVE_ITEM') {
       const it = stateRef.current.items.find((i) => i.id === action.id);
-      if (it) URL.revokeObjectURL(it.url);
+      // Keep the URL alive while the current job still shows it (crops, Analyzing panes).
+      if (it && !stateRef.current.jobItems.some((j) => j.url === it.url)) URL.revokeObjectURL(it.url);
     }
     rawDispatch(action);
   }, []);

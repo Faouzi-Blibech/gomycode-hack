@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
 import { ApiError, buildModel, merge } from '../api/client';
 import type { Abstain, Face, FilledBy, JobImage, ReadValue, Spec } from '../api/types';
 import { FaceCard } from '../components/FaceCard';
 import { StopCard } from '../components/StopCard';
+import { EXPIRED, isDimensionAbstain } from '../lib/abstain';
+import { snappedLabel } from '../lib/snap';
 import { listPhrase } from '../lib/words';
 import { BADGE, countChecks, featureRows, isCheck, provOf, type BadgeKey } from '../lib/provenance';
 import { useStore } from '../state/store';
@@ -26,6 +28,7 @@ const EXPLAIN: Record<BadgeKey, string> = {
   estimated: 'Estimated from the sketch. Type the real value if you know it.',
   default: 'No value was given, so a standard size was used. Confirm or change it.',
   required: 'We need this value before we can build.',
+  found: 'Kept from your images while the analysis waits for the missing size. Check it.',
 };
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
@@ -43,6 +46,8 @@ interface LedgerGroup {
   feature: string;
   prov: BadgeKey;
   snapped: boolean;
+  /** "M5" when the snapped size is exactly a standard clearance hole, otherwise "standard size". */
+  snapLabel: string;
   fields: { path: string; label: string; aria: string; value: number }[];
 }
 
@@ -59,9 +64,11 @@ function groupFeatures(spec: Spec, typed: Record<string, number>): LedgerGroup[]
     const rs = byGroup.get(group)!;
     const anyTyped = rs.some((r) => r.path in typed);
     const prov: BadgeKey = anyTyped ? 'user_edited' : rs[0].prov;
-    const snapped = rs.some((r) => r.snapped) && rs[0].prov === 'default';
+    const snappedRow = rs.find((r) => r.snapped);
+    const snapped = !!snappedRow && rs[0].prov === 'default';
     return {
       group, name: rs[0].groupName, face: rs[0].face, feature: rs[0].feature, prov, snapped,
+      snapLabel: snappedLabel(snappedRow && (typed[snappedRow.path] ?? snappedRow.value)),
       fields: rs.map((r) => ({ path: r.path, label: r.label, aria: `${r.groupName} ${r.label}`, value: typed[r.path] ?? r.value })),
     };
   });
@@ -83,6 +90,7 @@ function warningMeta(text: string, spec: Spec, typed: Record<string, number>): {
 }
 
 interface CropInfo { image: JobImage; url: string; read: ReadValue; fieldLabel: string }
+interface Sent { typed: Record<string, number>; rejected: Face[] }
 
 /** Draws the local image, cropped to the read's bbox (scaled from the job image's natural size) into a small canvas. */
 function HandwritingCrop({ image, url, read, fieldLabel }: CropInfo) {
@@ -120,7 +128,7 @@ function HandwritingCrop({ image, url, read, fieldLabel }: CropInfo) {
 /** Review screen: every number the pipeline produced, with its provenance, editable and re-merged live. */
 export function Review() {
   const { state, dispatch } = useStore();
-  const { analysis, job, items, typed, rejected, geometry } = state;
+  const { analysis, job, jobItems, typed, rejected, geometry } = state;
   const spec = analysis?.spec ?? null;
   const abstain = analysis?.abstain ?? null;
   const requestId = analysis?.request_id ?? null;
@@ -130,30 +138,66 @@ export function Review() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [merging, setMerging] = useState(false);
   const [mergeErr, setMergeErr] = useState<string | null>(null);
+  const [expired, setExpired] = useState(false);
+  // The typed values and rejects the current analysis already reflects. Anything newer means a merge is due.
+  const [applied, setApplied] = useState<Sent>({ typed, rejected });
   const [building, setBuilding] = useState(false);
   const [buildErr, setBuildErr] = useState<string | null>(null);
   const [buildAbstain, setBuildAbstain] = useState<Abstain | null>(null);
 
   const envRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const mergeTimer = useRef<number | undefined>(undefined);
-  const mountedRef = useRef(false);
+  const pending = useRef(false);
+  const mergeSeq = useRef(0);
+  const alive = useRef(true);
+  const latest = useRef({ typed, rejected, requestId });
+  latest.current = { typed, rejected, requestId };
+
+  // One re-merge with the latest values. Only the newest request may apply its result or clear "updating…";
+  // the store drops a result whose request_id is no longer the current job.
+  const runMerge = useCallback(() => {
+    pending.current = false;
+    window.clearTimeout(mergeTimer.current);
+    const sent: Sent = { typed: latest.current.typed, rejected: latest.current.rejected };
+    const id = latest.current.requestId;
+    if (!id) return;
+    const my = ++mergeSeq.current;
+    if (alive.current) { setMerging(true); setMergeErr(null); }
+    merge({ request_id: id, user_values: sent.typed, accepted: [], rejected: sent.rejected })
+      .then((a) => {
+        if (my !== mergeSeq.current) return;
+        dispatch({ type: 'ANALYSIS', analysis: a });
+        if (alive.current) setApplied(sent);
+      })
+      .catch((e: unknown) => {
+        if (my !== mergeSeq.current || !alive.current) return;
+        if (e instanceof ApiError && e.status === 404) setExpired(true);
+        else setMergeErr(errText(e));
+      })
+      .finally(() => { if (my === mergeSeq.current && alive.current) setMerging(false); });
+  }, [dispatch]);
 
   // Debounced re-merge: 500 ms after the last edit or reject toggle.
   useEffect(() => {
-    if (!mountedRef.current) { mountedRef.current = true; return; }
-    if (!requestId) return;
+    if (!requestId || expired) return;
+    if (typed === applied.typed && rejected === applied.rejected) return;
+    pending.current = true;
     window.clearTimeout(mergeTimer.current);
-    mergeTimer.current = window.setTimeout(() => {
-      setMerging(true);
-      setMergeErr(null);
-      merge({ request_id: requestId, user_values: typed, accepted: [], rejected })
-        .then((a) => dispatch({ type: 'ANALYSIS', analysis: a }))
-        .catch((e: unknown) => setMergeErr(errText(e)))
-        .finally(() => setMerging(false));
-    }, 500);
+    mergeTimer.current = window.setTimeout(runMerge, 500);
     return () => window.clearTimeout(mergeTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [typed, rejected]);
+
+  // Leaving Review with an edit still waiting: send it now so the typed value is not lost.
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      if (pending.current) runMerge();
+    };
+  }, [runMerge]);
+
+  const toCapture = () => dispatch({ type: 'GOTO', screen: 'capture' });
 
   if (!analysis) {
     return (
@@ -183,7 +227,9 @@ export function Review() {
     const partialVal = partial[path];
     const value = typedVal ?? specVal ?? partialVal;
     const placeholder = suggested[path] !== undefined ? String(suggested[path]) : '—';
-    const prov: BadgeKey = path in typed ? 'user_edited' : required ? 'required' : spec ? provOf(spec, path) : 'default';
+    // During an abstain there is no spec: kept values carry the provenance the server sent, or a neutral "Found".
+    const prov: BadgeKey = path in typed ? 'user_edited' : required ? 'required' : spec ? provOf(spec, path)
+      : abstain?.partial_provenance?.[path] ?? 'found';
     return { ...e, path, required, value, prov, placeholder };
   });
 
@@ -191,7 +237,11 @@ export function Review() {
   const nCheck = spec ? countChecks(spec, typed) : 0;
   const touched = spec ? featureRows(spec).some((r) => r.path in typed && isCheck(r.prov)) : false;
   const buildLabel = nCheck > 0 && !touched ? `Build anyway (${nCheck} unchecked) →` : 'Build part →';
-  const canBuild = !abstain && !!spec;
+  const canBuild = !abstain && !!spec && !expired;
+  // A merge is waiting (debounce) or in flight: the spec on screen does not hold every typed value yet.
+  const updating = merging || typed !== applied.typed || rejected !== applied.rejected;
+  const retry = updating && !merging && !!mergeErr;
+  const buildBlocked = building || (updating && !retry);
 
   const effEnv = (k: 'x' | 'y' | 'z') => typed[`envelope.${k}_mm`] ?? (spec ? spec.envelope[`${k}_mm`] : 0);
   const filledByOf = (f: Face): FilledBy => analysis.filled_by[f] ?? 'observed';
@@ -205,8 +255,9 @@ export function Review() {
       })()
     : null;
 
+  const readerName = job?.stages.find((s) => s.key === 'read')?.tool ?? 'the reader';
   const crops: CropInfo[] = (job?.images ?? []).flatMap((image, i) => {
-    const url = items[i]?.url;
+    const url = jobItems[i]?.url;
     if (!url) return [];
     const faceLabel = image.face && image.face !== 'unknown' ? image.face : image.kind ?? `image ${i + 1}`;
     return image.reads.map((read) => ({ image, url, read, fieldLabel: `${faceLabel} sketch` }));
@@ -228,17 +279,18 @@ export function Review() {
   };
 
   const onBuild = async () => {
-    if (!spec || abstain || building) return;
+    if (!spec || abstain || building || updating || expired) return;
     setBuilding(true);
     setBuildErr(null);
     setBuildAbstain(null);
     try {
       const result = await buildModel({ request_id: requestId, spec, geometry });
-      dispatch({ type: 'MODEL', model: result });
+      dispatch({ type: 'MODEL', model: result, spec });
       if (result.abstain) setBuildAbstain(result.abstain);
       else dispatch({ type: 'GOTO', screen: 'model' });
     } catch (e) {
-      setBuildErr(errText(e));
+      if (e instanceof ApiError && e.status === 404) setExpired(true);
+      else setBuildErr(errText(e));
     } finally {
       setBuilding(false);
     }
@@ -260,16 +312,20 @@ export function Review() {
 
       <div className="s2c-review-grid" style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: '500px minmax(0,1fr)', gap: 24 }}>
         <section style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}>
-          {abstain && (
+          {expired && (
+            <StopCard kicker="[ EXPIRED ]" title={EXPIRED.title} remedy={EXPIRED.remedy} actionLabel={EXPIRED.action} onAction={toCapture} />
+          )}
+          {!expired && abstain && (
             <StopCard
               kicker={`[ STOPPED AT · ${abstain.stage.toUpperCase()} ]`}
               title={missingPhrase ? `We need the ${missingPhrase}.` : 'We need more information.'}
               remedy={keptText ? `${abstain.remedy} ${keptText}` : abstain.remedy}
-              actionLabel={missingPhrase ? `Enter ${missingPhrase}` : undefined}
-              onAction={firstMissingKey ? () => envRefs.current[firstMissingKey]?.focus() : undefined}
+              {...(isDimensionAbstain(abstain)
+                ? { actionLabel: missingPhrase ? `Enter ${missingPhrase}` : 'Check the sizes', onAction: () => envRefs.current[firstMissingKey ?? 'x']?.focus() }
+                : { actionLabel: 'Back to capture', onAction: toCapture })}
             />
           )}
-          {!abstain && nCheck > 0 && (
+          {!expired && !abstain && nCheck > 0 && (
             <div style={{ borderRadius: 14, border: `1.5px dashed ${CHK}`, background: 'color-mix(in oklch, var(--check) 10%, var(--surface))', padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
               <span style={{ width: 32, height: 32, flex: 'none', borderRadius: '50%', border: `1.5px dashed ${CHK}`, color: CHK, display: 'grid', placeItems: 'center', fontWeight: 700, boxSizing: 'border-box' }}>!</span>
               <div>
@@ -278,7 +334,7 @@ export function Review() {
               </div>
             </div>
           )}
-          {!abstain && nCheck === 0 && (
+          {!expired && !abstain && nCheck === 0 && (
             <div style={{ borderRadius: 14, border: `1.5px solid ${TRU}`, background: 'color-mix(in oklch, var(--trusted) 10%, var(--surface))', padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
               <span style={{ width: 32, height: 32, flex: 'none', borderRadius: '50%', background: TRU, color: 'var(--raised)', display: 'grid', placeItems: 'center', fontWeight: 700 }}>✓</span>
               <div>
@@ -362,7 +418,7 @@ export function Review() {
                             <input value={displayValue(f.path, f.value)} onChange={onFieldChange(f.path)} inputMode="decimal" aria-label={f.aria} style={{ width: 40, border: 'none', outline: 'none', background: 'transparent', color: 'var(--ink)', fontFamily: MONO, fontSize: 17, fontWeight: 500, fontVariantNumeric: 'tabular-nums', padding: 0 }} />
                           </label>
                         ))}
-                        {g.snapped && <span title="Snapped to a standard size" style={{ fontFamily: MONO, fontSize: 11, color: CHK, border: `1px dashed ${CHK}`, borderRadius: 4, padding: '2px 5px' }}>M5</span>}
+                        {g.snapped && <span title="Snapped to a standard size" style={{ fontFamily: MONO, fontSize: 11, color: CHK, border: `1px dashed ${CHK}`, borderRadius: 4, padding: '2px 5px', whiteSpace: 'nowrap' }}>{g.snapLabel}</span>}
                       </div>
                       <button type="button" onClick={() => setOpen((o) => (o === g.group ? null : g.group))} style={{ justifySelf: 'end', display: 'inline-flex', alignItems: 'center', gap: 6, height: 28, padding: '0 11px 0 9px', borderRadius: 14, border: `1.5px ${b.line} ${b.fg}`, background: b.bg, color: b.fg, font: 'inherit', fontSize: 12, fontWeight: 500, cursor: 'pointer', whiteSpace: 'nowrap' }}><span aria-hidden="true">{b.icon}</span>{b.label}</button>
                     </div>
@@ -424,7 +480,7 @@ export function Review() {
 
             <div style={{ borderRadius: 14, background: 'var(--surface)', boxShadow: 'var(--shadow)', padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0, overflow: 'auto' }}>
               <button type="button" onClick={() => setHwOpen((o) => !o)} aria-expanded={hwOpen} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: 'none', background: 'none', padding: 0, color: 'inherit', font: 'inherit', cursor: 'pointer', textAlign: 'left' }}>
-                <span style={{ fontSize: 15, fontWeight: 600 }}>Handwriting read <span style={{ fontWeight: 500, fontSize: 13, color: AI }}>· Qwen-VL</span></span>
+                <span style={{ fontSize: 15, fontWeight: 600 }}>Handwriting read <span style={{ fontWeight: 500, fontSize: 13, color: AI }}>· {readerName}</span></span>
                 <span style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid var(--line)', display: 'grid', placeItems: 'center', fontFamily: MONO, fontSize: 14 }}>{hwOpen ? '−' : '+'}</span>
               </button>
               {hwOpen && (
@@ -439,20 +495,25 @@ export function Review() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-            <button type="button" onClick={() => dispatch({ type: 'GOTO', screen: 'capture' })} style={{ marginRight: 'auto', height: 52, padding: '0 20px', display: 'flex', alignItems: 'center', borderRadius: 12, border: 'none', background: 'var(--ink)', color: 'var(--bg)', font: 'inherit', fontSize: 15, fontWeight: 500, cursor: 'pointer' }}>← Back to capture</button>
+            <button type="button" onClick={toCapture} style={{ marginRight: 'auto', height: 52, padding: '0 20px', display: 'flex', alignItems: 'center', borderRadius: 12, border: 'none', background: 'var(--ink)', color: 'var(--bg)', font: 'inherit', fontSize: 15, fontWeight: 500, cursor: 'pointer' }}>← Back to capture</button>
             {canBuild ? (
-              <button type="button" onClick={onBuild} disabled={building} style={{ height: 52, padding: '0 26px', display: 'flex', alignItems: 'center', borderRadius: 12, border: 'none', background: 'var(--accent)', color: 'var(--on-accent)', boxShadow: 'var(--shadow)', font: 'inherit', fontSize: 16, fontWeight: 600, cursor: building ? 'default' : 'pointer', opacity: building ? 0.7 : 1 }}>
-                {building ? 'Building…' : buildLabel}
+              <button type="button" onClick={retry ? runMerge : onBuild} disabled={buildBlocked} style={{ height: 52, padding: '0 26px', display: 'flex', alignItems: 'center', borderRadius: 12, border: 'none', background: 'var(--accent)', color: 'var(--on-accent)', boxShadow: 'var(--shadow)', font: 'inherit', fontSize: 16, fontWeight: 600, cursor: buildBlocked ? 'default' : 'pointer', opacity: buildBlocked ? 0.7 : 1 }}>
+                {building ? 'Building…' : retry ? 'Retry the update' : updating ? 'Updating…' : buildLabel}
               </button>
             ) : (
               <span style={{ height: 52, padding: '0 24px', display: 'flex', alignItems: 'center', borderRadius: 12, background: 'var(--inset)', color: 'var(--muted)', fontSize: 15 }}>
-                {missingPhrase ? `Enter the ${missingPhrase} to build` : 'Resolve the issue above to build'}
+                {expired ? 'Analyze again to build' : missingPhrase ? `Enter the ${missingPhrase} to build` : 'Resolve the issue above to build'}
               </span>
             )}
           </div>
           {mergeErr && <div role="alert" style={{ fontSize: 13, color: STOP }}>{mergeErr}</div>}
           {buildErr && <div role="alert" style={{ fontSize: 13, color: STOP }}>{buildErr}</div>}
-          {buildAbstain && <StopCard title="We could not build this part" remedy={buildAbstain.remedy} />}
+          {buildAbstain && (
+            <StopCard title="We could not build this part" remedy={buildAbstain.remedy}
+              {...(isDimensionAbstain(buildAbstain)
+                ? { actionLabel: 'Check the sizes', onAction: () => envRefs.current.x?.focus() }
+                : { actionLabel: 'Back to capture', onAction: toCapture })} />
+          )}
         </section>
       </div>
     </div>

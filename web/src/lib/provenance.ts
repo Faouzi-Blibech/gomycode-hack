@@ -1,6 +1,7 @@
 import type { Face, Provenance, Spec } from '../api/types';
 
-export type BadgeKey = Provenance | 'required';
+/** `found`: a value the analysis kept while it stopped, when the server could not say where it came from. */
+export type BadgeKey = Provenance | 'required' | 'found';
 export interface BadgeStyle { label: string; icon: string; fg: string; line: 'solid' | 'dotted' | 'dashed'; bg: string }
 
 const TRU = 'var(--trusted)', CHK = 'var(--check)', AI = 'var(--ai)', STOP = 'var(--stop)';
@@ -16,6 +17,7 @@ export const BADGE: Record<BadgeKey, BadgeStyle> = {
   estimated: { label: 'Estimated — check', icon: '!', fg: CHK, line: 'dashed', bg: 'transparent' },
   default: { label: 'Default — check', icon: '!', fg: CHK, line: 'dashed', bg: 'transparent' },
   required: { label: 'Required', icon: '•', fg: STOP, line: 'dashed', bg: 'transparent' },
+  found: { label: 'Found — check', icon: '!', fg: CHK, line: 'dashed', bg: 'transparent' },
 };
 
 export const CHECK: Provenance[] = ['inferred', 'estimated', 'default'];

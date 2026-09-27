@@ -22,7 +22,7 @@ export interface Spec { version: 'mv1'; envelope: { x_mm: number; y_mm: number; 
   features: (Hole | Slot)[]; finishes: { type: 'fillet' | 'chamfer'; edges: string; radius_mm: number }[];
   provenance: Record<string, Provenance>; snapped: string[]; warnings: string[]; confidence: number }
 export interface Abstain { stage: string; reason: string; remedy: string; partial: Record<string, number> | null;
-  missing?: string[]; suggested?: Record<string, number> }
+  missing?: string[]; suggested?: Record<string, number>; partial_provenance?: Record<string, Provenance> }
 export interface Analysis { request_id: string; spec: Spec | null; abstain: Abstain | null; filled_by: Partial<Record<Face, FilledBy>> }
 
 export interface AiSettings { use_reader: boolean; use_qwen_image: boolean; use_rescue: boolean; use_triposr: boolean; use_solaria: boolean; seed: number; randomize_seed: boolean; attempts: number }
