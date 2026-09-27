@@ -4,6 +4,7 @@ import type { ExportResult, GeometrySettings, PrintSettings } from '../api/types
 import { MatchRing } from '../components/MatchRing';
 import { StopCard } from '../components/StopCard';
 import { Viewer, type DimLabel } from '../components/Viewer';
+import { EXPIRED } from '../lib/abstain';
 import { BADGE, envelopeRows, isCheck } from '../lib/provenance';
 import { useStore } from '../state/store';
 
@@ -65,6 +66,7 @@ export function Model() {
   const [rebuilt, setRebuilt] = useState(false);
   const [building, setBuilding] = useState(false);
   const [buildErr, setBuildErr] = useState<string | null>(null);
+  const [expired, setExpired] = useState(false);
 
   const [sel, setSel] = useState<Record<string, boolean>>({ stl: true, step: true, '3mf': true, pdf: true, gcode: true });
   const [mesh, setMesh] = useState<Mesh>('normal');
@@ -80,6 +82,7 @@ export function Model() {
   const seq = useRef(0);
   const timer = useRef<number | undefined>(undefined);
   const rbTimer = useRef<number | undefined>(undefined);
+  const exportSeq = useRef(0); // bumped whenever the geometry or spec changes: an older export is dropped
   const live = useRef({ requestId: state.analysis?.request_id ?? null, spec });
   live.current = { requestId: state.analysis?.request_id ?? null, spec };
 
@@ -91,14 +94,16 @@ export function Model() {
     try {
       const m = await buildModel({ request_id: live.current.requestId, spec: s, geometry });
       if (my !== seq.current) return;
-      dispatch({ type: 'MODEL', model: m });
+      dispatch({ type: 'MODEL', model: m, spec: s });
       if (flash) {
         setRebuilt(true);
         window.clearTimeout(rbTimer.current);
         rbTimer.current = window.setTimeout(() => setRebuilt(false), 900);
       }
     } catch (e) {
-      if (my === seq.current) setBuildErr(errText(e));
+      if (my !== seq.current) return;
+      if (e instanceof ApiError && e.status === 404) setExpired(true);
+      else setBuildErr(errText(e));
     } finally {
       if (my === seq.current) setBuilding(false);
     }
@@ -108,22 +113,30 @@ export function Model() {
     dispatch({ type: 'SET_GEOMETRY', patch });
     const geometry = { ...g, ...patch };
     setResult(null); setShowResult(false); // exported files no longer match the shape
+    exportSeq.current += 1; setExporting(false);
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(() => { void runBuild(geometry, true); }, 300);
   };
 
-  // Arriving without a model (for example after going back): build once.
+  // Build when there is no model yet, or when the spec changed after the model was built (a late merge).
   useEffect(() => {
-    if (spec && !state.model) void runBuild(state.geometry, false);
-    return () => {
-      seq.current += 1;
-      window.clearTimeout(timer.current);
-      window.clearTimeout(rbTimer.current);
-    };
+    if (spec && (!state.model || state.modelSpec !== spec)) {
+      exportSeq.current += 1;
+      setResult(null); setShowResult(false); setExporting(false);
+      void runBuild(state.geometry, !!state.model);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec]);
+
+  useEffect(() => () => {
+    seq.current += 1;
+    exportSeq.current += 1;
+    window.clearTimeout(timer.current);
+    window.clearTimeout(rbTimer.current);
   }, []);
 
   const goReview = () => dispatch({ type: 'GOTO', screen: 'review' });
+  const goCapture = () => dispatch({ type: 'GOTO', screen: 'capture' });
 
   if (!spec) {
     return (
@@ -166,7 +179,8 @@ export function Model() {
   const setP = (patch: Partial<Print>) => setPrint((p) => ({ ...p, ...patch }));
 
   const doExport = async () => {
-    if (!nSel || exporting) return;
+    if (!nSel || exporting || expired) return;
+    const my = ++exportSeq.current;
     setExporting(true); setExportErr(null);
     const settings: ExportSettings = {
       geometry: g,
@@ -179,11 +193,14 @@ export function Model() {
     };
     try {
       const r = await exportFiles({ spec, settings });
+      if (my !== exportSeq.current) return; // the shape changed while exporting: these files are stale
       setResult(r); setShowResult(!r.abstain);
     } catch (e) {
-      setExportErr(errText(e));
+      if (my !== exportSeq.current) return;
+      if (e instanceof ApiError && e.status === 404) setExpired(true);
+      else setExportErr(errText(e));
     } finally {
-      setExporting(false);
+      if (my === exportSeq.current) setExporting(false);
     }
   };
 
@@ -237,9 +254,11 @@ export function Model() {
             {showRing && model && <MatchRing iouMean={model.iou_mean} iou={model.iou} views={model.views} />}
           </div>
 
-          {model?.abstain && (
+          {(expired || model?.abstain) && (
             <div style={{ position: 'absolute', left: 18, right: 18, top: '50%', transform: 'translateY(-50%)' }}>
-              <StopCard title="We could not build this part" remedy={model.abstain.remedy} actionLabel="← Fix a number" onAction={goReview} />
+              {expired
+                ? <StopCard kicker="[ EXPIRED ]" title={EXPIRED.title} remedy={EXPIRED.remedy} actionLabel={EXPIRED.action} onAction={goCapture} />
+                : <StopCard title="We could not build this part" remedy={model!.abstain!.remedy} actionLabel="← Fix a number" onAction={goReview} />}
             </div>
           )}
 
@@ -328,8 +347,8 @@ export function Model() {
               </button>
               {result?.abstain && <StopCard title="Export stopped" remedy={result.abstain.remedy} />}
               {exportErr && <div role="alert" style={{ fontSize: 13, color: 'var(--stop)' }}>{exportErr}</div>}
-              <button type="button" onClick={doExport} disabled={!nSel || exporting || !!model?.abstain}
-                style={{ marginTop: 'auto', height: 52, flex: 'none', borderRadius: 12, border: 'none', background: 'var(--accent)', color: 'var(--on-accent)', boxShadow: 'var(--shadow)', font: 'inherit', fontSize: 16, fontWeight: 600, cursor: !nSel || exporting ? 'default' : 'pointer', opacity: !nSel || model?.abstain ? 0.5 : 1 }}>
+              <button type="button" onClick={doExport} disabled={!nSel || exporting || !!model?.abstain || expired}
+                style={{ marginTop: 'auto', height: 52, flex: 'none', borderRadius: 12, border: 'none', background: 'var(--accent)', color: 'var(--on-accent)', boxShadow: 'var(--shadow)', font: 'inherit', fontSize: 16, fontWeight: 600, cursor: !nSel || exporting ? 'default' : 'pointer', opacity: !nSel || model?.abstain || expired ? 0.5 : 1 }}>
                 {exporting ? 'Exporting…' : `Export ${nSel} selected →`}
               </button>
             </div>

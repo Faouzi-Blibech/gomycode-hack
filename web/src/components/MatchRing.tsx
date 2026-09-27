@@ -2,6 +2,10 @@ import type { Face } from '../api/types';
 
 export const IOU_GREEN = 0.85;
 const FACES: Face[] = ['front', 'back', 'left', 'right', 'top', 'bottom'];
+// The views are white-part-on-black masks. In the light theme the trace tokens (no filter, multiply) would show
+// black blocks, so invert them there: a dark part on the light trace background.
+const CSS = `.s2c-mini{filter:var(--trace-filter);mix-blend-mode:var(--trace-blend)}
+:root[data-theme=light] .s2c-mini{filter:invert(1) contrast(0.9)}`;
 
 export interface MatchRingProps {
   iouMean: number | null;
@@ -35,6 +39,7 @@ export function MatchRing({ iouMean, iou, views }: MatchRingProps) {
           </span>
         </div>
       </div>
+      {faces.length > 0 && <style>{CSS}</style>}
       {faces.length > 0 && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 6 }}>
           {faces.map((f) => {
@@ -43,8 +48,8 @@ export function MatchRing({ iouMean, iou, views }: MatchRingProps) {
             return (
               <figure key={f} style={{ margin: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
                 <div style={{ aspectRatio: '1', borderRadius: 7, overflow: 'hidden', background: 'var(--trace-bg)', border: `1px solid ${low ? 'var(--check)' : 'var(--line)'}` }}>
-                  <img src={views[f]} alt={`${f} view of the built part`} loading="lazy"
-                    style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block', filter: 'var(--trace-filter)', mixBlendMode: 'var(--trace-blend)' as never }} />
+                  <img className="s2c-mini" src={views[f]} alt={`${f} view of the built part`} loading="lazy"
+                    style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
                 </div>
                 <figcaption style={{ fontFamily: "'Geist Mono', monospace", fontSize: 10, color: low ? 'var(--check)' : 'var(--muted)', whiteSpace: 'nowrap', textAlign: 'center' }}>
                   {f}{typeof v === 'number' ? ` · ${v.toFixed(2)}` : ''}
