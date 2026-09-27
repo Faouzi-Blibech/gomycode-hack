@@ -71,3 +71,6 @@ markers = [
 
 [tool.ruff]
 line-length = 120
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.File", "fastapi.Form", "fastapi.Depends"]

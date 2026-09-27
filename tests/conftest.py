@@ -7,6 +7,7 @@ from s2c.reading.service import DEFAULT_CACHE
 def _isolated_reading(tmp_path, monkeypatch):
     """Every test gets its own reading log and an empty shared crop cache."""
     monkeypatch.setenv("READING_LOG", str(tmp_path / "reading.jsonl"))
+    monkeypatch.delenv("READ_TIMEOUT_S", raising=False)  # a local .env loaded by s2c.web.server must not leak in
     DEFAULT_CACHE.clear()
     yield
     DEFAULT_CACHE.clear()

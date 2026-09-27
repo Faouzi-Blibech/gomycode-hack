@@ -196,7 +196,8 @@ class Handlers:
             review = self._review(observed, res, state, rej)
             # keep whatever the model/views/files/stats components already show, and the user's own typed rows
             # (not the recomputed ones) so they can see and fix the exact bad cell
-            return _pack(state, **{**review, "values": rows, "message": _bullets(errors)},
+            shown = state.get("warnings", review.get("warnings"))  # the last build's warnings, slicer notes included
+            return _pack(state, **{**review, "values": rows, "warnings": shown, "message": _bullets(errors)},
                          model=gr.update(), views=gr.update(), files=gr.update(), stats=gr.update())
         for path, value in edits.items():
             if value is None:
@@ -216,7 +217,8 @@ class Handlers:
         stats = (f"Print time {built.print_time_s / 60:.0f} min, filament {built.filament_g or 0:.1f} g"
                  if built.print_time_s else "G-code unavailable: slicer not installed")
         files = [str(p) for p in (built.stl, built.step, built.gcode) if p]
-        return _pack(state, **{**review, "warnings": _bullets(built.warnings),
+        state["warnings"] = _bullets(built.warnings)
+        return _pack(state, **{**review, "warnings": state["warnings"],
                                "message": "Built. Check every value marked (check)."},
                      model=str(built.stl), views=views, files=files, stats=stats)
 

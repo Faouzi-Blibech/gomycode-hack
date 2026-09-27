@@ -105,7 +105,7 @@ def complete(outlines: dict[str, Outline], env: Envelope, target_face: str, targ
     if wanted and mesh is None and provider is not None and image is not None:
         try:
             mesh = provider(image)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - a failed provider falls back, never breaks the request
             log.warning("3D predictor failed: %s", e)
             warnings.append("3D predictor unavailable")
     fitted, score = None, 0.0
