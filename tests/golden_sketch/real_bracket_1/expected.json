@@ -1,0 +1,15 @@
+{
+  "views": ["top", "front", "right"],
+  "dimensions": [
+    {"view": "top", "value": 60, "kind": "linear"},
+    {"view": "top", "value": 25, "kind": "linear"},
+    {"view": "top", "value": 6, "kind": "diameter"},
+    {"view": "front", "value": 6, "kind": "diameter"},
+    {"view": "front", "value": 8, "kind": "diameter"},
+    {"view": "front", "value": 3, "kind": "linear"},
+    {"view": "front", "value": 25, "kind": "linear"},
+    {"view": "front", "value": 4, "kind": "linear"},
+    {"view": "right", "value": 5, "kind": "linear"},
+    {"view": "right", "value": 8, "kind": "diameter"}
+  ]
+}
