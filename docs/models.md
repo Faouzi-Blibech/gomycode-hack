@@ -39,3 +39,22 @@ Rules:
 | Blender / bpy 4.2 | blender.org (GPL) | Writes a native `.blend`; optional, runs as its own process | Local, `BLENDER_PATH` or `scripts/setup_blender.ps1` | |
 
 Before the demo: `NETWORK_TESTS=1 uv run pytest tests/test_mv_network.py -v`, then fill in the Checked column with the date.
+
+## Reading handwriting
+
+The Studio reads written dimensions with two readers at once, through `s2c/reading/`:
+
+- **Qwen-VL** (the `VLM_*` provider): reads every crop of an image in one call and keeps the ⌀ and R signs. Its confidence is a constant, so a Qwen read alone is never trusted.
+- **TrOCR** (`microsoft/trocr-base-handwritten`, local, needs `uv sync --extra ai`): reads every crop in one batch and gives a real confidence. Reads below 0.7 are ignored.
+
+A value is trusted (green, `user_written`) when both readers give the same number. When they disagree, or only Qwen answered, the Studio asks the user to confirm the size (pre-filled) or shows the hole diameter amber. With only TrOCR configured, its confident reads are trusted, as before.
+
+Both readers run in parallel, so a request waits for the slower one, not the sum. TrOCR loads in the background when the Studio starts. Settings:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `READ_TIMEOUT_S` | 20 | time budget of the Qwen-VL read, in seconds |
+| `TROCR_MODEL` | `microsoft/trocr-base-handwritten` | the local handwriting model |
+| `READING_LOG` | `logs/reading.jsonl` | one line per reader call: reader, crops, cached, status, latency; no image, no text |
+
+Measured latency: run `uv run python scripts/reading_latency.py <sketch image>` and paste the table here with the date and the machine.
