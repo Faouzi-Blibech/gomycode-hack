@@ -11,7 +11,7 @@ export const BADGE: Record<BadgeKey, BadgeStyle> = {
   user_written: { label: 'Written by you', icon: '✓', fg: TRU, line: 'solid', bg: tint(TRU) },
   measured: { label: 'Measured', icon: '✓', fg: TRU, line: 'solid', bg: tint(TRU) },
   user_edited: { label: 'Edited by you', icon: '✓', fg: TRU, line: 'solid', bg: tint(TRU) },
-  scaled: { label: 'Scaled from reference', icon: '✓', fg: TRU, line: 'dotted', bg: 'transparent' },
+  scaled: { label: 'Scaled from your sizes', icon: '✓', fg: TRU, line: 'dotted', bg: 'transparent' },
   inferred: { label: 'AI-drawn — check', icon: '◇', fg: AI, line: 'dashed', bg: 'transparent' },
   estimated: { label: 'Estimated — check', icon: '!', fg: CHK, line: 'dashed', bg: 'transparent' },
   default: { label: 'Default — check', icon: '!', fg: CHK, line: 'dashed', bg: 'transparent' },

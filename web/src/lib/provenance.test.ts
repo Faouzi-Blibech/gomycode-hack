@@ -34,4 +34,9 @@ describe('provenance helpers', () => {
     expect(BADGE.default.label).toBe('Default — check');
     expect(BADGE.required.icon).toBe('•');
   });
+
+  it('says a scaled value comes from the sizes you typed, not a reference object', () => {
+    // fuse.py marks a value 'measured' when a coin or card set the scale, 'scaled' when your overall size did.
+    expect(BADGE.scaled.label).toBe('Scaled from your sizes');
+  });
 });

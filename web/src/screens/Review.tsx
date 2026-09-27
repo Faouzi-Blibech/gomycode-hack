@@ -3,6 +3,7 @@ import { ApiError, buildModel, merge } from '../api/client';
 import type { Abstain, Face, FilledBy, JobImage, ReadValue, Spec } from '../api/types';
 import { FaceCard } from '../components/FaceCard';
 import { StopCard } from '../components/StopCard';
+import { listPhrase } from '../lib/words';
 import { BADGE, countChecks, featureRows, isCheck, provOf, type BadgeKey } from '../lib/provenance';
 import { useStore } from '../state/store';
 
@@ -20,7 +21,7 @@ const EXPLAIN: Record<BadgeKey, string> = {
   user_written: 'You wrote this value.',
   measured: 'Measured from the coin or reference in your photo.',
   user_edited: 'You typed this value.',
-  scaled: 'Scaled from your reference object.',
+  scaled: 'Scaled from the overall size you entered.',
   inferred: 'Drawn by the AI from your sketches. Check it against your part.',
   estimated: 'Estimated from the sketch. Type the real value if you know it.',
   default: 'No value was given, so a standard size was used. Confirm or change it.',
@@ -171,7 +172,7 @@ export function Review() {
     .filter((k): k is 'x' | 'y' | 'z' => !!k);
   const firstMissingKey = missingEnvKeys[0] ?? null;
   const missingPhrase = missingEnvKeys.length
-    ? missingEnvKeys.map((k) => ENV_META.find((e) => e.key === k)!.label.toLowerCase()).join(' and ')
+    ? listPhrase(missingEnvKeys.map((k) => ENV_META.find((e) => e.key === k)!.label.toLowerCase()))
     : null;
 
   const envRows = ENV_META.map((e) => {
@@ -390,7 +391,7 @@ export function Review() {
               </>
             ) : (
               <div style={{ gridColumn: '1 / -1', borderRadius: 14, border: '1.5px dashed var(--line)', background: 'var(--surface)', padding: 24, display: 'grid', placeItems: 'center', textAlign: 'center', fontSize: 15, fontWeight: 500, minHeight: 130 }}>
-                Faces are traced — we&rsquo;ll fuse them once the {missingPhrase ?? 'missing value'} is in.
+                Faces are traced — we&rsquo;ll fuse them once {missingPhrase ? `the ${missingPhrase}` : 'the missing value'} {missingEnvKeys.length > 1 ? 'are' : 'is'} in.
               </div>
             )}
           </div>
