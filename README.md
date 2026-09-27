@@ -1,5 +1,7 @@
 # Sketch-to-CAD
 
+> **Demo video:** open [`docs/demo/S2C DEMO VD.docx`](docs/demo/S2C%20DEMO%20VD.docx). This file gives you access to the demo video: it holds the link to the 90-second video ([watch on Google Drive](https://drive.google.com/file/d/1F_BJ6ZdxtqHqYxYnIAMBgpvA5OWEruSv/view?usp=sharing)).
+
 Point your phone at a broken part or a hand-drawn sketch of one. Get an editable, parametric CAD file back, ready to print or machine.
 
 Built for the GOMYCODE "Come Build with AI" hackathon, 27 September 2026, on NVIDIA Build.
