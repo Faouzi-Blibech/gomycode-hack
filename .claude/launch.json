@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "studio",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "python", "app_mv_studio.py"],
+      "port": 7860
+    },
+    {
+      "name": "mv-gradio",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "python", "app_mv_gradio.py"],
+      "port": 7860
+    }
+  ]
+}

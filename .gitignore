@@ -218,9 +218,14 @@ __marimo__/
 .streamlit/secrets.toml
 
 # SDD scratch workspace (git-ignored)
-.superpowers/
+.superpowers/*
+!.superpowers/.gitkeep
 
-logs/
 .env
-tmp/
-vendor/
+tmp/*
+!tmp/.gitkeep
+vendor/*
+!vendor/.gitkeep
+
+# Reverse-engineering dataset: third-party NC-licensed models, read by scripts/re_benchmark.py --dataset
+Reverce engineering/
