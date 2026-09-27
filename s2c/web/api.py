@@ -1,0 +1,258 @@
+"""The /api surface the React app calls. The contract lives in docs/superpowers/plans/2026-09-27-web-app-plan.md
+("The API contract"). Every error leaves as {"error": "<plain sentence>"}; no exception text reaches the browser."""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import random
+import re
+from functools import lru_cache
+from pathlib import Path
+from typing import Annotated
+
+import cv2
+from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from s2c.multiview import routes
+from s2c.multiview.artifacts import ROOT as ARTIFACT_ROOT
+from s2c.multiview.artifacts import build_part, bundle, export_part, sweep
+from s2c.multiview.pipeline import IOU_GREEN, ImageInput, MvPipeline, default_pipeline
+from s2c.multiview.settings import AiSettings, GeometrySettings, StudioSettings
+from s2c.multiview.spec import MultiViewSpec, MvAbstain
+from s2c.silhouette import iou
+from s2c.web import jobs
+
+log = logging.getLogger(__name__)
+EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "mv" / "sketches"
+MAX_BYTES = 10 * 1024 * 1024
+MAX_FILES = 6
+MAGIC = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n")
+_EXAMPLE = re.compile(r"^[\w.-]+\.png$")
+UNKNOWN = "Unknown or expired analysis. Analyze again."
+
+
+@lru_cache(maxsize=1)
+def get_pipeline() -> MvPipeline:
+    return default_pipeline()
+
+
+def _sweep() -> None:
+    jobs.sweep_jobs(jobs.TTL_S)
+    sweep(ARTIFACT_ROOT)
+
+
+Pipe = Annotated[MvPipeline, Depends(get_pipeline)]
+router = APIRouter(prefix="/api", tags=["web"], dependencies=[Depends(_sweep)])
+
+
+def _slicer() -> bool:
+    try:
+        from s2c.multiview.slice import find_slicer
+        return find_slicer() is not None
+    except Exception:  # noqa: BLE001 - a status probe must never fail the request
+        return False
+
+
+@router.get("/status")
+def status(pipe: Pipe) -> dict:
+    return {"providers": {
+        "vision": pipe.chat is not None,
+        "reader": pipe.reader is not None or pipe.batch_reader is not None,
+        "qwen_image": pipe.image_gen is not None,
+        "triposr": pipe.mesh_provider is not None,
+        "solaria": pipe.depth is not None,
+        "slicer": _slicer(),
+        "blender": bool(os.environ.get("BLENDER_PATH") or os.environ.get("BLENDER_PYTHON")),
+    }, "ttl_s": jobs.TTL_S}
+
+
+def _examples() -> list[dict]:
+    try:
+        items = json.loads((EXAMPLES / "examples.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [{"name": e["file"], "url": f"/api/examples/{e['file']}", "face": e["face"], "kind": e["kind"]}
+            for e in items if _EXAMPLE.match(e.get("file", "")) and (EXAMPLES / e["file"]).is_file()]
+
+
+@router.get("/examples")
+def examples() -> list[dict]:
+    return _examples()
+
+
+@router.get("/examples/{file}")
+def example_file(file: str) -> FileResponse:
+    if not _EXAMPLE.match(file) or file not in {e["name"] for e in _examples()}:
+        raise HTTPException(404, "Example not found.")
+    return FileResponse(EXAMPLES / file, media_type="image/png")
+
+
+def _json_list(text: str | None, what: str) -> list:
+    try:
+        value = json.loads(text or "[]")
+    except ValueError:
+        value = None
+    if not isinstance(value, list):
+        raise HTTPException(400, f"The {what} list is not valid.")
+    return value
+
+
+def _tag(items: list, i: int) -> str | None:
+    value = items[i] if i < len(items) else None
+    return None if value in (None, "", "auto") else str(value)
+
+
+@router.post("/analyze", status_code=202)
+def analyze(pipe: Pipe, files: Annotated[list[UploadFile] | None, File()] = None,
+            faces: Annotated[str, Form()] = "[]", kinds: Annotated[str, Form()] = "[]",
+            reference: Annotated[str | None, Form()] = None, ai: Annotated[str | None, Form()] = None) -> dict:
+    files = files or []
+    if not 1 <= len(files) <= MAX_FILES:
+        raise HTTPException(400, f"Send between 1 and {MAX_FILES} images.")
+    face_tags, kind_tags = _json_list(faces, "faces"), _json_list(kinds, "kinds")
+    datas = []
+    for f in files:
+        data = f.file.read(MAX_BYTES + 1)
+        if len(data) > MAX_BYTES:
+            raise HTTPException(413, "An image is larger than 10 MB. Use a smaller photo.")
+        if not data.startswith(MAGIC):
+            raise HTTPException(415, "A file is not a JPEG or PNG image.")
+        datas.append(data)
+    if ai:
+        try:
+            settings = AiSettings(**json.loads(ai))
+        except (ValueError, TypeError) as e:
+            raise HTTPException(400, "The AI settings are not valid.") from e
+        if settings.randomize_seed:
+            settings = settings.model_copy(update={"seed": random.randint(0, 2**31 - 1)})
+        pipe = pipe.configured(settings)
+    images = [ImageInput(d, _tag(face_tags, i), _tag(kind_tags, i)) for i, d in enumerate(datas)]
+    job = jobs.new_job(len(images), pipe)
+    jobs.start(job, pipe, images, reference or None)
+    return {"job_id": job.job_id}
+
+
+def _job(job_id: str) -> jobs.Job:
+    job = jobs.get_job(job_id) if routes._ID.match(job_id) else None
+    if job is None:
+        raise HTTPException(404, UNKNOWN)
+    return job
+
+
+@router.get("/jobs/{job_id}")
+def job_status(job_id: str) -> dict:
+    return _job(job_id).to_json()
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel(job_id: str) -> dict:
+    _job(job_id).cancel = True
+    return {"ok": True}
+
+
+class MergeBody(BaseModel):
+    request_id: str
+    user_values: dict[str, float] = {}
+    accepted: list[str] = []
+    rejected: list[str] = []
+
+
+@router.post("/merge")
+def merge(body: MergeBody, pipe: Pipe) -> dict:
+    job = _job(body.request_id)
+    if job.observed is None:
+        raise HTTPException(404, UNKNOWN)
+    return jobs.merge(job, pipe, body.user_values, body.accepted, body.rejected)
+
+
+class ModelBody(BaseModel):
+    request_id: str | None = None
+    spec: MultiViewSpec
+    geometry: GeometrySettings = GeometrySettings()
+
+
+def _empty_model(abstain: MvAbstain) -> dict:
+    return {"key": None, "glb_url": None, "volume_cm3": None, "bbox_mm": None, "iou": {}, "iou_mean": None,
+            "views": {}, "warnings": [], "abstain": abstain.model_dump()}
+
+
+@router.post("/model")
+def model(body: ModelBody) -> dict:
+    part = build_part(body.spec, body.geometry, ARTIFACT_ROOT)
+    if isinstance(part, MvAbstain):
+        return _empty_model(part)
+    base = f"/api/artifacts/{part.key}"
+    views = {}
+    for face, mask in part.views.items():
+        path = part.folder / f"view_{face}.png"
+        if not path.exists():
+            cv2.imwrite(str(path), mask)
+        views[face] = f"{base}/{path.name}"
+    job = jobs.get_job(body.request_id) if body.request_id and routes._ID.match(body.request_id) else None
+    masks = job.observed.masks if job is not None and job.observed is not None else {}
+    scores = {f: round(iou(part.views[f], m), 3) for f, m in masks.items() if f in part.views}
+    warnings = list(dict.fromkeys([*part.spec.warnings, *part.warnings]))
+    warnings += [f"Low confidence on {f}, check the dimensions." for f, s in scores.items() if s < IOU_GREEN]
+    return {"key": part.key, "glb_url": f"{base}/{part.preview.name}", "volume_cm3": round(part.volume_mm3 / 1000, 2),
+            "bbox_mm": [round(v, 3) for v in part.bbox_mm], "iou": scores,
+            "iou_mean": round(sum(scores.values()) / len(scores), 3) if scores else None,
+            "views": views, "warnings": warnings, "abstain": None}
+
+
+class ExportBody(BaseModel):
+    spec: MultiViewSpec
+    settings: StudioSettings = StudioSettings()
+
+
+@router.post("/export")
+def export(body: ExportBody) -> dict:
+    s = body.settings
+    part = build_part(body.spec, s.geometry, ARTIFACT_ROOT)
+    if isinstance(part, MvAbstain):
+        return {"files": {}, "zip_url": None, "print_time_s": None, "filament_g": None, "warnings": [],
+                "abstain": part.model_dump()}
+    res = export_part(part, s.export.formats, s.mesh, s.printing)
+    zip_path = bundle(part, res, s.model_dump(mode="json"))
+    base = f"/api/artifacts/{part.key}"
+    files = {f: {"url": f"{base}/{p.relative_to(part.folder).as_posix()}", "name": p.name,
+                 "size_bytes": res.sizes.get(f, 0)} for f, p in res.files.items()}
+    return {"files": files, "zip_url": f"{base}/{zip_path.name}", "print_time_s": res.print_time_s,
+            "filament_g": res.filament_g, "warnings": list(dict.fromkeys([*part.spec.warnings, *res.warnings])),
+            "abstain": None}
+
+
+@router.get("/artifacts/{key}/{path:path}")
+def artifact(key: str, path: str) -> FileResponse:
+    return routes.artifact(key, path)  # same root and the same guards as /mv/artifacts
+
+
+def install_error_handlers(app: FastAPI) -> None:
+    """/api errors render as {"error": ...}; other paths (the /mv routes) keep FastAPI's default shape."""
+
+    def api(request: Request) -> bool:
+        return request.url.path.startswith("/api")
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        if not api(request):
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+        detail = exc.detail if isinstance(exc.detail, str) and exc.status_code != 404 or \
+            isinstance(exc.detail, str) and exc.detail != "Not Found" else "Not found."
+        return JSONResponse({"error": detail}, status_code=exc.status_code, headers=exc.headers)
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid(request: Request, exc: RequestValidationError) -> JSONResponse:
+        if not api(request):
+            return JSONResponse({"detail": jsonable_encoder(exc.errors())}, status_code=422)
+        return JSONResponse({"error": "The request is not valid. Check the values and try again."}, status_code=422)
+
+    @app.exception_handler(Exception)
+    async def crash(request: Request, exc: Exception) -> JSONResponse:
+        log.exception("unhandled error on %s", request.url.path, exc_info=exc)
+        return JSONResponse({"error": "Something went wrong on our side."}, status_code=500)
