@@ -3,6 +3,7 @@ Jobs live in memory for one hour. The job id is also the request id that /api/me
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 import uuid
@@ -15,8 +16,10 @@ from s2c.multiview.spec import FACES, MvAbstain
 log = logging.getLogger(__name__)
 TTL_S = 3600
 STAGES = ("label", "outline", "read", "draw", "fuse")
-TOOLS = {"label": ("Vision model", True), "outline": ("OpenCV", False), "read": ("Qwen-VL", True),
+TOOLS = {"label": ("Vision model", True), "outline": ("OpenCV", False), "read": ("Vision model", True),
          "draw": ("Qwen-Image", True), "fuse": ("CadQuery", False)}
+MAX_RUNNING = 3   # analyses running at once; past this /api/analyze answers 429
+MAX_JOBS = 50     # jobs kept in memory; the oldest finished ones go first
 DRAW_TOOLS = {"qwen-image": ("Qwen-Image", True), "triposr": ("TripoSR", True), "mirrored": ("mirror", False),
               "assumed": ("assumed", False)}
 DRAW_WORDS = {"qwen-image": "drawn — check it", "triposr": "predicted — check it", "mirrored": "mirrored",
@@ -42,6 +45,7 @@ class Job:
     cancel: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
     merge_lock: threading.Lock = field(default_factory=threading.Lock)  # fuse mutates the cached Observed
+    pipe: MvPipeline | None = None  # the pipeline configured with this request's AI settings; merge reuses it
 
     def stage(self, key: str) -> dict:
         return next(s for s in self.stages if s["key"] == key)
@@ -55,7 +59,13 @@ class Job:
 
 
 JOBS: dict[str, Job] = {}
+_ACTIVE: set[str] = set()  # jobs whose analysis thread is running
 _registry_lock = threading.Lock()
+
+
+def model_name() -> str:
+    """The configured vision model, read at request time so the UI names what really runs."""
+    return os.environ.get("VLM_MODEL") or "Vision model"
 
 
 def new_job(n_images: int, pipe: MvPipeline) -> Job:
@@ -66,11 +76,13 @@ def new_job(n_images: int, pipe: MvPipeline) -> Job:
                        "started": None, "ended": None})
     job = Job(uuid.uuid4().hex, stages, [
         {"index": i, "width": 0, "height": 0, "face": None, "kind": None, "outline": None, "circles": [], "reads": []}
-        for i in range(n_images)])
+        for i in range(n_images)], pipe=pipe)
     if pipe.chat is None:
         job.stage("label").update(tool="Your face tags", ai=False)
+    else:
+        job.stage("label")["tool"] = model_name()
     if pipe.batch_reader is not None:
-        job.stage("read").update(tool="Qwen-VL", ai=True)
+        job.stage("read").update(tool=model_name(), ai=True)  # the batch reader uses the VLM_MODEL chat
     elif pipe.reader is not None:
         job.stage("read").update(tool="TrOCR", ai=True)
     else:
@@ -79,6 +91,9 @@ def new_job(n_images: int, pipe: MvPipeline) -> Job:
         job.stage("draw").update(tool="TripoSR" if pipe.mesh_provider is not None else "assumed",
                                  ai=pipe.mesh_provider is not None)
     with _registry_lock:
+        idle = sorted((j for jid, j in JOBS.items() if jid not in _ACTIVE), key=lambda j: j.created)
+        for old in idle[:max(0, len(JOBS) + 1 - MAX_JOBS)]:
+            del JOBS[old.job_id]
         JOBS[job.job_id] = job
     return job
 
@@ -189,11 +204,15 @@ def abstain_json(res: MvAbstain) -> dict:
     out = res.model_dump()
     partial = out.get("partial")
     if isinstance(partial, dict) and {"known", "missing", "suggested"} & partial.keys():
-        missing = partial.get("missing")
-        out.update(partial=_numbers(partial.get("known")), suggested=_numbers(partial.get("suggested")),
-                   missing=[str(m) for m in missing] if isinstance(missing, list) else [])
+        missing, prov = partial.get("missing"), partial.get("provenance")
+        known = _numbers(partial.get("known"))
+        out.update(partial=known, suggested=_numbers(partial.get("suggested")),
+                   missing=[str(m) for m in missing] if isinstance(missing, list) else [],
+                   partial_provenance={str(k): v for k, v in prov.items() if k in known and isinstance(v, str)}
+                   if isinstance(prov, dict) else {})
     else:
-        out.update(partial=None if partial is None else _numbers(partial), missing=[], suggested={})
+        out.update(partial=None if partial is None else _numbers(partial), missing=[], suggested={},
+                   partial_provenance={})
     return out
 
 
@@ -231,9 +250,10 @@ def run(job: Job, pipe: MvPipeline, images: list[ImageInput], reference: str | N
         if isinstance(observed, MvAbstain):
             _finish(job, observed, {})
             return
-        job.observed = observed
-        res = pipe.fuse(observed, progress=progress)
-        _forget_images(observed, res)
+        with job.merge_lock:  # a merge must not fuse the same Observed at the same time
+            job.observed = observed
+            res = pipe.fuse(observed, progress=progress)
+            _forget_images(observed, res)
         _finish(job, res, observed.filled_by)
     except JobCancelled:
         with job.lock:
@@ -245,16 +265,28 @@ def run(job: Job, pipe: MvPipeline, images: list[ImageInput], reference: str | N
             for stage in job.stages:
                 if stage["state"] == "running":
                     stage.update(state="failed", ended=time.time())
+    finally:
+        with _registry_lock:
+            _ACTIVE.discard(job.job_id)
 
 
-def start(job: Job, pipe: MvPipeline, images: list[ImageInput], reference: str | None) -> None:
+def start(job: Job, pipe: MvPipeline, images: list[ImageInput], reference: str | None) -> bool:
+    """Run the analysis in the background. False (and the job is dropped) when MAX_RUNNING already run."""
+    with _registry_lock:
+        if len(_ACTIVE) >= MAX_RUNNING:
+            JOBS.pop(job.job_id, None)
+            return False
+        _ACTIVE.add(job.job_id)
     threading.Thread(target=run, args=(job, pipe, images, reference), daemon=True,
                      name=f"analysis-{job.job_id[:8]}").start()
+    return True
 
 
 def merge(job: Job, pipe: MvPipeline, user_values: dict, accepted: list, rejected: list) -> dict:
-    observed = job.observed
+    """Fuse again with the user's values, on the pipeline the job was configured with (its AI settings)."""
+    pipe = job.pipe or pipe
     with job.merge_lock:
+        observed = job.observed
         res = pipe.fuse(observed, user_values, accepted, rejected)
         _forget_images(observed, res)
     return _analysis(job, res, observed.filled_by)

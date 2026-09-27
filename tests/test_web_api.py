@@ -104,7 +104,7 @@ def test_read_stage_names_the_reader_that_runs():
     read = job.stage("read")
     assert (read["tool"], read["ai"], read["state"]) == ("TrOCR", True, "pending")
     job = jobs.new_job(1, MvPipeline(batch_reader=lambda *a, **k: None))
-    assert job.stage("read")["tool"] == "Qwen-VL"
+    assert job.stage("read")["tool"] in ("Vision model", __import__("os").environ.get("VLM_MODEL"))
     assert jobs.new_job(1, MvPipeline()).stage("read")["state"] == "skipped"
 
 
@@ -150,3 +150,142 @@ def test_a_rotated_phone_jpeg_is_measured_the_way_the_browser_shows_it():
         time.sleep(0.05)
     img = job["images"][0]
     assert img["height"] == 2 * img["width"] > 0, img  # portrait, as the browser shows it
+
+
+def _wait(jid):
+    for _ in range(400):
+        job = c.get(f"/api/jobs/{jid}").json()
+        if job["status"] != "running":
+            return job
+        time.sleep(0.05)
+    raise AssertionError("job never finished")
+
+
+def _two_sketches():
+    return [("files", ("front.png", (SK / "front.png").read_bytes(), "image/png")),
+            ("files", ("top.png", (SK / "top.png").read_bytes(), "image/png"))]
+
+
+def test_merge_uses_the_ai_settings_the_job_started_with():
+    import numpy as np
+    calls = []
+
+    def gen(refs, prompt, seed, stage):
+        calls.append(stage)
+        return np.full((256, 256, 3), 255, np.uint8)
+
+    app.dependency_overrides[get_pipeline] = lambda: MvPipeline(image_gen=gen)
+    try:
+        r = c.post("/api/analyze", files=_two_sketches(), data={
+            "faces": json.dumps(["front", "top"]), "kinds": json.dumps(["sketch", "sketch"]), "reference": "",
+            "ai": json.dumps({"use_qwen_image": False, "use_rescue": False})})
+        assert r.status_code == 202, r.text
+        job = _wait(r.json()["job_id"])
+        before = len(calls)
+        m = c.post("/api/merge", json={"request_id": job["job_id"], "accepted": [], "rejected": [],
+                                        "user_values": {"envelope.x_mm": 50, "envelope.y_mm": 30, "envelope.z_mm": 20}})
+        assert m.status_code == 200 and m.json()["spec"], m.text
+        assert len(calls) == before, calls
+    finally:
+        app.dependency_overrides[get_pipeline] = lambda: MvPipeline()
+
+
+def test_a_fourth_running_job_is_told_the_server_is_busy():
+    import threading
+
+    from s2c.multiview.spec import MvAbstain
+
+    gate = threading.Event()
+
+    class Slow(MvPipeline):
+        def observe(self, images, reference=None, progress=None):
+            gate.wait(10)
+            return MvAbstain(stage="label", reason="face_unknown", remedy="Tell us which face this photo shows.")
+
+    app.dependency_overrides[get_pipeline] = lambda: Slow()
+    started = []
+    try:
+        data = {"faces": json.dumps(["front", "top"]), "kinds": json.dumps(["sketch", "sketch"])}
+        for _ in range(3):
+            r = c.post("/api/analyze", files=_two_sketches(), data=data)
+            assert r.status_code == 202, r.text
+            started.append(r.json()["job_id"])
+        r = c.post("/api/analyze", files=_two_sketches(), data=data)
+        assert r.status_code == 429 and r.json() == {"error": "The server is busy. Try again in a minute."}
+    finally:
+        gate.set()
+        app.dependency_overrides[get_pipeline] = lambda: MvPipeline()
+    for jid in started:
+        _wait(jid)
+
+
+def test_the_registry_keeps_at_most_50_jobs_dropping_the_oldest_finished():
+    from s2c.web import jobs
+    saved = dict(jobs.JOBS)
+    jobs.JOBS.clear()
+    try:
+        first = jobs.new_job(1, MvPipeline())
+        first.status = "done"
+        for _ in range(60):
+            jobs.new_job(1, MvPipeline()).status = "done"
+        assert len(jobs.JOBS) <= 50 and first.job_id not in jobs.JOBS
+    finally:
+        jobs.JOBS.clear()
+        jobs.JOBS.update(saved)
+
+
+def test_an_oversize_upload_is_refused_before_the_body_is_read():
+    r = c.post("/api/analyze", content=b"x", headers={"Content-Length": str(62 * 1024 * 1024),
+                                                     "Content-Type": "multipart/form-data; boundary=x"})
+    assert r.status_code == 413 and "error" in r.json()
+
+
+def test_an_unknown_scale_reference_is_a_400():
+    r = c.post("/api/analyze", files=_two_sketches(), data={"faces": "[]", "kinds": "[]", "reference": "moon"})
+    assert r.status_code == 400 and r.json() == {"error": "Unknown scale reference."}
+
+
+def test_http_errors_without_a_plain_detail_get_a_sentence_for_their_status():
+    from fastapi import FastAPI, HTTPException
+
+    from s2c.web.api import install_error_handlers
+
+    mini = FastAPI()
+    install_error_handlers(mini)
+
+    @mini.get("/api/odd")
+    def odd():
+        raise HTTPException(400, detail={"field": "x"})
+
+    @mini.get("/api/teapot")
+    def teapot():
+        raise HTTPException(418)
+
+    m = TestClient(mini, raise_server_exceptions=False)
+    r = m.get("/api/odd")
+    assert r.status_code == 400 and r.json()["error"] == "The request was not accepted."
+    r = m.get("/api/teapot")
+    assert r.status_code == 418 and r.json()["error"] != "Not found." and "Teapot" not in r.json()["error"]
+    r = m.post("/api/odd")
+    assert r.status_code == 405 and r.json()["error"] == "That action is not allowed here."
+    assert m.get("/api/nothing").json()["error"] == "Not found."
+
+
+def test_stage_tools_name_the_configured_model(monkeypatch):
+    from s2c.web import jobs
+    monkeypatch.setenv("VLM_MODEL", "gemma3:4b")
+    job = jobs.new_job(1, MvPipeline(chat=lambda m: "", batch_reader=lambda *a, **k: None))
+    assert job.stage("label")["tool"] == "gemma3:4b"
+    assert job.stage("read")["tool"] == "gemma3:4b"
+    monkeypatch.delenv("VLM_MODEL")
+    job = jobs.new_job(1, MvPipeline(chat=lambda m: "", batch_reader=lambda *a, **k: None))
+    assert (job.stage("label")["tool"], job.stage("read")["tool"]) == ("Vision model", "Vision model")
+
+
+def test_an_abstain_carries_the_provenance_of_the_values_it_kept():
+    job = analyze()
+    m = c.post("/api/merge", json={"request_id": job["job_id"], "user_values": {"envelope.x_mm": 50},
+                                    "accepted": [], "rejected": []}).json()
+    ab = m["abstain"]
+    assert ab and ab["partial"]["envelope.x_mm"] == 50
+    assert ab["partial_provenance"] == {"envelope.x_mm": "user_edited"}

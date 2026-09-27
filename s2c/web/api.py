@@ -9,6 +9,7 @@ import os
 import random
 import re
 from functools import lru_cache
+from http import HTTPStatus
 from pathlib import Path
 from typing import Annotated
 
@@ -25,6 +26,7 @@ from s2c.multiview import routes
 from s2c.multiview.artifacts import ROOT as ARTIFACT_ROOT
 from s2c.multiview.artifacts import build_part, bundle, export_part, sweep
 from s2c.multiview.pipeline import IOU_GREEN, ImageInput, MvPipeline, default_pipeline
+from s2c.multiview.reference import REFERENCES
 from s2c.multiview.settings import AiSettings, GeometrySettings, StudioSettings
 from s2c.multiview.spec import MultiViewSpec, MvAbstain
 from s2c.silhouette import iou
@@ -34,9 +36,14 @@ log = logging.getLogger(__name__)
 EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "mv" / "sketches"
 MAX_BYTES = 10 * 1024 * 1024
 MAX_FILES = 6
+MAX_BODY = MAX_FILES * MAX_BYTES + 1024 * 1024  # six full images plus the form fields
 MAGIC = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n")
 _EXAMPLE = re.compile(r"^[\w.-]+\.png$")
 UNKNOWN = "Unknown or expired analysis. Analyze again."
+BUSY = "The server is busy. Try again in a minute."
+SENTENCES = {400: "The request was not accepted.", 404: "Not found.", 405: "That action is not allowed here.",
+             413: "The upload is too large. Send at most six images of 10 MB.", 415: "That file is not an image.",
+             422: "The request is not valid. Check the values and try again.", 429: BUSY}
 
 
 @lru_cache(maxsize=1)
@@ -132,6 +139,8 @@ def analyze(pipe: Pipe, files: Annotated[list[UploadFile] | None, File()] = None
             faces: Annotated[str, Form()] = "[]", kinds: Annotated[str, Form()] = "[]",
             reference: Annotated[str | None, Form()] = None, ai: Annotated[str | None, Form()] = None) -> dict:
     files = files or []
+    if (reference or "") not in ("", *REFERENCES):
+        raise HTTPException(400, "Unknown scale reference.")
     if not 1 <= len(files) <= MAX_FILES:
         raise HTTPException(400, f"Send between 1 and {MAX_FILES} images.")
     face_tags, kind_tags = _json_list(faces, "faces"), _json_list(kinds, "kinds")
@@ -153,7 +162,8 @@ def analyze(pipe: Pipe, files: Annotated[list[UploadFile] | None, File()] = None
         pipe = pipe.configured(settings)
     images = [ImageInput(d, _tag(face_tags, i), _tag(kind_tags, i)) for i, d in enumerate(datas)]
     job = jobs.new_job(len(images), pipe)
-    jobs.start(job, pipe, images, reference or None)
+    if not jobs.start(job, pipe, images, reference or None):
+        raise HTTPException(429, BUSY)
     return {"job_id": job.job_id}
 
 
@@ -251,19 +261,38 @@ def artifact(key: str, path: str) -> FileResponse:
     return routes.artifact(key, path)  # same root and the same guards as /mv/artifacts
 
 
+def _sentence(status: int, detail: object) -> str:
+    """Our own detail sentences pass through; anything else (a dict, Starlette's bare 'Not Found') is replaced
+    by a plain sentence for the status."""
+    try:
+        phrase = HTTPStatus(status).phrase
+    except ValueError:
+        phrase = None
+    if isinstance(detail, str) and detail and detail != phrase:
+        return detail
+    return SENTENCES.get(status, f"Something went wrong ({status}). Try again.")
+
+
 def install_error_handlers(app: FastAPI) -> None:
-    """/api errors render as {"error": ...}; other paths (the /mv routes) keep FastAPI's default shape."""
+    """/api errors render as {"error": ...}; other paths (the /mv routes) keep FastAPI's default shape.
+    Also refuses an /api body whose Content-Length is over MAX_BODY before any of it is read."""
 
     def api(request: Request) -> bool:
         return request.url.path.startswith("/api")
+
+    @app.middleware("http")
+    async def body_limit(request: Request, call_next):
+        size = request.headers.get("content-length", "")
+        if api(request) and size.isdigit() and int(size) > MAX_BODY:
+            return JSONResponse({"error": SENTENCES[413]}, status_code=413)
+        return await call_next(request)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         if not api(request):
             return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
-        detail = exc.detail if isinstance(exc.detail, str) and exc.status_code != 404 or \
-            isinstance(exc.detail, str) and exc.detail != "Not Found" else "Not found."
-        return JSONResponse({"error": detail}, status_code=exc.status_code, headers=exc.headers)
+        return JSONResponse({"error": _sentence(exc.status_code, exc.detail)}, status_code=exc.status_code,
+                            headers=exc.headers)
 
     @app.exception_handler(RequestValidationError)
     async def invalid(request: Request, exc: RequestValidationError) -> JSONResponse:
