@@ -21,6 +21,18 @@ def test_boxes_cover_every_written_text():
         assert sum(_overlap(box, b) > 0.6 for _, b in sh.texts) <= 1
 
 
+def test_boxes_stay_tight_around_their_text():
+    """A box must not swallow the short dimensions, arrowheads and extension lines next to its text:
+    erasing it would wipe that geometry."""
+    sh = sheet()
+    boxes = find_text_boxes(sh.ink(), 3.0)
+    for s, b in sh.texts:
+        found = [box for box in boxes if _overlap(box, b) > 0.6]
+        assert found, s
+        for box in found:
+            assert box[2] * box[3] <= 2.5 * b[2] * b[3], (s, b, box)
+
+
 def test_two_agreeing_readers_give_written_values_and_labels():
     sh = sheet()
     items = read_texts(sh.bgr(), find_text_boxes(sh.ink(), 3.0),

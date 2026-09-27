@@ -4,7 +4,7 @@ import numpy as np
 from s2c.sketch.classify import classify
 from s2c.sketch.text import erase_mask, find_text_boxes, read_texts
 from s2c.sketch.vectorize import vectorize
-from tests.sketch.synth import Sheet, TruthReader
+from tests.sketch.synth import Sheet, TruthReader, bridge_block
 
 
 def run(draw):
@@ -85,3 +85,21 @@ def test_open_v_arrowheads_count():
 def test_a_lone_short_edge_is_visible_not_hidden():
     c = run(lambda sh: box(sh, 300, 300, 330, 320))
     assert c.hidden == [] and len(c.visible) == 4
+
+
+
+def test_full_sheet_keeps_its_short_dimensions():
+    """Text boxes that swallowed the short dimensions next to their text erased them: 5 of the 16
+    drawn dimensions came out. Counted by matching both arrow tips, so a false dimension line does
+    not make up for a lost one."""
+    drawn = bridge_block(Sheet()).dims
+    c = run(bridge_block)
+
+    def found(p, q):
+        return any(len(d.arrows) == 2 and min(
+            max(np.hypot(*(a.tip - p)), np.hypot(*(b.tip - q))),
+            max(np.hypot(*(a.tip - q)), np.hypot(*(b.tip - p)))) < 6
+            for d in c.dimlines for a, b in [d.arrows])
+
+    assert len(drawn) == 16
+    assert sum(found(np.float64(p), np.float64(q)) for p, q in drawn) >= 12
